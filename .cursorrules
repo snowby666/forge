@@ -1,0 +1,99 @@
+# Cursor Rules — Forge v3
+
+## The reference standard
+Before ANY UI work, open config/design_constitution.py and check:
+- REFERENCE_SITES: Composio, Hex, Riff, Linear, Vercel — these are the bar
+- STATIC_DESIGN_LAWS: 7 timeless laws
+- ANTI_SLOP_RULES: 38 specific patterns to avoid
+- LIVING_KNOWLEDGE: current best tools (auto-updated by knowledge_updater agent)
+
+Ask: "Does this look like it belongs on composio.dev or linear.app?"
+If not, it's not good enough.
+
+---
+
+## Immutable vs Living sections
+
+### IMMUTABLE — never change, agents never touch
+- config/design_constitution.py → all sections EXCEPT LIVING_KNOWLEDGE
+  (STATIC_DESIGN_LAWS, ANTI_SLOP_RULES, DESIGN_PERSONALITIES, DESIGN_CRITIQUE_RUBRIC,
+   COMPONENT_QUALITY_CHECKLIST, REFERENCE_SITES, agent system prompts, DesignTokens class)
+- config/electronhub.py → LLM client + routing
+- config/docker-compose.yml → infrastructure
+- pyproject.toml → Python deps
+- All Python infra (Redis patterns, PostgreSQL, Temporal)
+
+### LIVING — agents update these
+- config/design_constitution.py → LIVING_KNOWLEDGE section ONLY
+  (trending libraries, winning concepts, stack recommendations)
+- Agent: agents/python/infra/knowledge_updater.py
+- Run: `python agents/python/infra/knowledge_updater.py`
+- Schedule: before each hackathon cycle, or weekly
+
+---
+
+## Python rules
+
+### ElectronHub — the one rule
+```python
+from config.electronhub import complete, complete_json, embed
+# NEVER: from openai import AsyncOpenAI + direct instantiation
+```
+
+### Design tier uses higher temperature automatically
+```python
+# These use 0.7 temperature (creativity)
+await complete(task="design-system-create", ...)
+await complete(task="generate-color-palette", ...)
+await complete(task="critique-design", ...)
+
+# These use lower temperature (precision)
+await complete(task="generate-component", ...)
+await complete(task="fix-lint-error", ...)
+```
+
+### Every design agent loads LIVING_KNOWLEDGE
+```python
+from config.design_constitution import LIVING_KNOWLEDGE, SYSTEM_PROMPT_DESIGN_AGENT
+# Include current_stack in prompts so agent uses correct tools
+```
+
+---
+
+## TypeScript (browser layer only)
+```typescript
+// ALWAYS route Stagehand through ElectronHub
+const stagehand = new Stagehand({
+  modelClientOptions: {
+    apiKey: process.env.ELECTRONHUB_API_KEY,
+    baseURL: "https://api.electronhub.ai/v1",
+  },
+});
+```
+
+---
+
+## Frontend standards (Composio/Linear quality)
+```tsx
+// Hover = background-color change, NOT opacity
+className="hover:bg-white/10 transition-colors duration-[120ms]"
+// NOT: "hover:opacity-70"
+
+// All states via CVA
+const variants = cva("...", {
+  variants: { state: { default: "...", loading: "...", error: "...", disabled: "opacity-40 cursor-not-allowed" }}
+})
+
+// AI streaming = Vercel AI SDK (never custom)
+import { useChat } from "ai/react"
+```
+
+---
+
+## Redis keys (immutable schema)
+```
+hackathon:{id}:brief            HackathonBrief
+hackathon:{id}:api_contract     ApiContract (published immediately by Architect)
+task:{id}:{agent_id}            {status, data}
+checkpoint:{id}:{type}          "pending" | {approved: true}
+```
