@@ -1,6 +1,6 @@
 # Forge
 
-**29 agents. One submission. Every time.**
+**30 agents. One submission. Every time.**
 
 Forge is an autonomous hackathon swarm. It discovers opportunities, builds full-stack
 projects, and submits — while you show up for 4 checkpoints totaling ~55 minutes.
@@ -8,7 +8,7 @@ projects, and submits — while you show up for 4 checkpoints totaling ~55 minut
 ```
 forge scout          discover + score this week's hackathons
 forge run            full autonomous build cycle (after scout registers you)
-forge status         live view of all 29 agents
+forge status         live view of all 30 agents
 forge approve        human checkpoint interface
 forge submit         trigger final submission
 forge knowledge      update design + strategy intelligence
@@ -20,7 +20,7 @@ Server: Python 3.11+ (all agents) + TypeScript (browser layer only)
 
 ---
 
-## The 29 agents
+## The 30 agents
 
 ```
 Layer 0 — Command
@@ -68,6 +68,7 @@ Layer 7 — Infrastructure (always running)
   Monitor                Cost tracking, circuit breakers, Slack alerts
   Calendar Agent         Google Calendar checkpoints
   Knowledge Updater      Updates design + strategy intelligence via web research
+  Outcome Tracker        Closes learning loop — scrapes results, feeds memory, adapts strategy
 ```
 
 ---
@@ -151,7 +152,7 @@ python agents/python/infra/knowledge_updater.py             # apply
 |---|---|
 | `config/design_constitution.py` | The design brain. Static laws + living knowledge. |
 | `config/electronhub.py` | All LLM calls route through here. Never bypass. |
-| `config/agents_config.py` | All 29 agent definitions, prompts, SOP artifacts. |
+| `config/agents_config.py` | All 30 agent definitions, prompts, SOP artifacts. |
 | `agents/python/orchestrator/commander.py` | LangGraph state machine. Entry point. |
 | `agents/python/infra/knowledge_updater.py` | Self-updating intelligence system. |
 | `.cursorrules` | Cursor AI coding rules. Read before touching any code. |

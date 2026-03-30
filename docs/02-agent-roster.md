@@ -1,6 +1,6 @@
 # 02 — Agent Roster
 
-All 29 agents across 8 layers. Each entry covers: role, SOP artifacts consumed and produced, model tier, failure behavior, and where to find the implementation.
+All 30 agents across 8 layers. Each entry covers: role, SOP artifacts consumed and produced, model tier, failure behavior, and where to find the implementation.
 
 ---
 
@@ -229,6 +229,7 @@ Runs in a Daytona sandbox. **First action:** design and publish `ApiContract` to
 ---
 
 ### Integration Engineer
+**File:** `agents/python/build/build_verify_agents.py`
 **Tier:** `standard`
 
 Implements all sponsor API integrations from `SponsorMap`. Each integration is a self-contained module visible in the UI (badge + feature). Produces `SponsorIntegrationManifest` consumed by Submission Agent to check all prize categories.
@@ -239,6 +240,7 @@ Implements all sponsor API integrations from `SponsorMap`. Each integration is a
 ---
 
 ### Test Engineer
+**File:** `agents/python/build/build_verify_agents.py`
 **Tier:** `bulk` (gpt-4o-mini)
 
 Playwright e2e tests for the demo golden path. pytest for all API endpoints. Enforces: if it's on the demo path, it must have a test.
@@ -249,6 +251,7 @@ Playwright e2e tests for the demo golden path. pytest for all API endpoints. Enf
 ---
 
 ### DevOps
+**File:** `agents/python/build/build_verify_agents.py`
 **Tier:** `fast`
 
 Configures GitHub Actions CI, Vercel Git integration, Railway auto-deploy. CI must complete in < 3 minutes. Monitors that preview URLs are live and healthy on demo day.
@@ -259,6 +262,7 @@ Configures GitHub Actions CI, Vercel Git integration, Railway auto-deploy. CI mu
 ---
 
 ### Security Agent
+**File:** `agents/python/build/build_verify_agents.py`
 **Tier:** `standard`
 
 Scans for secrets (truffleHog), OWASP patterns (semgrep), dependency CVEs (npm audit + pip-audit). Blockers: API keys in git, SQL injection, hardcoded credentials. Issues a `SecurityReport` before quality review.
@@ -273,6 +277,7 @@ Scans for secrets (truffleHog), OWASP patterns (semgrep), dependency CVEs (npm a
 Continuous during build. UX Auditor has veto power.
 
 ### Code Reviewer
+**File:** `agents/python/build/build_verify_agents.py`
 **Tier:** `standard`
 
 SWE-agent-style PR review. Blocks merges on: TypeScript `any`, hardcoded colors, missing loading/empty states, console.error in production paths, mobile overflow at 375px.
@@ -304,6 +309,7 @@ SWE-agent-style PR review. Blocks merges on: TypeScript `any`, hardcoded colors,
 ---
 
 ### Performance Agent
+**File:** `agents/python/build/build_verify_agents.py`
 **Tier:** `fast`
 
 Runs Lighthouse CLI (falls back to Playwright if unavailable). Minimum thresholds: Performance ≥ 85, Accessibility ≥ 90. Checks on 4G mobile simulation. Core Web Vitals: FCP < 2.0s, LCP < 3.5s, CLS < 0.1.
@@ -436,7 +442,24 @@ Creates 5 Google Calendar events per hackathon via n8n → Google Calendar MCP: 
 
 Runs 5 research tasks in parallel (trending libraries, winning concepts, winning aesthetic, frontend stack, backend stack). Surgically updates only the `LIVING_KNOWLEDGE` section of `config/design_constitution.py`. Validates the updated file is valid Python and all frozen sections are intact before writing. Backs up the original before any write.
 
-**Frozen sections it never touches:** `STATIC_DESIGN_LAWS`, `ANTI_SLOP_RULES`, `DESIGN_PERSONALITIES`, `DESIGN_CRITIQUE_RUBRIC`, `COMPONENT_QUALITY_CHECKLIST`, agent system prompts, `DesignTokens` class
+**Frozen sections it never touches:** `STATIC_DESIGN_LAWS`
+
+---
+
+### Outcome Tracker
+**File:** `agents/python/infra/outcome_tracker.py`
+**Tier:** `standard`
+**Agent #30 — The loop closer.**
+
+After judging day, polls the hackathon page for results, scrapes placements and any public feedback, then actually calls `store_outcome()` on MemoryKeeper — the call that was architecturally present but never wired. Also feeds winning signals into `LIVING_KNOWLEDGE` so the Knowledge Updater has real outcome data, not just training knowledge.
+
+Triggered automatically by Calendar Agent 36 hours after submission deadline. Retries every 6 hours if results aren't posted yet. Can also be run manually:
+
+```bash
+python agents/python/infra/outcome_tracker.py --hackathon-id devpost-123
+```
+
+**Produces:** `OutcomeReport` — placement, prize, what worked, what failed, learning for next run, `ANTI_SLOP_RULES`, `DESIGN_PERSONALITIES`, `DESIGN_CRITIQUE_RUBRIC`, `COMPONENT_QUALITY_CHECKLIST`, agent system prompts, `DesignTokens` class
 
 ---
 

@@ -117,11 +117,11 @@ class TestDesignConstitution:
 # ── Agent config tests ─────────────────────────────────────────────────────────
 
 class TestAgentConfig:
-    """Verify all 29 agents are properly configured."""
+    """Verify all 30 agents are properly configured."""
 
-    def test_all_29_agents_registered(self):
+    def test_all_30_agents_registered(self):
         from config.agents_config import ALL_AGENTS
-        assert len(ALL_AGENTS) >= 29, f"Expected 29 agents, got {len(ALL_AGENTS)}"
+        assert len(ALL_AGENTS) >= 30, f"Expected 30 agents, got {len(ALL_AGENTS)}"
 
     def test_critical_agents_exist(self):
         from config.agents_config import ALL_AGENTS
@@ -133,7 +133,7 @@ class TestAgentConfig:
             "code_reviewer", "ux_auditor", "performance",
             "polish", "copy_writer", "data_seeder", "brand",
             "demo_producer", "pitch_writer", "submission",
-            "memory_keeper", "monitor", "calendar", "knowledge_updater",
+            "memory_keeper", "monitor", "calendar", "knowledge_updater", "outcome_tracker",
         ]
         for agent_id in critical:
             assert agent_id in ALL_AGENTS, f"Missing agent: {agent_id}"

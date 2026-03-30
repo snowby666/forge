@@ -32,7 +32,7 @@ forge scout --dry-run # discover and score only — no registration
 ```
   ███████╗ ██████╗ ██████╗  ██████╗ ███████╗
   ...
-  29 agents. One submission. Every time.
+  30 agents. One submission. Every time.
 
 Scouting hackathons...
 
@@ -77,7 +77,7 @@ forge run --listen                  # daemon mode — auto-starts when Scout fin
 
 ## `forge status`
 
-Live view of all 29 agent statuses for active hackathons.
+Live view of all 30 agent statuses for active hackathons.
 
 ```bash
 forge status          # show all active hackathons

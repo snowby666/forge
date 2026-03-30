@@ -1,7 +1,7 @@
 """
 Commander — Layer 0: Orchestrator
 ===================================
-Master LangGraph state machine. Coordinates all 21 specialist agents.
+Master LangGraph state machine. Coordinates all 30 specialist agents.
 PostgreSQL checkpointing for crash recovery. Temporal for durability.
 
 Entry point: python agents/python/orchestrator/commander.py --hackathon-id <id>
@@ -496,7 +496,50 @@ async def run_submission(state: HackathonState) -> dict:
         submission_url = sub_data.get("submission_url", "") if sub_data else ""
 
     await redis.aclose()
-    return {"submission_url": submission_url, "phase": "done"}
+    return {
+        "submission_url": submission_url,
+        "phase": "done",
+        "hackathon_id": state["hackathon_id"],
+    }
+
+
+async def schedule_outcome_check(state: HackathonState) -> None:
+    """Schedule the Outcome Tracker to run after judging day (non-blocking)."""
+    try:
+        brief = state.get("brief", {})
+        deadline_raw = brief.get("deadline", "")
+        if not deadline_raw:
+            return
+
+        deadline = datetime.fromisoformat(deadline_raw.replace("Z", "+00:00"))
+        # Outcomes are typically posted 24-48h after submission deadline
+        check_at = deadline + __import__("datetime").timedelta(hours=36)
+        now = datetime.now(timezone.utc)
+
+        redis = get_redis()
+        await redis.set(
+            f"outcome:scheduled:{state['hackathon_id']}",
+            json.dumps({
+                "hackathon_id": state["hackathon_id"],
+                "check_at": check_at.isoformat(),
+                "submitted_url": state.get("submission_url", ""),
+            }),
+            ex=86400 * 7,   # keep for 7 days
+        )
+
+        if check_at > now:
+            delay_hours = (check_at - now).total_seconds() / 3600
+            logger.info(
+                f"[forge:commander] Outcome check scheduled for "
+                f"{brief.get('name')} in {delay_hours:.1f}h"
+            )
+        else:
+            # Judging already happened — trigger immediately
+            await trigger_agent(redis, state["hackathon_id"], "outcome_tracker", {})
+
+        await redis.aclose()
+    except Exception as e:
+        logger.warning(f"[forge:commander] Could not schedule outcome check: {e}")
 
 
 # ── Routing ────────────────────────────────────────────────────────────────────
@@ -548,6 +591,7 @@ def build_graph() -> StateGraph:
     g.add_node("wait_quality_review",     wait_quality_review)
     g.add_node("run_polish",              run_polish)
     g.add_node("run_submission",          run_submission)
+    g.add_node("schedule_outcome",        lambda s: asyncio.create_task(schedule_outcome_check(s)) or {})
 
     g.add_edge(START, "run_intelligence")
     g.add_conditional_edges("run_intelligence",      route_after_intel)
@@ -559,8 +603,9 @@ def build_graph() -> StateGraph:
     g.add_conditional_edges("run_build",             route_after_build)
     g.add_conditional_edges("run_verification",      route_after_quality)
     g.add_conditional_edges("wait_quality_review",   route_after_quality_approval)
-    g.add_edge("run_polish", "run_submission")
-    g.add_edge("run_submission", END)
+    g.add_edge("run_polish",     "run_submission")
+    g.add_edge("run_submission", "schedule_outcome")
+    g.add_edge("schedule_outcome", END)
 
     return g
 

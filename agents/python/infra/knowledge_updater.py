@@ -116,44 +116,116 @@ class LivingKnowledge(BaseModel):
 
 # ── Web research ───────────────────────────────────────────────────────────────
 
+async def _call_with_web_search(prompt: str, model: str = "claude-sonnet-4-5") -> str:
+    """Call ElectronHub with web_search tool enabled for live research."""
+    import json as _json
+    import aiohttp as _aio
+
+    api_key  = os.environ["ELECTRONHUB_API_KEY"]
+    base_url = os.environ.get("ELECTRONHUB_BASE_URL", "https://api.electronhub.ai/v1")
+
+    payload = {
+        "model": model,
+        "max_tokens": 2000,
+        "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+    async with _aio.ClientSession() as session:
+        async with session.post(
+            f"{base_url.rstrip('/')}/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json=payload,
+            timeout=_aio.ClientTimeout(total=90),
+        ) as resp:
+            if resp.status != 200:
+                # Fallback to plain complete() without web search
+                return ""
+            data = await resp.json()
+
+    # Extract text from response (may include tool_use blocks)
+    texts = [
+        block["text"]
+        for block in data.get("content", [])
+        if block.get("type") == "text"
+    ]
+    return " ".join(texts)
+
+
 async def research_trending_libraries() -> TrendingLibraries:
-    """Research current best React UI libraries and tools via ElectronHub."""
-    # CURSOR: This calls ElectronHub with web search tool
-    # For now uses the agent's training knowledge; future: add web_search tool
+    """Research current best React UI libraries via live web search."""
+    year  = datetime.now().year
+    month = datetime.now().strftime("%B %Y")
+
+    prompt = f"""Search the web and answer: what are the best React UI libraries for developer tools in {month}?
+
+Research specifically:
+1. Best component library for Next.js + shadcn/ui projects (primary recommendation + backup)
+2. Best data table library (TanStack Table still best? anything newer?)
+3. Best chart library for dense data tools (Observable Plot? Recharts? D3?)
+4. Best icon library in {year} (Lucide? Radix Icons? Phosphor?)
+5. Best form validation library (React Hook Form + Zod still standard?)
+6. Best animation (Framer Motion? CSS-only? anything new?)
+7. Standard for streaming AI output in React (Vercel AI SDK useChat?)
+8. What libraries to avoid — which became dated or deprecated in {year}?
+
+Focus on: composio.dev / linear.app / hex.tech aesthetic. Dense, developer-native.
+NOT consumer SaaS libraries. Be specific about versions and trade-offs."""
+
+    raw = ""
+    try:
+        raw = await _call_with_web_search(prompt)
+    except Exception as e:
+        logger.warning(f"[forge:knowledge] Web search failed: {e} — using training knowledge")
+
+    # Parse the text response into structured form
     result = await complete_json(
         task="research-sponsor-apis",
         response_model=TrendingLibraries,
         messages=[{
             "role": "user",
-            "content": f"""What are the best and most current React UI component libraries and tools in {datetime.now().year}?
+            "content": f"""Based on this research about React libraries in {month}, extract structured recommendations.
 
-Research these specifically:
-1. Best component library for Next.js shadcn/ui-based projects (primary + secondary)
-2. Best data table library
-3. Best chart library for data-heavy tools
-4. Best icon library (consistency, bundle size)
-5. Best form library
-6. Best animation library
-7. MOST IMPORTANT: What is the standard library for streaming AI output in React?
-8. What libraries should be avoided (dated, bad DX, wrong aesthetic)?
+Research findings:
+{raw if raw else "(web search unavailable — use best training knowledge)"}
 
-Focus on: developer tool aesthetic (like Composio/Linear/Hex), not consumer app aesthetic.
-Prioritize libraries used by Vercel, Linear, and other developer-tool companies.
-Current date: {datetime.now().strftime('%B %Y')}""",
+Current date: {month}
+Fill all fields with specific, opinionated recommendations.""",
         }],
-        temperature=0.3,
+        temperature=0.2,
     )
     return result
 
 
 async def research_winning_concepts() -> WinningConcepts:
-    """Research what concepts are winning hackathons right now."""
+    """Research winning hackathon concepts via live web search."""
+    year  = datetime.now().year
+    month = datetime.now().strftime("%B %Y")
+
+    prompt = f"""Search for: what AI agent project types are winning hackathons in {month}?
+Look for recent hackathon results on Devpost, Lablab.ai, MLH, and Microsoft AI hackathons.
+Find: what won, what lost, what judges rewarded, what concepts were overused."""
+    raw = ""
+    try:
+        raw = await _call_with_web_search(prompt)
+    except Exception as e:
+        logger.warning(f"[forge:knowledge] Web search failed for concepts: {e}")
+
     result = await complete_json(
         task="analyze-competitors",
         response_model=WinningConcepts,
         messages=[{
             "role": "user",
-            "content": f"""What AI agent project TYPES are winning hackathons in {datetime.now().year}?
+            "content": f"""Based on this research, extract winning hackathon concept patterns in {month}.
+
+Research:
+{raw if raw else "(use best training knowledge)"}
+
+What AI agent project TYPES are winning hackathons in {datetime.now().year}?
 
 Research based on:
 - Microsoft AI Agents Hackathon 2025 winners (RiskWise won $20k with supply chain risk analysis)

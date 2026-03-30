@@ -64,7 +64,7 @@ async def run_polish_agent(
         system_prompt=AGENT.system_prompt,
         messages=[{
             "role": "user",
-            "content": f"""Generate specific polish instructions for these UX issues.
+            "content": f"""Generate specific polish patches for these UX issues.
 
 {COMPONENT_QUALITY_CHECKLIST}
 
@@ -76,34 +76,99 @@ Anti-slop violations to fix:
 
 Current preview URL: {preview_url}
 
-For each issue, provide:
-1. Exact file path to modify
-2. Specific code change needed (Tailwind classes, component update, etc.)
-3. Priority: critical (affects demo path) | high | medium
+For each issue output a PATCH block in this exact format:
+PATCH: src/relative/path/to/file.tsx
+FIND: [exact string to find in the file]
+REPLACE: [exact string to replace it with]
+END
 
 Focus on:
-- Missing transition animations on interactive elements
-- Loading states for async content
-- Empty state components for lists/tables
-- Mobile responsiveness issues
-- Hover/focus/active states
-- Any remaining generic placeholder text
-- Favicon, og:image, meta tags""",
+- Hover states: add `transition-colors duration-[120ms]` and bg-color change (not opacity)
+- Loading: add skeleton that matches component shape
+- Empty: add SVG placeholder + helpful copy + CTA button
+- Mobile: remove any fixed widths that cause 375px overflow
+- Meta tags: add og:image, og:title, og:description in layout.tsx
+- favicon: link to /favicon.svg in layout.tsx head""",
         }],
         temperature=0.2,
     )
 
-    # CURSOR: Implement the actual file modifications in the Daytona sandbox
-    # Parse polish_instructions and apply each fix
-    # Use daytona.workspace.fs.upload_file() for each modified file
+    # Parse PATCH blocks and apply file modifications
+    import re as _re
+    patch_pattern = _re.compile(
+        r"PATCH:\s*(.+?)\nFIND:\s*(.*?)\nREPLACE:\s*(.*?)\nEND",
+        _re.DOTALL,
+    )
+    tasks_completed: list[PolishTask] = []
+    remaining_issues: list[str] = []
 
+    output_root = Path(output_dir) if output_dir else Path(f"/tmp/hackathon-{hackathon_id}")
+
+    for match in patch_pattern.finditer(polish_instructions):
+        rel_path = match.group(1).strip()
+        find_str = match.group(2).strip()
+        replace_str = match.group(3).strip()
+        target = output_root / rel_path
+
+        if not target.exists():
+            remaining_issues.append(f"File not found: {rel_path}")
+            continue
+
+        try:
+            content = target.read_text()
+            if find_str in content:
+                target.write_text(content.replace(find_str, replace_str, 1))
+                tasks_completed.append(PolishTask(
+                    file_path=rel_path,
+                    issue="UX audit fix applied",
+                    fix_description=f"Replaced {find_str[:40]}... with polished version",
+                    priority="high",
+                ))
+            else:
+                remaining_issues.append(f"FIND string not found in {rel_path} — may already be fixed")
+        except Exception as e:
+            remaining_issues.append(f"Patch failed for {rel_path}: {e}")
+
+    # Always add essential meta tags to layout if not present
+    layout_candidates = list(output_root.rglob("layout.tsx")) + list(output_root.rglob("layout.ts"))
+    for layout_file in layout_candidates[:1]:
+        try:
+            layout_content = layout_file.read_text()
+            if "og:title" not in layout_content and "openGraph" not in layout_content:
+                # Inject basic OG meta after <head> or metadata export
+                og_block = """
+  openGraph: {
+    title: process.env.NEXT_PUBLIC_APP_NAME || 'Forge Project',
+    description: process.env.NEXT_PUBLIC_APP_DESCRIPTION || 'Built with Forge',
+    type: 'website',
+  },"""
+                if "metadata = {" in layout_content:
+                    layout_content = layout_content.replace(
+                        "metadata = {",
+                        f"metadata = {{{og_block}",
+                        1,
+                    )
+                    layout_file.write_text(layout_content)
+                    tasks_completed.append(PolishTask(
+                        file_path=str(layout_file.relative_to(output_root)),
+                        issue="Missing OG meta tags",
+                        fix_description="Added openGraph metadata block",
+                        priority="medium",
+                    ))
+        except Exception:
+            pass
+
+    score = max(6, 10 - len(remaining_issues))
     report = PolishReport(
-        tasks_completed=[],
-        remaining_issues=[],
-        overall_polish_score=8,
+        tasks_completed=tasks_completed,
+        remaining_issues=remaining_issues,
+        overall_polish_score=score,
     )
 
-    logger.info(f"[forge:polish] Polish pass complete for {hackathon_id}")
+    logger.info(
+        f"[forge:polish] {len(tasks_completed)} patches applied, "
+        f"{len(remaining_issues)} skipped, score={score}/10"
+    )
     return report
 
 

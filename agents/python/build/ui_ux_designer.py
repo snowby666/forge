@@ -330,6 +330,7 @@ async def generate_screen_and_components(
     personality: str,
     tokens_output: DesignTokensOutput,
     stitch_screens: list[dict],
+    extra_constraints: str = "",
 ) -> tuple[list[ScreenSpec], list[ComponentSpec]]:
     """Generate all screen and component specifications."""
 
@@ -369,7 +370,8 @@ REQUIREMENTS:
 ANTI-SLOP SELF-CHECK:
 List which specific anti-slop rules this design avoids (be specific, not generic).
 
-Stitch design references available: {len(stitch_screens)} screens generated.""",
+Stitch design references available: {len(stitch_screens)} screens generated.
+{extra_constraints}""",
         }],
         temperature=0.3,
     )
@@ -567,15 +569,48 @@ async def run_ui_ux_agent(
         anti_slop_self_check=[],  # filled during generation
     )
 
-    # Step 5: Self-critique (iterates if it fails)
+    # Step 5: Self-critique — iterate if score < 7.0
     max_critique_attempts = 2
     for attempt in range(max_critique_attempts):
         critique = await critique_own_design(design_spec)
         if critique["approved"] or attempt == max_critique_attempts - 1:
             break
-        logger.info(f"[forge:design] Design failed self-critique, iterating (attempt {attempt + 1})")
-        # Re-generate with critique issues as additional constraints
-        # CURSOR: implement iteration logic here
+
+        logger.info(f"[forge:design] Design failed self-critique (score={critique.get('overall_score', 0):.1f}), iterating (attempt {attempt + 1})")
+        issues = "\n".join(f"- {issue}" for issue in critique.get("issues_found", []))
+
+        # Re-generate screens and components with specific fix constraints added
+        screens, components = await generate_screen_and_components(
+            project_plan=project_plan,
+            personality=personality,
+            tokens_output=tokens,
+            stitch_screens=stitch_screens,
+            extra_constraints=f"""PREVIOUS CRITIQUE FAILED — FIX THESE SPECIFIC ISSUES BEFORE ANYTHING ELSE:
+
+{issues}
+
+Critique scores:
+- Reference site match: {critique.get('first_impression_score', 0)}/10
+- Visual polish: {critique.get('visual_polish_score', 0)}/10
+- Interaction quality: {critique.get('interaction_quality_score', 0)}/10
+- Content realism: {critique.get('content_realism_score', 0)}/10
+- Demo path clarity: {critique.get('demo_path_clarity_score', 0)}/10
+- Brand coherence: {critique.get('brand_coherence_score', 0)}/10
+
+Do NOT repeat the same design decisions that caused these failures.""",
+        )
+
+        design_spec = DesignSpec(
+            personality=personality,
+            personality_rationale=design_spec.personality_rationale,
+            design_token_rationale=design_spec.design_token_rationale,
+            screens=screens,
+            components=components,
+            user_flow=design_spec.user_flow,
+            demo_entry_route=next((s.route for s in screens if s.is_demo_entry), "/"),
+            demo_total_steps=sum(1 for s in screens if s.demo_path_position),
+            anti_slop_self_check=design_spec.anti_slop_self_check,
+        )
 
     # Step 6: Sync to Figma
     figma_id = await sync_to_figma(design_spec, tokens)

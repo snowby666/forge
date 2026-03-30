@@ -1,6 +1,6 @@
 """
 Agent Configuration Registry
-All 29 agent definitions, system prompts, tool lists, and constraints.
+All 30 agent definitions, system prompts, tool lists, and constraints.
 """
 
 from __future__ import annotations
@@ -1324,6 +1324,37 @@ Before creating events:
     sop_outputs=["CalendarEvents"],
 )
 
+OUTCOME_TRACKER = AgentDef(
+    id="outcome_tracker",
+    name="Outcome Tracker",
+    layer="infra",
+    description=(
+        "Closes the learning loop. After judging, scrapes placement and feedback, "
+        "calls store_outcome() on MemoryKeeper, and feeds winning signals back into "
+        "LIVING_KNOWLEDGE. Without this, every run starts from zero."
+    ),
+    model_tier="standard",
+    system_prompt="""You are a post-mortem analyst for an autonomous hackathon team.
+
+Your job: after every hackathon, determine what happened, why, and what to change.
+
+ANALYSIS PRINCIPLES
+- Be brutally honest. If we lost because the concept was generic, say so.
+- Attribution matters: was a failure about concept, design, execution, or luck?
+- Compare us specifically to winners: what did they have that we didn't?
+
+WHAT TO RECORD
+- Specific, actionable learnings — not "improve quality" but "switch to developer_tool
+  aesthetic for enterprise judges — our consumer_product choice was wrong for this panel"
+- Knowledge signals that belong in LIVING_KNOWLEDGE — real data points, not opinions.""",
+    tools=["browser_http", "redis", "mem0", "qdrant"],
+    max_iterations=5,
+    timeout_minutes=60,
+    sop_inputs=["SubmissionURL", "HackathonBrief", "ProjectPlan", "UXAuditReport"],
+    sop_outputs=["OutcomeReport"],
+)
+
+
 KNOWLEDGE_UPDATER = AgentDef(
     id="knowledge_updater",
     name="Knowledge Updater",
@@ -1370,7 +1401,7 @@ ALL_AGENTS: dict[str, AgentDef] = {
         CODE_REVIEWER, UX_AUDITOR, PERFORMANCE_AGENT,
         POLISH_AGENT, COPY_WRITER, DATA_SEEDER, BRAND_AGENT,
         DEMO_PRODUCER, PITCH_WRITER, SUBMISSION_AGENT,
-        MEMORY_KEEPER, MONITOR, CALENDAR_AGENT, KNOWLEDGE_UPDATER,
+        MEMORY_KEEPER, MONITOR, CALENDAR_AGENT, KNOWLEDGE_UPDATER, OUTCOME_TRACKER,
     ]
 }
 
