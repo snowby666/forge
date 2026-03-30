@@ -89,6 +89,12 @@ sequenceDiagram
     CMD->>L6: Submission Agent
     L6->>DB: Publish SubmissionURL
     CMD-->>Human: "Submitted ✓"
+
+    Note over CMD,DB: 36 hours after deadline
+    CMD->>L7: Trigger Outcome Tracker
+    L7->>DB: Scrape placement + feedback
+    L7->>DB: store_outcome() — memory loop closed
+    L7->>DB: Feed signal to LIVING_KNOWLEDGE
 ```
 
 ---
@@ -186,7 +192,8 @@ stateDiagram-v2
 
     run_polish --> run_submission: all 4 polish agents done
 
-    run_submission --> [*]: SubmissionURL published
+    run_submission --> schedule_outcome: SubmissionURL published
+    schedule_outcome --> [*]: Outcome Tracker scheduled\n(fires 36h after deadline)
 ```
 
 ---

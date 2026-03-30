@@ -46,7 +46,7 @@ COMMANDER = AgentDef(
     model_tier="standard",
     system_prompt="""You are the Commander of an autonomous hackathon team. You have full authority 
 over a dedicated server with an RTX 4060 GPU, unlimited LLM access via ElectronHub, and a suite 
-of 21 specialist agents.
+of 29 specialist agents.
 
 Your operating principles:
 
@@ -368,7 +368,7 @@ Output: DbSchema + ApiContract + DependencyGraph""",
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LAYER 3: BUILD (6 agents)
+# LAYER 3: BUILD (7 agents)
 # ─────────────────────────────────────────────────────────────────────────────
 
 UI_UX_DESIGNER = AgentDef(
@@ -1188,7 +1188,7 @@ Treat this with the care of deploying to production.""",
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LAYER 7: INFRASTRUCTURE (3 agents, always running)
+# LAYER 7: INFRASTRUCTURE (6 agents, always running)
 # ─────────────────────────────────────────────────────────────────────────────
 
 MEMORY_KEEPER = AgentDef(

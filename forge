@@ -139,6 +139,7 @@ async def cmd_status(args):
             "verify":       ["code_reviewer", "ux_auditor", "performance"],
             "polish":       ["polish", "copy_writer", "data_seeder", "brand"],
             "submission":   ["demo_producer", "pitch_writer", "submission"],
+            "infra":        ["memory_keeper", "monitor", "calendar", "knowledge_updater", "outcome_tracker"],
         }
 
         STATUS_ICONS = {

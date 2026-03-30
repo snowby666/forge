@@ -202,7 +202,7 @@ async def run_full_dry_run() -> None:
     results: dict[str, bool] = {}
 
     print("\n" + "=" * 60)
-    print("Forge v2 — Full System Test")
+    print("Forge — Full System Test (30 agents)")
     print("=" * 60 + "\n")
 
     tests = [

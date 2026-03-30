@@ -8,7 +8,7 @@ The design brain of Forge. Everything UI-related flows through `config/design_co
 
 ```mermaid
 graph TD
-    subgraph FROZEN["🔒 Frozen — never modified by agents"]
+    subgraph FROZEN["Frozen — never modified by agents"]
         RS["REFERENCE_SITES\nComposio, Hex, Riff, Linear, Vercel\nThe real standard"]
         SDL["STATIC_DESIGN_LAWS\n7 timeless laws\nData density, code as content,\nstatus visibility, precision palette,\ntypography, components, 30-sec rule"]
         ASR["ANTI_SLOP_RULES\n38 specific patterns\nto block and avoid"]
@@ -19,7 +19,7 @@ graph TD
         SP["SYSTEM_PROMPT_DESIGN_AGENT\nSYSTEM_PROMPT_FRONTEND_AGENT\nSYSTEM_PROMPT_STRATEGY_AGENT"]
     end
 
-    subgraph LIVING["🔄 Living — updated by Knowledge Updater"]
+    subgraph LIVING["Living — updated by Knowledge Updater"]
         LK["LIVING_KNOWLEDGE dict\n- trending_component_libraries\n- winning_aesthetic_2026\n- winning_concept_patterns_2026\n- frontend_stack_2026\n- backend_stack_2026"]
     end
 

@@ -750,7 +750,7 @@ async def run_worker() -> None:
     redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
     pubsub = redis.pubsub()
     await pubsub.subscribe("agent:trigger")
-    logger.info("[forge:build_verify] Worker ready (6 agents)")
+    logger.info("[forge:build_verify] Worker ready — handles: integration_engineer, test_engineer, devops, security, code_reviewer, performance")
 
     async for message in pubsub.listen():
         if message["type"] != "message":

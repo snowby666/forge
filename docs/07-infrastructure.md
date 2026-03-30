@@ -86,7 +86,7 @@ graph TD
         C1["checkpoint:{id}:concept_approval\n'pending' | {approved: true, concept_index: 0}\nTTL: 24h"]
         C2["checkpoint:{id}:design_approval\n'pending' | {approved: true}\nTTL: 8h"]
         C3["checkpoint:{id}:quality_review\n'pending' | {approved: true, materials: {...}}\nTTL: 4h"]
-        C4["checkpoint:{id}:submission_approval\n'pending' | {approved: true}\nTTL: 2h\n⚠️ Never auto-approves"]
+        C4["checkpoint:{id}:submission_approval\n'pending' | {approved: true}\nTTL: 2h\n[NEVER auto-approves]"]
     end
 
     subgraph PUBSUB["Pub/sub channels"]

@@ -11,7 +11,7 @@ Forge is an autonomous hackathon swarm. It discovers opportunities, builds full-
 | Doc | What's in it |
 |---|---|
 | [01 — Architecture](./01-architecture.md) | Full system diagram, language split, communication model, crash recovery |
-| [02 — Agent Roster](./02-agent-roster.md) | All 30 agents with roles, SOP artifacts, tiers, failure modes |
+| [02 — Agent Roster](./02-agent-roster.md) | All 30 agents with roles, SOP artifacts, tiers, failure modes. Includes Outcome Tracker (agent 30). |
 | [03 — Execution Flow](./03-execution-flow.md) | Phase-by-phase timeline, Gantt chart, Commander state machine, dependency graph |
 | [04 — LLM Routing](./04-llm-routing.md) | ElectronHub tiers, complete task→model table (50 entries), fallback chain |
 | [05 — Design Constitution](./05-design-constitution.md) | Reference sites, static laws, anti-slop rules, living knowledge system |
@@ -47,13 +47,14 @@ forge run        ← full autonomous cycle:
                     L2: Strategy Director → PM → Tech Architect
                     [human: design approve, ~10 min]
                     L3: UI/UX Designer → Frontend + Backend + Integration + Test + DevOps + Security
-                    L4: Code Reviewer + UX Auditor 🛡️ + Performance Agent
+                    L4: Code Reviewer + UX Auditor [veto] + Performance Agent
                     [human: quality review, ~20 min]
                     L5: Polish + Copy Writer + Data Seeder + Brand Agent
                     L6: Demo Producer + Pitch Writer
                     [human: submit approve, ~10 min]
                     L6: Submission Agent → SubmissionURL
-forge status     ← live agent view (✓ ⟳ · ✗)
+                    L7: Outcome Tracker → store_outcome() → Memory loop closed
+forge status     ← live agent view (check done pending failed)
 forge approve    ← human checkpoint interface
 forge knowledge  ← update design + strategy intelligence
 ```

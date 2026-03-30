@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# setup.sh — Bootstrap the 22-agent backbone
+# setup.sh — Bootstrap Forge (30 agents)
 set -euo pipefail
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 log()  { echo -e "${GREEN}[setup]${NC} $1"; }
 warn() { echo -e "${YELLOW}[warn]${NC} $1"; }
 err()  { echo -e "${RED}[error]${NC} $1"; exit 1; }
 
-log "Forge v2 — Setup"
+log "Forge — 30-agent autonomous hackathon swarm"
 
 command -v docker &>/dev/null   || err "Docker not installed"
 command -v python3 &>/dev/null  || err "Python 3.11+ required"

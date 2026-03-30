@@ -8,7 +8,7 @@ Forge is a 30-agent autonomous system organized into 8 layers. Python handles al
 
 ```mermaid
 graph TB
-    subgraph HUMAN["👤 Human  (~55 min total)"]
+    subgraph HUMAN["Human  (~55 min total)"]
         H1["Concept pick\n15 min"]
         H2["Design approve\n10 min"]
         H3["Quality review\n20 min"]
@@ -66,6 +66,7 @@ graph TB
         MON["Monitor"]
         CAL["Calendar Agent"]
         KU["Knowledge Updater"]
+        OT["Outcome Tracker"]
     end
 
     subgraph INFRA["Self-hosted services"]
@@ -114,6 +115,7 @@ graph TB
     BS --> BB
 
     L1 & L2 & L3 & L4 & L5 & L6 & L7 -->|all LLM calls| EH
+    OT -->|post-judging trigger| MK
     FE --> VCL
     BE --> RLW
 
@@ -213,4 +215,5 @@ PostgreSQL checkpointing via LangGraph means the Commander survives crashes. Tem
 | LangGraph + PostgreSQL checkpoints | Commander survives server crashes. State is durable, not in-memory. |
 | UX Auditor has veto power | Prevents AI slop from reaching judges. Score < 7.0 or any anti-slop violation = blocked. |
 | Knowledge Updater modifies `design_constitution.py` | Living knowledge (stacks, trends) updates automatically. Static laws never change. |
+| Outcome Tracker closes the memory loop | `store_outcome()` is called after every judging day. Cross-hackathon learning actually accumulates. |
 | Single ElectronHub gateway | One entry point for all LLM calls. Routing, fallback, cost tracking in one place. |

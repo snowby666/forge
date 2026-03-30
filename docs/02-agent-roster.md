@@ -52,6 +52,7 @@ graph TD
         MON["Monitor\nmonitor_and_calendar.py"]
         CAL["Calendar Agent\nmonitor_and_calendar.py"]
         KU["Knowledge Updater\nknowledge_updater.py"]
+        OT["Outcome Tracker\noutcome_tracker.py"]
     end
 
     L0 --> L1 --> L2 --> L3 --> L4 --> L5 --> L6
