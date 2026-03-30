@@ -23,7 +23,7 @@ graph TD
         TA["Tech Architect\npm_and_architect.py"]
     end
     subgraph L3["Layer 3 — Build"]
-        UX["UI/UX Designer ⭐\nui_ux_designer.py"]
+        UX["UI/UX Designer (*)\nui_ux_designer.py"]
         FE["Frontend Engineer\nfrontend_and_backend.py"]
         BE["Backend Engineer\nfrontend_and_backend.py"]
         IE["Integration Engineer\nanalysis_agents.py"]
@@ -33,7 +33,7 @@ graph TD
     end
     subgraph L4["Layer 4 — Verify"]
         CR["Code Reviewer"]
-        UA["UX Auditor 🛡️\nux_auditor.py"]
+        UA["UX Auditor [veto]\nux_auditor.py"]
         PA["Performance Agent"]
     end
     subgraph L5["Layer 5 — Polish"]

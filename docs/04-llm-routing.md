@@ -13,7 +13,7 @@ graph LR
     end
 
     subgraph GATEWAY["config/electronhub.py"]
-        RESOLVE["resolve(task)\n→ Tier → Model"]
+        RESOLVE["resolve(task)\n-> Tier -> Model"]
         FALLBACK["Fallback chain\non 429 / 5xx"]
         CLIENT["AsyncOpenAI singleton"]
     end

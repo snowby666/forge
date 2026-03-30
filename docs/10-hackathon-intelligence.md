@@ -20,7 +20,7 @@ graph TD
         R5["Competition size\nmax 20 pts\n<100 teams=20, <300=10, 300+=5"]
     end
 
-    RESULT{"Score ≥ 65?"}
+    RESULT{"Score >= 65?"}
     REGISTER["Register + schedule\ncalendar events"]
     SKIP["Skip — not worth it"]
 
@@ -44,9 +44,9 @@ graph LR
     end
 
     subgraph PARALLEL["4 agents run simultaneously"]
-        CA["Competitor Analyst\n→ CompReport\n\nWhat WON here before\nWhat FAILED\nWhat GAP exists"]
-        JP["Judge Profiler\n→ JudgeProfile\n\nWho are these judges\nWhat do they care about\nHow technical are they"]
-        SR["Sponsor Researcher\n→ SponsorMap\n\nWhich sponsors have prizes\nHow complex is each API\nPrize ÷ hours = value score"]
+        CA["Competitor Analyst\n-> CompReport\n\nWhat WON here before\nWhat FAILED\nWhat GAP exists"]
+        JP["Judge Profiler\n-> JudgeProfile\n\nWho are these judges\nWhat do they care about\nHow technical are they"]
+        SR["Sponsor Researcher\n-> SponsorMap\n\nWhich sponsors have prizes\nHow complex is each API\nPrize ÷ hours = value score"]
     end
 
     subgraph OUT["Strategy Director synthesizes all 4"]
@@ -145,15 +145,15 @@ Derived from real hackathon outcomes stored in Mem0:
 
 ```mermaid
 graph TD
-    subgraph WIN["✅ Winning patterns"]
-        W1["Agents that CLOSE LOOPS\nread system A → decide → write system B\nComposio pattern"]
+    subgraph WIN["OK: Winning patterns"]
+        W1["Agents that CLOSE LOOPS\nread system A -> decide -> write system B\nComposio pattern"]
         W2["Non-technical users + technical systems\n+ safety guardrails\nBridges skill gap with visible safety"]
         W3["Domain-specific with quantified impact\n'47% faster PO resolution'\nnot 'improves workflow efficiency'"]
         W4["Multi-system integration as the demo\nShows real complexity, not just a chatbot"]
         W5["Transparent agent reasoning\nShow the plan, the tool calls, the steps\nComposio execution log UI"]
     end
 
-    subgraph LOSE["❌ Losing patterns"]
+    subgraph LOSE["FAIL: Losing patterns"]
         L1["Generic chatbot + document upload\n500 other teams built this"]
         L2["RAG over PDFs\nwithout a specific, compelling use case"]
         L3["Another AI writing assistant\nGrammarly, Notion AI exist"]
@@ -219,7 +219,7 @@ The specific version names: who Sarah is, the exact metric (23%), what time (aft
 ```mermaid
 flowchart TD
     SM["SponsorMap\nAll available prizes"]
-    FILTER["Filter:\nIntegration hours ≤ 4h total\nNatural to the product"]
+    FILTER["Filter:\nIntegration hours <= 4h total\nNatural to the product"]
     RANK["Rank by value_score\n= prize × confidence ÷ hours"]
     SELECT["Select top 2-3\nThat are visible in the UI"]
     BUILD["Integration Engineer\nbuilds in priority order"]

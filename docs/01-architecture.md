@@ -33,7 +33,7 @@ graph TB
     end
 
     subgraph L3["Layer 3 — Build  (parallel)"]
-        UX["UI/UX Designer ⭐"]
+        UX["UI/UX Designer (*)"]
         FE["Frontend Engineer"]
         BE["Backend Engineer"]
         IE["Integration Engineer"]
@@ -44,7 +44,7 @@ graph TB
 
     subgraph L4["Layer 4 — Verify  (continuous)"]
         CR["Code Reviewer"]
-        UA["UX Auditor 🛡️"]
+        UA["UX Auditor [veto]"]
         PA["Performance Agent"]
     end
 

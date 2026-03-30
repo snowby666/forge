@@ -16,7 +16,7 @@ graph TB
 
     subgraph EPISODIC["Episodic memory — Mem0 (permanent)"]
         M1["What won / lost\nWhich concepts worked\nWhat judges responded to\nWhich sponsor APIs were easy"]
-        M2["Queryable by semantic similarity\n'AI agents automation theme'\n→ past decisions that match"]
+        M2["Queryable by semantic similarity\n'AI agents automation theme'\n-> past decisions that match"]
     end
 
     subgraph VECTOR["Vector storage — Qdrant (permanent)"]
@@ -50,7 +50,7 @@ sequenceDiagram
     MEM->>QD: embed("MetricCard data dashboard compact")
     QD-->>MEM: Search results (similarity scored)
 
-    alt score ≥ 0.85
+    alt score >= 0.85
         MEM-->>AGT: Found similar component\nfrom hackathon-xyz-123
         AGT->>AGT: Adapt existing (not regenerate)
         Note over AGT,EH: ~50% fewer tokens spent
@@ -193,12 +193,14 @@ If Qdrant is fresh (first run), this creates all 5 collections with correct vect
 
 ## Growth over time
 
-```mermaid
-xychart-beta
-    title "Forge knowledge growth (illustrative)"
-    x-axis ["Run 1", "Run 5", "Run 10", "Run 20", "Run 50"]
-    y-axis "Reuse rate %" 0 --> 60
-    line [0, 8, 20, 35, 55]
+```
+Artifact reuse rate over time (illustrative):
+
+Run 1   ░░░░░░░░░░░░░░░░░░░░  0%
+Run 5   █░░░░░░░░░░░░░░░░░░░  8%
+Run 10  ████░░░░░░░░░░░░░░░░  20%
+Run 20  ███████░░░░░░░░░░░░░  35%
+Run 50  ███████████░░░░░░░░░  55%
 ```
 
 By run 10+, the system reuses ~20% of components (particularly: data tables, status badges, sidebar navigation, auth flows). By run 50+, ~50% of common components are adapted from past runs rather than generated from scratch — roughly halving the LLM cost for those components.

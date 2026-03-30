@@ -38,7 +38,7 @@ sequenceDiagram
         CMD->>L2: Trigger PM
         CMD->>L2: Trigger Tech Architect
     end
-    L2->>DB: Publish ApiContract ← immediately on schema design
+    L2->>DB: Publish ApiContract <- immediately on schema design
     Note over DB: Frontend unblocks here, not when backend is done
 
     CMD-->>Human: Slack: "Design ready for review"
@@ -56,7 +56,7 @@ sequenceDiagram
 
     par Verification runs continuously
         CMD->>L4: Code Reviewer
-        CMD->>L4: UX Auditor 🛡️
+        CMD->>L4: UX Auditor [veto]
         CMD->>L4: Performance Agent
     end
 
@@ -102,56 +102,56 @@ gantt
     axisFormat %H:%M
 
     section Intelligence
-    Scout + register          :done, 00:00, 1h
-    Competitor Analyst        :done, 00:00, 1h
-    Judge Profiler            :done, 00:00, 1h
-    Sponsor Researcher        :done, 00:00, 1h
+    Scout + register          :done, 00:00, 01:00
+    Competitor Analyst        :done, 00:00, 01:00
+    Judge Profiler            :done, 00:00, 01:00
+    Sponsor Researcher        :done, 00:00, 01:00
 
     section Checkpoint 1
-    Human: concept pick       :crit, milestone, 01:00, 15min
+    Human: concept pick       :crit, 01:00, 01:15
 
     section Strategy
-    Strategy Director         :done, 01:00, 30m
-    PM                        :done, 01:30, 45m
-    Tech Architect            :done, 01:30, 45m
+    Strategy Director         :done, 01:15, 01:45
+    PM                        :done, 01:45, 02:30
+    Tech Architect            :done, 01:45, 02:30
 
     section Checkpoint 2
-    Human: design approve     :crit, milestone, 02:30, 10min
+    Human: design approve     :crit, 02:30, 02:40
 
     section Design
-    UI/UX Designer            :done, 02:30, 3h
+    UI/UX Designer            :done, 02:40, 05:30
 
     section Build (parallel)
-    Frontend Engineer         :active, 05:30, 10h
-    Backend Engineer          :active, 02:30, 8h
-    Integration Engineer      :active, 05:30, 6h
-    Test Engineer             :active, 05:30, 6h
-    DevOps                    :active, 05:30, 2h
-    Security Agent            :active, 13:30, 1h
+    Frontend Engineer         :active, 05:30, 15:30
+    Backend Engineer          :active, 02:40, 10:30
+    Integration Engineer      :active, 05:30, 11:30
+    Test Engineer             :active, 05:30, 11:30
+    DevOps                    :active, 05:30, 07:30
+    Security Agent            :active, 13:30, 14:30
 
     section Verify (continuous)
-    Code Reviewer             :active, 05:30, 10h
-    UX Auditor                :active, 05:30, 10h
-    Performance Agent         :active, 05:30, 10h
+    Code Reviewer             :active, 05:30, 15:30
+    UX Auditor                :active, 05:30, 15:30
+    Performance Agent         :active, 05:30, 15:30
 
     section Checkpoint 3
-    Human: quality review     :crit, milestone, 15:30, 20min
+    Human: quality review     :crit, 15:30, 16:00
 
     section Polish (parallel)
-    Polish Agent              :done, 16:00, 2h
-    Copy Writer               :done, 16:00, 1h
-    Data Seeder               :done, 16:00, 1h
-    Brand Agent               :done, 16:00, 1h
+    Polish Agent              :done, 16:00, 18:00
+    Copy Writer               :done, 16:00, 17:00
+    Data Seeder               :done, 16:00, 17:00
+    Brand Agent               :done, 16:00, 17:00
 
     section Submission prep (parallel)
-    Demo Producer             :done, 16:00, 2h
-    Pitch Writer              :done, 16:00, 1h
+    Demo Producer             :done, 16:00, 18:00
+    Pitch Writer              :done, 16:00, 17:00
 
     section Checkpoint 4
-    Human: submit approve     :crit, milestone, 18:00, 10min
+    Human: submit approve     :crit, 18:00, 18:10
 
     section Submit
-    Submission Agent          :done, 18:10, 30m
+    Submission Agent          :done, 18:10, 18:40
 ```
 
 ---
@@ -166,7 +166,7 @@ stateDiagram-v2
 
     generate_concepts --> wait_concept_approval: concepts published to Redis\nSlack notified
 
-    wait_concept_approval --> run_planning: human approved\n(or timeout → auto-select)
+    wait_concept_approval --> run_planning: human approved\n(or timeout -> auto-select)
     wait_concept_approval --> [*]: errors in intel phase
 
     run_planning --> run_design: PM + Architect done\nApiContract published
@@ -178,7 +178,7 @@ stateDiagram-v2
     run_build --> run_verification: Frontend done\n(Backend may still run)
     run_build --> [*]: frontend failed after 3 attempts
 
-    run_verification --> wait_quality_review: UX Auditor score ≥ 7.0\nSlack notified
+    run_verification --> wait_quality_review: UX Auditor score >= 7.0\nSlack notified
 
     run_verification --> run_build: UX Auditor blocked\nretrigger with fix instructions
 
@@ -225,10 +225,10 @@ flowchart TD
     BUILD_DONE["Build layer done\nPreviewURL available"]
     AUDIT["UX Auditor\nbrowses PreviewURL\nscreenshots 375px + 1440px\nruns Lighthouse"]
     SLOP{"Any anti-slop\nviolation?"}
-    SCORE{"Score ≥ 7.0\n(weighted avg)?"}
-    LIGHTHOUSE{"Lighthouse\nAccessibility ≥ 85?"}
-    APPROVED["✅ UXAuditReport: approved\nCommander continues to Checkpoint 3"]
-    BLOCK1["❌ BLOCKED\nIssue fix instructions\nto Polish Agent"]
+    SCORE{"Score >= 7.0\n(weighted avg)?"}
+    LIGHTHOUSE{"Lighthouse\nAccessibility >= 85?"}
+    APPROVED["OK: UXAuditReport: approved\nCommander continues to Checkpoint 3"]
+    BLOCK1["FAIL: BLOCKED\nIssue fix instructions\nto Polish Agent"]
     POLISH_FIX["Polish Agent applies\nspecific targeted fixes"]
     REAUDIT["Re-audit\n(second attempt)"]
     FINAL{"Final score?"}
@@ -239,9 +239,9 @@ flowchart TD
     SLOP -->|yes| BLOCK1
     SLOP -->|no| SCORE
     SCORE -->|< 7.0| BLOCK1
-    SCORE -->|≥ 7.0| LIGHTHOUSE
+    SCORE -->|>= 7.0| LIGHTHOUSE
     LIGHTHOUSE -->|< 85| BLOCK1
-    LIGHTHOUSE -->|≥ 85| APPROVED
+    LIGHTHOUSE -->|>= 85| APPROVED
     BLOCK1 --> POLISH_FIX
     POLISH_FIX --> REAUDIT
     REAUDIT --> FINAL
@@ -284,7 +284,7 @@ graph LR
     CB & HB & JP --> PP
 
     DB["DbSchema"]
-    AC["ApiContract ⚡"]
+    AC["ApiContract !"]
     DG["DependencyGraph"]
     PP --> DB & AC & DG
 

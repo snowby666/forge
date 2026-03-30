@@ -71,7 +71,7 @@ graph TD
         A1["hackathon:{id}:brief\nHackathonBrief JSON\nTTL: 7 days"]
         A2["hackathon:{id}:concepts\nConceptBrief JSON (3 concepts)\nTTL: 7 days"]
         A3["hackathon:{id}:project_plan\nProjectPlan JSON\nTTL: 7 days"]
-        A4["hackathon:{id}:api_contract\nApiContract JSON\nTTL: 7 days\n⚡ Published immediately"]
+        A4["hackathon:{id}:api_contract\nApiContract JSON\nTTL: 7 days\n! Published immediately"]
         A5["hackathon:{id}:db_schema\nDbSchema JSON\nTTL: 7 days"]
         A6["hackathon:{id}:dependency_graph\nDependencyGraph JSON\nTTL: 7 days"]
         A7["hackathon:{id}:sponsor_map\nSponsorMap JSON\nTTL: 7 days"]
@@ -91,7 +91,7 @@ graph TD
 
     subgraph PUBSUB["Pub/sub channels"]
         P1["agent:trigger\n{hackathon_id, agent, input}"]
-        P2["agent:api_contract_ready\n{hackathon_id, api_contract}\n→ unblocks Frontend"]
+        P2["agent:api_contract_ready\n{hackathon_id, api_contract}\n-> unblocks Frontend"]
         P3["commander:new_hackathon\n{hackathon_id, brief}"]
         P4["commander:checkpoint\n{hackathon_id, checkpoint, data}"]
         P5["commander:audit_failed\n{hackathon_id, score, blockers}"]
@@ -169,7 +169,7 @@ sequenceDiagram
     FE->>SBX: exec("npm run build") [quality gate]
     FE->>SBX: exec("git push origin main")
     SBX->>GH: Push commits
-    GH->>VCL: Webhook → auto-deploy
+    GH->>VCL: Webhook -> auto-deploy
     VCL-->>FE: Preview URL
     FE->>DYT: Delete workspace (cleanup)
 ```
@@ -185,10 +185,10 @@ n8n handles the human-computer interface and external service integrations that 
 ```mermaid
 graph LR
     subgraph N8N["n8n (localhost:5678)"]
-        W1["Webhook:\n/webhook/{id}/concept_approval\n→ writes Redis checkpoint"]
-        W2["Webhook:\n/webhook/{id}/design_approval\n→ writes Redis checkpoint"]
-        W3["Webhook:\n/webhook/{id}/quality_review\n→ writes Redis checkpoint"]
-        W4["Webhook:\n/webhook/{id}/submission_approval\n→ writes Redis checkpoint"]
+        W1["Webhook:\n/webhook/{id}/concept_approval\n-> writes Redis checkpoint"]
+        W2["Webhook:\n/webhook/{id}/design_approval\n-> writes Redis checkpoint"]
+        W3["Webhook:\n/webhook/{id}/quality_review\n-> writes Redis checkpoint"]
+        W4["Webhook:\n/webhook/{id}/submission_approval\n-> writes Redis checkpoint"]
 
         CAL["Google Calendar node\nListens: calendar:create_events\nCreates 5 events per hackathon"]
 

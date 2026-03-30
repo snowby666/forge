@@ -13,7 +13,7 @@ graph TD
         SDL["STATIC_DESIGN_LAWS\n7 timeless laws\nData density, code as content,\nstatus visibility, precision palette,\ntypography, components, 30-sec rule"]
         ASR["ANTI_SLOP_RULES\n38 specific patterns\nto block and avoid"]
         DP["DESIGN_PERSONALITIES\n5 named aesthetics:\ndeveloper_tool, data_tool,\nenterprise_workflow,\nai_agent_realtime, consumer_product"]
-        DCR["DESIGN_CRITIQUE_RUBRIC\n6 scored dimensions\nweighted average ≥ 7.0"]
+        DCR["DESIGN_CRITIQUE_RUBRIC\n6 scored dimensions\nweighted average >= 7.0"]
         CQC["COMPONENT_QUALITY_CHECKLIST\n4 categories:\ninteractive states, copy,\naccessibility, performance"]
         DT["class DesignTokens\nDTCG-compliant token structure"]
         SP["SYSTEM_PROMPT_DESIGN_AGENT\nSYSTEM_PROMPT_FRONTEND_AGENT\nSYSTEM_PROMPT_STRATEGY_AGENT"]
@@ -171,16 +171,16 @@ graph LR
     end
 
     subgraph GATES["Gates"]
-        G1["Weighted avg ≥ 7.0"]
+        G1["Weighted avg >= 7.0"]
         G2["No anti-slop violations\n(auto-block regardless of score)"]
-        G3["Lighthouse Accessibility ≥ 85"]
+        G3["Lighthouse Accessibility >= 85"]
     end
 
     D1 & D2 & D3 & D4 & D5 & D6 --> CALC["(sum × weights) / 8.5\n= overall score"]
     CALC --> G1
     G1 & G2 & G3 --> RESULT{"All pass?"}
-    RESULT -->|yes| APPROVE["✅ Approved"]
-    RESULT -->|no| BLOCK["❌ Blocked\nFix instructions issued"]
+    RESULT -->|yes| APPROVE["OK: Approved"]
+    RESULT -->|no| BLOCK["FAIL: Blocked\nFix instructions issued"]
 ```
 
 ---
@@ -257,9 +257,9 @@ graph TD
     COMP --> COPY{"Real copy?"}
     COPY --> C1["No lorem ipsum\nNumbers formatted: 1,234\nDates relative: '2h ago'\nErrors: what + how to fix"]
     COMP --> A11Y{"Accessibility?"}
-    A11Y --> A1["Contrast ≥ 4.5:1\nNon-color status indicators\nTap targets ≥ 40×40px\naria-label on icon-only buttons"]
+    A11Y --> A1["Contrast >= 4.5:1\nNon-color status indicators\nTap targets >= 40×40px\naria-label on icon-only buttons"]
     COMP --> PERF{"Performance?"}
     PERF --> P1["No animations on >10 repeated elements\nTransitions: transform/opacity only\nImages: explicit width/height"]
 
-    S1 & C1 & A1 & P1 --> DONE["✅ Component done"]
+    S1 & C1 & A1 & P1 --> DONE["OK: Component done"]
 ```
