@@ -1,6 +1,6 @@
 # 02 — Agent Roster
 
-All 28 agents across 8 layers. Each entry covers: role, SOP artifacts consumed and produced, model tier, failure behavior, and where to find the implementation.
+All 29 agents across 8 layers. Each entry covers: role, SOP artifacts consumed and produced, model tier, failure behavior, and where to find the implementation.
 
 ---
 

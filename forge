@@ -46,7 +46,7 @@ def header():
   ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝
   ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗
   ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝
-{RESET}{DIM}  22 agents. One submission. Every time.{RESET}
+{RESET}{DIM}  29 agents. One submission. Every time.{RESET}
 """)
 
 def ok(msg: str):    print(f"  {GREEN}✓{RESET} {msg}")

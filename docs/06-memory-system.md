@@ -27,7 +27,7 @@ graph TB
         Q5["judge-profiles\nPast judge panel profiles\nReusable for similar panels"]
     end
 
-    AGENTS["All 28 agents"] --> WORKING
+    AGENTS["All 29 agents"] --> WORKING
     AGENTS --> EPISODIC
     AGENTS --> VECTOR
     WORKING -.->|expires after 7 days| GONE["Discarded"]

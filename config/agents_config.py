@@ -1,6 +1,6 @@
 """
 Agent Configuration Registry
-All 22 agent definitions, system prompts, tool lists, and constraints.
+All 29 agent definitions, system prompts, tool lists, and constraints.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from config.design_constitution import (
     SYSTEM_PROMPT_DESIGN_AGENT,
     SYSTEM_PROMPT_FRONTEND_AGENT,
     ANTI_SLOP_RULES,
-    DESIGN_EXCELLENCE_PRINCIPLES,
+    STATIC_DESIGN_LAWS,
     DESIGN_CRITIQUE_RUBRIC,
     COMPONENT_QUALITY_CHECKLIST,
 )
@@ -1324,6 +1324,37 @@ Before creating events:
     sop_outputs=["CalendarEvents"],
 )
 
+KNOWLEDGE_UPDATER = AgentDef(
+    id="knowledge_updater",
+    name="Knowledge Updater",
+    layer="infra",
+    description=(
+        "Runs 5 parallel web research tasks via ElectronHub to update the LIVING_KNOWLEDGE "
+        "section of config/design_constitution.py with current UI library trends, winning "
+        "hackathon concept patterns, and recommended tech stacks. Never touches frozen sections."
+    ),
+    model_tier="standard",
+    system_prompt="""You are a research specialist who tracks the current state of the art in:
+1. UI/UX component libraries and design tools (what's actually used in production in 2026)
+2. Winning hackathon project patterns (what judges are rewarding right now)
+3. Frontend and backend stack recommendations for rapid deployment
+
+Your research must be specific and actionable:
+- Name exact library versions and why they're preferred over alternatives
+- Cite real hackathon winners with specific project names and what won
+- Give honest assessments — not marketing copy
+
+You update only the LIVING_KNOWLEDGE section of config/design_constitution.py.
+You NEVER touch: STATIC_DESIGN_LAWS, ANTI_SLOP_RULES, DESIGN_PERSONALITIES,
+DESIGN_CRITIQUE_RUBRIC, COMPONENT_QUALITY_CHECKLIST, DesignTokens class, or system prompts.
+Before writing, you validate the file is valid Python and all frozen sections are intact.""",
+    tools=["redis"],
+    max_iterations=10,
+    timeout_minutes=30,
+    sop_inputs=[],
+    sop_outputs=["KnowledgeUpdate"],
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # REGISTRY
@@ -1339,7 +1370,7 @@ ALL_AGENTS: dict[str, AgentDef] = {
         CODE_REVIEWER, UX_AUDITOR, PERFORMANCE_AGENT,
         POLISH_AGENT, COPY_WRITER, DATA_SEEDER, BRAND_AGENT,
         DEMO_PRODUCER, PITCH_WRITER, SUBMISSION_AGENT,
-        MEMORY_KEEPER, MONITOR, CALENDAR_AGENT,
+        MEMORY_KEEPER, MONITOR, CALENDAR_AGENT, KNOWLEDGE_UPDATER,
     ]
 }
 

@@ -83,7 +83,7 @@ async def test_design_constitution() -> bool:
     logger.info("Testing design constitution...")
 
     from config.design_constitution import (
-        ANTI_SLOP_RULES, DESIGN_EXCELLENCE_PRINCIPLES, DESIGN_CRITIQUE_RUBRIC,
+        ANTI_SLOP_RULES, STATIC_DESIGN_LAWS, DESIGN_CRITIQUE_RUBRIC,
         DESIGN_PERSONALITIES, DesignTokens, COMPONENT_QUALITY_CHECKLIST,
         SYSTEM_PROMPT_DESIGN_AGENT, SYSTEM_PROMPT_FRONTEND_AGENT,
     )
@@ -179,7 +179,7 @@ async def test_scoring() -> bool:
 
 
 async def test_agent_configs() -> bool:
-    logger.info("Testing all 22 agent configurations...")
+    logger.info("Testing all 29 agent configurations...")
     from config.agents_config import ALL_AGENTS, HUMAN_CHECKPOINTS
 
     critical = ["commander", "hackathon_scout", "ui_ux_designer", "ux_auditor",
@@ -190,7 +190,7 @@ async def test_agent_configs() -> bool:
         agent = ALL_AGENTS[agent_id]
         assert len(agent.system_prompt) > 100, f"Agent {agent_id} has weak system prompt"
 
-    assert len(ALL_AGENTS) >= 22
+    assert len(ALL_AGENTS) >= 29
     assert len(HUMAN_CHECKPOINTS) == 4
 
     logger.info(f"{PASS} {len(ALL_AGENTS)} agents configured")
@@ -208,7 +208,7 @@ async def run_full_dry_run() -> None:
     tests = [
         ("ElectronHub",          test_electronhub),
         ("Design constitution",  test_design_constitution),
-        ("Agent configs (22)",   test_agent_configs),
+        ("Agent configs (29)",   test_agent_configs),
         ("Hackathon scoring",    test_scoring),
         ("Memory (Qdrant)",      test_memory),
         ("Browser layer",        test_browser_layer),

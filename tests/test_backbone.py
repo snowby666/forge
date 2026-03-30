@@ -86,7 +86,7 @@ class TestDesignConstitution:
 
     def test_design_personalities_complete(self):
         from config.design_constitution import DESIGN_PERSONALITIES
-        required_keys = ["description", "background_base", "foreground_primary", "font_sans", "anti_patterns"]
+        required_keys = ["description", "bg_base", "text_primary", "font_sans", "anti_patterns", "use_when"]
         for name, personality in DESIGN_PERSONALITIES.items():
             for key in required_keys:
                 assert key in personality, f"Personality '{name}' missing '{key}'"
@@ -95,21 +95,21 @@ class TestDesignConstitution:
         from config.design_constitution import DesignTokens
         import dataclasses
         fields = {f.name for f in dataclasses.fields(DesignTokens)}
-        required = {"primary_shade", "background_base", "font_sans", "font_mono", "space_4", "radius_md", "duration_base"}
+        required = {"color_bg_base", "color_accent", "font_sans", "font_mono", "space_4", "radius_md", "duration_base"}
         assert required.issubset(fields), f"Missing fields: {required - fields}"
 
     def test_critique_rubric_has_all_dimensions(self):
         from config.design_constitution import DESIGN_CRITIQUE_RUBRIC
         dimensions = [
-            "First impression", "Visual polish", "Interaction quality",
-            "Content realism", "Demo path clarity", "Brand coherence",
+            "Reference site match", "Data density", "Status visibility",
+            "Visual hierarchy", "Interaction quality", "Demo path clarity",
         ]
         for dim in dimensions:
             assert dim in DESIGN_CRITIQUE_RUBRIC, f"Missing dimension: {dim}"
 
     def test_component_quality_checklist_coverage(self):
         from config.design_constitution import COMPONENT_QUALITY_CHECKLIST
-        required_checks = ["hover", "focus", "loading", "error", "empty", "accessibility", "44×44px"]
+        required_checks = ["Hover", "Focus", "Loading", "Error", "Empty", "Accessibility", "40x40px"]
         for check in required_checks:
             assert check in COMPONENT_QUALITY_CHECKLIST, f"Missing check: {check}"
 
@@ -117,11 +117,11 @@ class TestDesignConstitution:
 # ── Agent config tests ─────────────────────────────────────────────────────────
 
 class TestAgentConfig:
-    """Verify all 22 agents are properly configured."""
+    """Verify all 29 agents are properly configured."""
 
-    def test_all_22_agents_registered(self):
+    def test_all_29_agents_registered(self):
         from config.agents_config import ALL_AGENTS
-        assert len(ALL_AGENTS) >= 22, f"Expected 22+ agents, got {len(ALL_AGENTS)}"
+        assert len(ALL_AGENTS) >= 29, f"Expected 29 agents, got {len(ALL_AGENTS)}"
 
     def test_critical_agents_exist(self):
         from config.agents_config import ALL_AGENTS
@@ -133,7 +133,7 @@ class TestAgentConfig:
             "code_reviewer", "ux_auditor", "performance",
             "polish", "copy_writer", "data_seeder", "brand",
             "demo_producer", "pitch_writer", "submission",
-            "memory_keeper", "monitor", "calendar",
+            "memory_keeper", "monitor", "calendar", "knowledge_updater",
         ]
         for agent_id in critical:
             assert agent_id in ALL_AGENTS, f"Missing agent: {agent_id}"

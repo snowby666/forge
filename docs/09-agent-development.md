@@ -224,7 +224,7 @@ redis-cli -a $REDIS_PASSWORD get "task:devpost-123:ui_ux_designer"
 
 ```bash
 ./forge status --id devpost-123
-# Shows all 22 agents with icons: ✓ done · pending ⟳ running ✗ failed
+# Shows all 29 agents with icons: ✓ done · pending ⟳ running ✗ failed
 ```
 
 ### 3. Run the specific agent in isolation

@@ -1,6 +1,6 @@
 # 01 — Architecture
 
-Forge is a 28-agent autonomous system organized into 8 layers. Python handles all agent logic. TypeScript handles browser automation only. They communicate via HTTP — never shared imports.
+Forge is a 29-agent autonomous system organized into 8 layers. Python handles all agent logic. TypeScript handles browser automation only. They communicate via HTTP — never shared imports.
 
 ---
 
@@ -129,10 +129,10 @@ graph TB
 
 ```mermaid
 graph LR
-    subgraph PY["Python 3.11+  (all 28 agents)"]
+    subgraph PY["Python 3.11+  (all 29 agents)"]
         direction TB
         C["config/electronhub.py\nconfig/agents_config.py\nconfig/design_constitution.py"]
-        A["agents/python/**/*.py\n22 agent workers"]
+        A["agents/python/**/*.py\n29 agent workers"]
         O["agents/python/orchestrator/commander.py\nLangGraph state machine"]
         I["agents/python/infra/\nmemory_keeper, monitor, calendar, knowledge_updater"]
     end

@@ -1,6 +1,6 @@
 # Forge Documentation
 
-**22 agents. One submission. Every time.**
+**29 agents. One submission. Every time.**
 
 Forge is an autonomous hackathon swarm. It discovers opportunities, builds full-stack projects, and submits — while you show up for 4 checkpoints (~55 minutes total).
 
@@ -11,7 +11,7 @@ Forge is an autonomous hackathon swarm. It discovers opportunities, builds full-
 | Doc | What's in it |
 |---|---|
 | [01 — Architecture](./01-architecture.md) | Full system diagram, language split, communication model, crash recovery |
-| [02 — Agent Roster](./02-agent-roster.md) | All 28 agents with roles, SOP artifacts, tiers, failure modes |
+| [02 — Agent Roster](./02-agent-roster.md) | All 29 agents with roles, SOP artifacts, tiers, failure modes |
 | [03 — Execution Flow](./03-execution-flow.md) | Phase-by-phase timeline, Gantt chart, Commander state machine, dependency graph |
 | [04 — LLM Routing](./04-llm-routing.md) | ElectronHub tiers, complete task→model table (50 entries), fallback chain |
 | [05 — Design Constitution](./05-design-constitution.md) | Reference sites, static laws, anti-slop rules, living knowledge system |

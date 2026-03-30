@@ -32,7 +32,7 @@ from config.electronhub import complete, complete_json
 from config.agents_config import ALL_AGENTS
 from config.design_constitution import (
     ANTI_SLOP_RULES,
-    DESIGN_EXCELLENCE_PRINCIPLES,
+    STATIC_DESIGN_LAWS,
     DESIGN_CRITIQUE_RUBRIC,
     DESIGN_PERSONALITIES,
     DesignTokens,
@@ -356,7 +356,7 @@ Design tokens available: See tailwind config below.
 
 {ANTI_SLOP_RULES}
 
-{DESIGN_EXCELLENCE_PRINCIPLES}
+{STATIC_DESIGN_LAWS}
 
 REQUIREMENTS:
 1. Screens: exactly the screens needed for the demo path + 1-2 supporting screens
