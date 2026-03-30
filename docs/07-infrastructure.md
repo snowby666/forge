@@ -1,0 +1,248 @@
+# 07 — Infrastructure
+
+All services self-hosted on your dedicated server. The only external paid dependencies are Browserbase ($49/mo) and ElevenLabs ($5/mo).
+
+---
+
+## Service map
+
+```mermaid
+graph TB
+    subgraph SERVER["Your dedicated server (RTX 4060)"]
+        subgraph DOCKER["Docker services"]
+            PG["forge-postgres :5432\nPostgreSQL 16\nLangGraph state\nApp databases\nn8n config"]
+            RD["forge-redis :6379\nWorking memory\npub/sub channels\nTask statuses"]
+            QD["forge-qdrant :6333/:6334\nVector store\n5 collections\n1536-dim embeddings"]
+            N8N["forge-n8n :5678\nWorkflow automation\nHuman checkpoint webhooks\nGoogle Calendar MCP"]
+            TMP["forge-temporal :7233\nDurable workflow execution\nCrash recovery for long runs"]
+            TUI["forge-temporal-ui :8080\nWorkflow inspection UI"]
+        end
+
+        subgraph PROCESS["System processes"]
+            CMD["Commander\nPython process\nLangGraph orchestrator"]
+            BSV["Browser layer\nTypeScript process :3100\nStagehand + Playwright"]
+            DYT["Daytona\nCode sandbox server :3986\nIsolated build environments"]
+            WRK["Agent workers\nOne Python process per agent\nRedis pub/sub consumers"]
+        end
+    end
+
+    subgraph EXTERNAL["External services"]
+        EH["ElectronHub\napi.electronhub.ai/v1\nAll LLM routing"]
+        BB["Browserbase\nCloud browser\nBot detection bypass"]
+        VCL["Vercel\nFrontend deploy\nFree tier"]
+        RLW["Railway\nBackend deploy\n$5/mo credit"]
+        GH["GitHub\nCode hosting\nCI/CD"]
+    end
+
+    CMD --> PG & RD
+    CMD --> TMP
+    WRK --> RD
+    BSV --> BB
+    CMD --> DYT
+    DYT --> GH
+    DYT --> VCL & RLW
+
+    WRK & CMD & BSV --> EH
+```
+
+---
+
+## Ports reference
+
+| Port | Service | Access |
+|---|---|---|
+| 5432 | forge-postgres | Internal only |
+| 6379 | forge-redis | Internal only |
+| 6333 | forge-qdrant (HTTP) | Internal + health check |
+| 6334 | forge-qdrant (gRPC) | Internal only |
+| 5678 | forge-n8n | `http://localhost:5678` |
+| 7233 | forge-temporal | Internal only |
+| 8080 | forge-temporal-ui | `http://localhost:8080` |
+| 3100 | Browser layer | Internal only |
+| 3986 | Daytona | Internal only |
+
+---
+
+## Redis schema
+
+```mermaid
+graph TD
+    subgraph ARTIFACT["SOP artifacts — per hackathon"]
+        A1["hackathon:{id}:brief\nHackathonBrief JSON\nTTL: 7 days"]
+        A2["hackathon:{id}:concepts\nConceptBrief JSON (3 concepts)\nTTL: 7 days"]
+        A3["hackathon:{id}:project_plan\nProjectPlan JSON\nTTL: 7 days"]
+        A4["hackathon:{id}:api_contract\nApiContract JSON\nTTL: 7 days\n⚡ Published immediately"]
+        A5["hackathon:{id}:db_schema\nDbSchema JSON\nTTL: 7 days"]
+        A6["hackathon:{id}:dependency_graph\nDependencyGraph JSON\nTTL: 7 days"]
+        A7["hackathon:{id}:sponsor_map\nSponsorMap JSON\nTTL: 7 days"]
+        A8["hackathon:{id}:seed_data\nSeedScript JSON\nTTL: 7 days"]
+    end
+
+    subgraph TASK["Task statuses — per agent"]
+        T1["task:{id}:{agent_id}\n{\n  status: pending|in-progress|done|failed,\n  data: {...},\n  error: string | null,\n  updated_at: ISO\n}\nTTL: 7 days"]
+    end
+
+    subgraph CHECK["Human checkpoints"]
+        C1["checkpoint:{id}:concept_approval\n'pending' | {approved: true, concept_index: 0}\nTTL: 24h"]
+        C2["checkpoint:{id}:design_approval\n'pending' | {approved: true}\nTTL: 8h"]
+        C3["checkpoint:{id}:quality_review\n'pending' | {approved: true, materials: {...}}\nTTL: 4h"]
+        C4["checkpoint:{id}:submission_approval\n'pending' | {approved: true}\nTTL: 2h\n⚠️ Never auto-approves"]
+    end
+
+    subgraph PUBSUB["Pub/sub channels"]
+        P1["agent:trigger\n{hackathon_id, agent, input}"]
+        P2["agent:api_contract_ready\n{hackathon_id, api_contract}\n→ unblocks Frontend"]
+        P3["commander:new_hackathon\n{hackathon_id, brief}"]
+        P4["commander:checkpoint\n{hackathon_id, checkpoint, data}"]
+        P5["commander:audit_failed\n{hackathon_id, score, blockers}"]
+        P6["figma:write\n{file_id, design_spec}"]
+        P7["calendar:create_events\n{hackathon_id, events[]}"]
+        P8["monitor:record_metric\n{agent_id, latency_ms, success}"]
+    end
+```
+
+---
+
+## PostgreSQL schema
+
+```sql
+-- LangGraph uses its own checkpointing tables (set up via AsyncPostgresSaver.setup())
+
+-- Forge application tables
+CREATE TABLE hackathons (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  url TEXT NOT NULL,
+  platform TEXT,              -- devpost | mlh | lablab | devfolio
+  theme TEXT,
+  deadline TIMESTAMPTZ,
+  score INTEGER,
+  status TEXT DEFAULT 'discovered',
+  concept_json JSONB,
+  project_url TEXT,
+  submission_url TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE agent_tasks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  hackathon_id TEXT REFERENCES hackathons(id),
+  agent_id TEXT NOT NULL,
+  status TEXT DEFAULT 'pending',
+  input_json JSONB,
+  output_json JSONB,
+  error TEXT,
+  iterations INTEGER DEFAULT 0,
+  started_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE ux_audit_reports (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  hackathon_id TEXT REFERENCES hackathons(id),
+  preview_url TEXT,
+  overall_score FLOAT,
+  approved BOOLEAN,
+  report_json JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+---
+
+## Daytona sandboxes
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend Engineer
+    participant DYT as Daytona Server
+    participant SBX as Isolated sandbox
+    participant GH as GitHub
+    participant VCL as Vercel
+
+    FE->>DYT: Create workspace (node:20-alpine)
+    DYT-->>FE: workspace_id + API
+    FE->>SBX: exec("npx create-next-app@latest ...")
+    FE->>SBX: fs.upload_file(design-tokens.ts)
+    FE->>SBX: exec("npm run build") [quality gate]
+    FE->>SBX: exec("git push origin main")
+    SBX->>GH: Push commits
+    GH->>VCL: Webhook → auto-deploy
+    VCL-->>FE: Preview URL
+    FE->>DYT: Delete workspace (cleanup)
+```
+
+Each build creates an isolated Daytona workspace. Frontend and Backend each get their own sandbox with no shared state. After deployment, sandboxes are deleted to free resources. This means the server's disk doesn't fill up across many hackathon runs.
+
+---
+
+## n8n workflows
+
+n8n handles the human-computer interface and external service integrations that don't have Python SDKs:
+
+```mermaid
+graph LR
+    subgraph N8N["n8n (localhost:5678)"]
+        W1["Webhook:\n/webhook/{id}/concept_approval\n→ writes Redis checkpoint"]
+        W2["Webhook:\n/webhook/{id}/design_approval\n→ writes Redis checkpoint"]
+        W3["Webhook:\n/webhook/{id}/quality_review\n→ writes Redis checkpoint"]
+        W4["Webhook:\n/webhook/{id}/submission_approval\n→ writes Redis checkpoint"]
+
+        CAL["Google Calendar node\nListens: calendar:create_events\nCreates 5 events per hackathon"]
+
+        FIG["Figma MCP node\nListens: figma:write\nWrites design spec to Figma file"]
+
+        SLACK["Slack node\nSends checkpoint notifications\nSends circuit breaker alerts"]
+    end
+
+    HUMAN["Human"] -->|clicks link| W1 & W2 & W3 & W4
+    W1 & W2 & W3 & W4 -->|set checkpoint key| RD[("Redis")]
+    RD -->|notify| CAL & FIG
+    CMD[("Commander")] -->|publish| SLACK
+```
+
+---
+
+## Cost breakdown
+
+| Service | Monthly | Notes |
+|---|---|---|
+| Browserbase | $49 | Non-negotiable — bot detection bypass |
+| ElevenLabs | $5 | 30k chars = ~33 demo videos/mo |
+| Vercel | $0 | 10 projects free tier |
+| Railway | ~$2 | $5/mo credit, backend uses ~$2 |
+| GitHub Actions | $0 | 2000 min/mo free |
+| Google Stitch | $0 | 350 gen/mo free |
+| Figma | $0 | Free tier (1 project) |
+| Gamma.app | $0 | 10 AI decks/mo free |
+| **Total** | **~$56/mo** | |
+
+**ROI:** One $5k sponsor prize = positive ROI for 89 months. One $500 sponsor prize = positive for ~9 months.
+
+---
+
+## Starting the stack
+
+```bash
+# Full startup sequence (automated by scripts/start.sh)
+docker compose -f config/docker-compose.yml up -d
+
+# Wait for health
+until docker exec forge-postgres pg_isready -U forge; do sleep 1; done
+until docker exec forge-redis redis-cli -a $REDIS_PASSWORD ping; do sleep 1; done
+until curl -sf http://localhost:6333/readyz; do sleep 2; done
+
+# Initialize Qdrant collections
+python3 -c "import asyncio; from agents.python.infra.memory_keeper import ensure_collections; asyncio.run(ensure_collections())"
+
+# Start browser layer (TypeScript)
+cd agents/browser && npm start &
+
+# Start Daytona (if not already running)
+daytona server start --yes &
+
+# Verify everything
+./forge test
+```
