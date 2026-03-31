@@ -16,7 +16,7 @@ services:
       POSTGRES_DB: backbone
     volumes:
       - forge-postgres-data:/var/lib/postgresql/data
-      - ../infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     ports:
       - "5432:5432"
     healthcheck:
@@ -100,7 +100,7 @@ services:
       POSTGRES_SEEDS: postgres
       DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/dynamicconfig.yaml
     volumes:
-      - ../infra/temporal/dynamicconfig.yaml:/etc/temporal/dynamicconfig.yaml:ro
+      - ./temporal-dynamicconfig.yaml:/etc/temporal/dynamicconfig.yaml:ro
     ports:
       - "7233:7233"
     depends_on:
@@ -129,7 +129,7 @@ services:
       - SEARXNG_BASE_URL=http://localhost:8081
       - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-forge-searxng-secret-change-this}
     volumes:
-      - ../infra/searxng:/etc/searxng:rw
+      - forge-searxng-data:/etc/searxng
     ports:
       - "8081:8080"
     healthcheck:
@@ -146,6 +146,7 @@ volumes:
   forge-redis-data:
   forge-qdrant-data:
   forge-n8n-data:
+  forge-searxng-data:
 
 networks:
   default:

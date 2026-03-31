@@ -116,26 +116,13 @@ fi
 # Strip Windows CRLF from config files (NTFS /mnt/c/ + git autocrlf cause \r\n)
 sed -i 's/\r$//' .env forge.secrets 2>/dev/null || true
 
-# --- Infrastructure directories ----------------------------------------------
-log "Creating infra directories..."
-mkdir -p infra/postgres/data infra/redis/data infra/qdrant/data \
-         infra/temporal infra/n8n/data infra/searxng
+# --- Infrastructure config files (inside config/ -- no separate infra/ dir) ----
+# Data volumes are Docker-managed named volumes (see docker-compose.yml).
+# Only config files needed: init.sql and dynamicconfig.yaml, stored in config/.
+log "Creating infrastructure config files..."
 
-cat > infra/qdrant/config.yaml << 'EOCONF'
-service:
-  host: 0.0.0.0
-  http_port: 6333
-  grpc_port: 6334
-log_level: INFO
-EOCONF
-
-cat > infra/temporal/dynamicconfig.yaml << 'EOCONF'
-system.forceSearchAttributesCacheRefreshOnRead:
-  - value: true
-    constraints: {}
-EOCONF
-
-cat > infra/postgres/init.sql << 'EOSQL'
+if [ ! -f config/postgres-init.sql ]; then
+cat > config/postgres-init.sql << 'EOSQL'
 CREATE DATABASE n8n;
 GRANT ALL PRIVILEGES ON DATABASE n8n TO backbone;
 \c backbone;
@@ -164,6 +151,17 @@ CREATE TABLE IF NOT EXISTS ux_audit_reports (
   report_json JSONB, created_at TIMESTAMPTZ DEFAULT NOW()
 );
 EOSQL
+  log "Created config/postgres-init.sql"
+fi
+
+if [ ! -f config/temporal-dynamicconfig.yaml ]; then
+cat > config/temporal-dynamicconfig.yaml << 'EOCONF'
+system.forceSearchAttributesCacheRefreshOnRead:
+  - value: true
+    constraints: {}
+EOCONF
+  log "Created config/temporal-dynamicconfig.yaml"
+fi
 
 # --- Python version warning for 3.13+ ----------------------------------------
 PY_MINOR=$($PYTHON_CMD -c "import sys; print(sys.version_info.minor)")
