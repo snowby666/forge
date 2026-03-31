@@ -176,16 +176,28 @@ fi
 # Ubuntu 24.04+ (PEP 668) blocks system-wide pip installs.
 # All other Linux distros benefit too. Always use a venv.
 VENV_DIR=".venv"
+
+# On Ubuntu/Debian, python3-venv is a separate package that must be installed
+# BEFORE attempting venv creation — the venv module may exist but ensurepip fails
+# without python3-full / python3-venv. Install proactively, not just as a fallback.
+if [[ "$OS_TYPE" == "linux" || "$OS_TYPE" == "wsl" ]]; then
+  if command -v apt-get &>/dev/null; then
+    # Check if venv can actually bootstrap pip (not just if the module exists)
+    if ! $PYTHON_CMD -m venv --without-pip /tmp/forge-venv-test &>/dev/null 2>&1 ||        [ ! -f /tmp/forge-venv-test/bin/python ]; then
+      log "Installing python3-venv and python3-full..."
+      sudo apt-get install -y python3-venv python3-full 2>/dev/null         || warn "apt-get failed -- will try anyway"
+    fi
+    rm -rf /tmp/forge-venv-test 2>/dev/null || true
+    # Always ensure python3-venv is present on Debian/Ubuntu to avoid ensurepip failures
+    sudo apt-get install -y python3-venv python3-full --no-upgrade -qq 2>/dev/null || true
+  fi
+fi
+
 if [ ! -d "$VENV_DIR" ]; then
   log "Creating virtual environment (.venv)..."
-  # Ensure venv module is available (Ubuntu may need python3-venv)
-  if ! $PYTHON_CMD -m venv --help &>/dev/null 2>&1; then
-    if command -v apt-get &>/dev/null; then
-      log "Installing python3-venv..."
-      sudo apt-get install -y python3-venv python3-full 2>/dev/null || true
-    fi
-  fi
-  $PYTHON_CMD -m venv "$VENV_DIR" || err "Failed to create venv. Run: sudo apt install python3.12-venv"
+  $PYTHON_CMD -m venv "$VENV_DIR"     || $PYTHON_CMD -m venv --without-pip "$VENV_DIR"     || err "Failed to create venv.
+  Run manually: sudo apt install python3.12-venv python3-full
+  Then re-run: bash scripts/setup.sh"
   log "Virtual environment created at .venv/"
 else
   log "Virtual environment already exists (.venv/)"
