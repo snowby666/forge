@@ -12,7 +12,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 @if exist "%~dp0.venv\Scripts\python.exe" (
-    "%~dp0.venv\Scripts\python.exe" "%~dp0forge" %*
+    "%~dp0.venv\Scripts\python.exe" "%~dp0forge.py" %*
 ) else (
-    python "%~dp0forge" %*
+    python "%~dp0forge.py" %*
 )

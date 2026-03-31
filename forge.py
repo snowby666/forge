@@ -1,0 +1,524 @@
+#!/usr/bin/env python3
+# Windows users: run as  python forge <command>
+#                or use  forge.cmd <command>
+"""
+forge — the CLI entrypoint for the Forge autonomous hackathon swarm.
+
+Usage:
+  forge scout              Discover and score this week's hackathons
+  forge run [--id ID]      Full autonomous build cycle
+  forge status [--id ID]   Live view of all agent statuses
+  forge approve            Human checkpoint interface
+  forge plan [--id ID]     Show build plan (tasks, critical path, risks)
+  forge knowledge          Update design + strategy intelligence
+  forge test               Run system health checks
+  forge ls                 List all active hackathons
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from dotenv import load_dotenv
+load_dotenv()
+
+# ── ANSI colors ───────────────────────────────────────────────────────────────
+
+BOLD   = "\033[1m"
+DIM    = "\033[2m"
+GREEN  = "\033[32m"
+YELLOW = "\033[33m"
+RED    = "\033[31m"
+CYAN   = "\033[36m"
+PURPLE = "\033[35m"
+RESET  = "\033[0m"
+
+def header():
+    print(f"""
+{BOLD}{CYAN}
+  ███████╗ ██████╗ ██████╗  ██████╗ ███████╗
+  ██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝
+  █████╗  ██║   ██║██████╔╝██║  ███╗█████╗
+  ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝
+  ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗
+  ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝
+{RESET}{DIM}  30 agents. One submission. Every time.{RESET}
+""")
+
+def ok(msg: str):    print(f"  {GREEN}✓{RESET} {msg}")
+def warn(msg: str):  print(f"  {YELLOW}⚠{RESET} {msg}")
+def err(msg: str):   print(f"  {RED}✗{RESET} {msg}")
+def info(msg: str):  print(f"  {CYAN}→{RESET} {msg}")
+def section(title: str): print(f"\n{BOLD}{title}{RESET}")
+
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+async def cmd_scout(args):
+    """Discover and score hackathons."""
+    section("Scouting hackathons...")
+    from agents.python.intelligence.hackathon_scout import run_scout
+    results = await run_scout(dry_run=args.dry_run)
+    if not results:
+        warn("No qualifying hackathons found this cycle.")
+        return
+
+    section(f"Found {len(results)} qualifying hackathons:")
+    for h in results[:5]:
+        prize_total = sum(p.amount or 0 for p in h.prizes)
+        sponsor_count = sum(1 for p in h.prizes if p.sponsor)
+        status = f"{GREEN}REGISTERED{RESET}" if not args.dry_run and h.registration_open else f"{YELLOW}DRY RUN{RESET}"
+        print(f"\n  {BOLD}{h.score:3d}/100{RESET}  {h.name}")
+        print(f"         {DIM}{h.days_until_deadline}d left · ${prize_total:,.0f} total · {sponsor_count} sponsor prizes · {status}{RESET}")
+
+    if not args.dry_run:
+        info("Calendar events scheduled. Check your Google Calendar.")
+        info("Run 'forge status' to see active hackathons.")
+
+
+async def cmd_run(args):
+    """Full autonomous build cycle."""
+    from agents.python.orchestrator.commander import run, run_listener
+
+    if args.listen:
+        section("Starting Forge in daemon mode...")
+        info("Listening for new hackathons from Scout")
+        info("Press Ctrl+C to stop")
+        await run_listener()
+    elif args.id:
+        section(f"Starting Forge for: {args.id}")
+        result = await run(args.id)
+        if result.get("submission_url"):
+            ok(f"Submitted: {result['submission_url']}")
+        else:
+            warn(f"Run ended in phase: {result.get('phase', 'unknown')}")
+    else:
+        err("Specify --id <hackathon-id> or use --listen for daemon mode")
+        print("  Run 'forge ls' to see active hackathons")
+
+
+async def cmd_status(args):
+    """Show live agent status for a hackathon."""
+    from redis.asyncio import Redis
+
+    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+
+    # Find hackathons
+    if args.id:
+        hackathon_ids = [args.id]
+    else:
+        keys = await redis.keys("hackathon:*:brief")
+        hackathon_ids = [k.split(":")[1] for k in keys]
+
+    if not hackathon_ids:
+        warn("No active hackathons. Run 'forge scout' to find some.")
+        await redis.aclose()
+        return
+
+    from config.agents_config import ALL_AGENTS
+
+    for hackathon_id in hackathon_ids[:3]:
+        brief_raw = await redis.get(f"hackathon:{hackathon_id}:brief")
+        if not brief_raw:
+            continue
+        brief = json.loads(brief_raw)
+
+        section(f"{brief.get('name', hackathon_id)}")
+        print(f"  {DIM}ID: {hackathon_id} · {brief.get('days_until_deadline', '?')}d remaining{RESET}\n")
+
+        # Group by layer
+        layer_agents = {
+            "intelligence": ["hackathon_scout", "competitor_analyst", "judge_profiler", "sponsor_researcher"],
+            "strategy":     ["strategy_director", "pm", "tech_architect"],
+            "design":       ["ui_ux_designer"],
+            "build":        ["frontend_engineer", "backend_engineer", "integration_engineer", "test_engineer", "devops", "security"],
+            "verify":       ["code_reviewer", "ux_auditor", "performance"],
+            "polish":       ["polish", "copy_writer", "data_seeder", "brand"],
+            "submission":   ["demo_producer", "pitch_writer", "submission"],
+            "infra":        ["memory_keeper", "monitor", "calendar", "knowledge_updater", "outcome_tracker"],
+        }
+
+        STATUS_ICONS = {
+            "done":        f"{GREEN}✓{RESET}",
+            "in-progress": f"{YELLOW}⟳{RESET}",
+            "pending":     f"{DIM}·{RESET}",
+            "failed":      f"{RED}✗{RESET}",
+            None:          f"{DIM}·{RESET}",
+        }
+
+        for layer, agent_ids in layer_agents.items():
+            statuses = []
+            for agent_id in agent_ids:
+                raw = await redis.get(f"task:{hackathon_id}:{agent_id}")
+                task = json.loads(raw) if raw else {}
+                status = task.get("status")
+                icon = STATUS_ICONS.get(status, STATUS_ICONS[None])
+                name = ALL_AGENTS[agent_id].name if agent_id in ALL_AGENTS else agent_id
+                statuses.append(f"{icon} {name}")
+            print(f"  {DIM}{layer:<12}{RESET}  {'  '.join(statuses)}")
+
+        # Check pending checkpoints
+        for cp_name, cp_label in [
+            ("concept_approval", "Concept approval"),
+            ("design_approval", "Design approval"),
+            ("quality_review", "Quality review"),
+            ("submission_approval", "Submit approval"),
+        ]:
+            cp_raw = await redis.get(f"checkpoint:{hackathon_id}:{cp_name}")
+            if cp_raw == "pending":
+                short = cp_name.split("_")[0]
+                print(f"\n  {YELLOW}⚡ Waiting for you:{RESET} {cp_label} → 'forge approve {short} --id {hackathon_id}'")
+
+        # Cost summary (adapted from Claude Code's cost-tracker.ts)
+        try:
+            from config.forge_tools import get_run_cost_summary
+            cost = await get_run_cost_summary(redis, hackathon_id)
+            if cost["total_usd"] > 0:
+                top = sorted(cost["by_agent"].items(), key=lambda x: x[1]["cost_usd"], reverse=True)[:2]
+                top_str = ", ".join(f"{a}: ${v['cost_usd']:.3f}" for a, v in top)
+                print(f"  {DIM}Cost so far: ${cost['total_usd']:.3f} · {cost['total_tokens']:,} tokens · Top: {top_str}{RESET}")
+        except Exception:
+            pass
+
+    await redis.aclose()
+
+
+async def cmd_approve(args):
+    """Human checkpoint interface."""
+    from redis.asyncio import Redis
+
+    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+
+    checkpoint = args.checkpoint
+    hackathon_id = args.id
+
+    if not hackathon_id:
+        # Find the first hackathon with a pending checkpoint
+        keys = await redis.keys("checkpoint:*:*")
+        for key in keys:
+            raw = await redis.get(key)
+            if raw == "pending":
+                parts = key.split(":")
+                hackathon_id = parts[1]
+                checkpoint = parts[2]
+                break
+
+    if not hackathon_id:
+        warn("No pending checkpoints found.")
+        await redis.aclose()
+        return
+
+    key = f"checkpoint:{hackathon_id}:{checkpoint}"
+    raw = await redis.get(key)
+
+    if checkpoint == "concept_approval":
+        concepts_raw = await redis.get(f"hackathon:{hackathon_id}:concepts")
+        if concepts_raw:
+            concepts_data = json.loads(concepts_raw)
+            concepts = concepts_data.get("concepts", [])
+            section(f"Choose a concept for: {hackathon_id}")
+            for c in concepts:
+                print(f"\n  {BOLD}[{c['rank']}]{RESET} {c['project_name']}  {DIM}score: {c.get('total_score', '?')}/100{RESET}")
+                print(f"       {c.get('tagline', '')}")
+                print(f"       {DIM}Why it wins: {c.get('why_it_wins', '')[:120]}...{RESET}")
+
+            print()
+            choice = input(f"  Enter concept number [1-{len(concepts)}] (default: recommended): ").strip()
+            concept_index = (int(choice) - 1) if choice.isdigit() else concepts_data.get("recommended_concept", 1) - 1
+
+            await redis.set(key, json.dumps({
+                "approved": True,
+                "concept_index": concept_index,
+                "approved_at": datetime.now(timezone.utc).isoformat(),
+                "approved_by": "human",
+            }), ex=86400)
+            ok(f"Concept {concept_index + 1} approved. Forge is building.")
+
+    elif checkpoint in ("design_approval", "quality_review", "submission_approval"):
+        data_raw = await redis.get(key)
+        data = json.loads(data_raw) if data_raw and data_raw != "pending" else {}
+
+        section(f"Checkpoint: {checkpoint.replace('_', ' ').title()}")
+        if data.get("materials"):
+            for k, v in data["materials"].items():
+                if v:
+                    print(f"  {CYAN}{k}:{RESET} {v}")
+
+        print()
+        confirm = input(f"  Approve? [y/N] ").strip().lower()
+        if confirm == "y":
+            await redis.set(key, json.dumps({
+                "approved": True,
+                "approved_at": datetime.now(timezone.utc).isoformat(),
+                "approved_by": "human",
+            }), ex=86400)
+            ok(f"Approved. Forge continues.")
+        else:
+            warn("Not approved. Forge waits.")
+
+    await redis.aclose()
+
+
+async def cmd_plan(args):
+    """Show the build plan for a hackathon run (Feature 6: /ultraplan)."""
+    from redis.asyncio import Redis
+    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+
+    hackathon_id = args.id
+    if not hackathon_id:
+        keys = await redis.keys("hackathon:*:brief")
+        if not keys:
+            warn("No active hackathons. Run 'forge scout' first.")
+            await redis.aclose()
+            return
+        hackathon_id = keys[0].split(":")[1]
+
+    plan_raw = await redis.get(f"hackathon:{hackathon_id}:build_plan")
+    await redis.aclose()
+
+    if not plan_raw:
+        warn(f"No build plan yet for {hackathon_id}. Plan is generated after design phase.")
+        info("Run 'forge status' to see current phase.")
+        return
+
+    plan = json.loads(plan_raw)
+    section(f"Build Plan — {hackathon_id}")
+
+    tasks = plan.get("tasks", [])
+    critical_path = set(plan.get("critical_path", []))
+    total_hours   = plan.get("total_estimated_hours", 0)
+    biggest_risk  = plan.get("biggest_risk", "")
+    demo_comps    = plan.get("demo_path_components", [])
+
+    RISK_COLOR = {"low": GREEN, "medium": YELLOW, "high": RED}
+
+    print(f"\n  {BOLD}Tasks ({len(tasks)}){RESET}  ·  {total_hours:.1f}h total estimated\n")
+    for t in tasks:
+        agent     = t.get("agent", "?")
+        desc      = t.get("description", "")
+        deps      = t.get("depends_on", [])
+        hours     = t.get("estimated_hours", 0)
+        risk      = t.get("risk", "low")
+        is_crit   = agent in critical_path
+        cp_marker = f" {CYAN}[critical path]{RESET}" if is_crit else ""
+        risk_col  = RISK_COLOR.get(risk, DIM)
+        dep_str   = f"  {DIM}after: {', '.join(deps)}{RESET}" if deps else ""
+        print(f"  {GREEN}▸{RESET} {BOLD}{agent:<22}{RESET}  {hours:.1f}h  "
+              f"{risk_col}{risk:<6}{RESET}{cp_marker}")
+        print(f"    {DIM}{desc[:72]}{RESET}{dep_str}")
+        print()
+
+    if demo_comps:
+        print(f"  {BOLD}Demo path components (judges see these):{RESET}")
+        for c in demo_comps:
+            print(f"  {CYAN}·{RESET} {c}")
+        print()
+
+    if biggest_risk:
+        print(f"  {YELLOW}⚠ Biggest risk:{RESET} {biggest_risk[:100]}")
+
+    print()
+
+
+async def cmd_knowledge(args):
+    """Update Forge's design and strategy intelligence."""
+    section("Updating Forge intelligence...")
+    info("Researching: trending UI libraries, winning concepts, current stacks")
+    info("This takes ~2 minutes (5 parallel research tasks)")
+
+    from agents.python.infra.knowledge_updater import run_knowledge_update
+    result = await run_knowledge_update(dry_run=args.dry_run)
+
+    if args.dry_run:
+        warn("Dry run — no changes written")
+    else:
+        ok(f"Knowledge updated: {result.get('date')}")
+        ok(f"Sections updated: {', '.join(result.get('sections_updated', []))}")
+        ok(f"Static sections preserved: {', '.join(result.get('sections_preserved', []))}")
+
+
+async def cmd_ls(args):
+    """List all active hackathons."""
+    from redis.asyncio import Redis
+
+    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    keys = await redis.keys("hackathon:*:brief")
+
+    if not keys:
+        warn("No active hackathons. Run 'forge scout' to find some.")
+        await redis.aclose()
+        return
+
+    section(f"Active hackathons ({len(keys)}):")
+    for key in keys:
+        hackathon_id = key.split(":")[1]
+        brief_raw = await redis.get(key)
+        if not brief_raw:
+            continue
+        brief = json.loads(brief_raw)
+        score = brief.get("score", 0)
+        days = brief.get("days_until_deadline", "?")
+        prize = sum(p.get("amount") or 0 for p in brief.get("prizes", []))
+        print(f"  {BOLD}{hackathon_id}{RESET}")
+        print(f"    {brief.get('name')}  {DIM}score:{score} · {days}d · ${prize:,.0f}{RESET}")
+
+    await redis.aclose()
+
+
+async def cmd_test(args):
+    """Run system health checks."""
+    section("Running Forge health checks...")
+
+    checks = []
+
+    # ElectronHub
+    try:
+        from config.electronhub import complete
+        result = await complete(
+            task="classify-hackathon",
+            messages=[{"role": "user", "content": "Reply: FORGE_OK"}],
+        )
+        checks.append(("ElectronHub", "FORGE_OK" in result or "OK" in result))
+    except Exception as e:
+        checks.append(("ElectronHub", False, str(e)))
+
+    # Browser layer
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as s:
+            async with s.get(
+                os.environ.get("BROWSER_SERVER_URL", "http://localhost:3100") + "/health",
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as r:
+                checks.append(("Browser layer", r.status == 200))
+    except Exception as e:
+        checks.append(("Browser layer", False, "not running"))
+
+    # Redis
+    try:
+        from redis.asyncio import Redis
+        r = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+        await r.ping()
+        await r.aclose()
+        checks.append(("Redis", True))
+    except Exception as e:
+        checks.append(("Redis", False, str(e)))
+
+    # Qdrant
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as s:
+            async with s.get("http://localhost:6333/readyz", timeout=aiohttp.ClientTimeout(total=5)) as r:
+                checks.append(("Qdrant", r.status == 200))
+    except Exception:
+        checks.append(("Qdrant", False, "not running"))
+
+    # Design constitution
+    try:
+        from config.design_constitution import STATIC_DESIGN_LAWS, LIVING_KNOWLEDGE, REFERENCE_SITES
+        checks.append(("Design constitution", len(STATIC_DESIGN_LAWS) > 100 and "composio.dev" in REFERENCE_SITES))
+    except Exception as e:
+        checks.append(("Design constitution", False, str(e)))
+
+    print()
+    all_pass = True
+    for check in checks:
+        name, passed = check[0], check[1]
+        detail = check[2] if len(check) > 2 else ""
+        if passed:
+            ok(f"{name}")
+        else:
+            err(f"{name}{f'  {DIM}{detail}{RESET}' if detail else ''}")
+            all_pass = False
+
+    print()
+    if all_pass:
+        ok(f"{BOLD}All systems operational. Forge is ready.{RESET}")
+    else:
+        warn("Some systems need attention. Run 'bash scripts/start.sh' to start services.")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    header()
+
+    parser = argparse.ArgumentParser(
+        prog="forge",
+        description="Forge — autonomous hackathon swarm",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    # scout
+    p_scout = sub.add_parser("scout", help="Discover and score this week's hackathons")
+    p_scout.add_argument("--dry-run", action="store_true", help="Don't register, just score")
+
+    # run
+    p_run = sub.add_parser("run", help="Full autonomous build cycle")
+    p_run.add_argument("--id", metavar="HACKATHON_ID", help="Run specific hackathon")
+    p_run.add_argument("--listen", action="store_true", help="Daemon mode — listen for Scout triggers")
+
+    # status
+    p_status = sub.add_parser("status", help="Live view of all agent statuses")
+    p_status.add_argument("--id", metavar="HACKATHON_ID", help="Filter to specific hackathon")
+
+    # approve
+    p_approve = sub.add_parser("approve", help="Human checkpoint interface")
+    p_approve.add_argument("checkpoint", nargs="?", choices=["concept", "design", "quality", "submit"], help="Which checkpoint")
+    p_approve.add_argument("--id", metavar="HACKATHON_ID", help="Hackathon ID (auto-detected if omitted)")
+
+    # plan
+    p_plan = sub.add_parser("plan", help="Show the build plan (tasks, critical path, risks)")
+    p_plan.add_argument("--id", metavar="HACKATHON_ID", help="Hackathon ID")
+
+    # knowledge
+    p_knowledge = sub.add_parser("knowledge", help="Update design + strategy intelligence")
+    p_knowledge.add_argument("--dry-run", action="store_true", help="Preview without writing")
+
+    # ls
+    sub.add_parser("ls", help="List active hackathons")
+
+    # test
+    sub.add_parser("test", help="Run system health checks")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return
+
+    async def run():
+        if args.command == "scout":
+            await cmd_scout(args)
+        elif args.command == "run":
+            await cmd_run(args)
+        elif args.command == "status":
+            await cmd_status(args)
+        elif args.command == "approve":
+            # Map short names to full checkpoint names
+            if args.checkpoint:
+                mapping = {"concept": "concept_approval", "design": "design_approval",
+                           "quality": "quality_review", "submit": "submission_approval"}
+                args.checkpoint = mapping.get(args.checkpoint, args.checkpoint)
+            await cmd_approve(args)
+        elif args.command == "plan":
+            await cmd_plan(args)
+        elif args.command == "knowledge":
+            await cmd_knowledge(args)
+        elif args.command == "ls":
+            await cmd_ls(args)
+        elif args.command == "test":
+            await cmd_test(args)
+
+    asyncio.run(run())
+
+
+if __name__ == "__main__":
+    main()

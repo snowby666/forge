@@ -17,4 +17,4 @@ elif [ -f "$HOME/.forge-venv/bin/activate" ]; then
   source "$HOME/.forge-venv/bin/activate"
 fi
 
-exec python "$SCRIPT_DIR/forge" "$@"
+exec python "$SCRIPT_DIR/forge.py" "$@"
