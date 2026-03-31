@@ -249,33 +249,34 @@ export PYTHONUTF8=1
 export PYTHONIOENCODING=utf-8
 
 # --- Python core dependencies ------------------------------------------------
-log "Installing Python core dependencies..."
+log "Installing Python core dependencies (this takes 1-3 minutes)..."
 if command -v uv &>/dev/null; then
   uv pip install --python "$VENV_PYTHON" -e ".[dev]" \
     || { uv pip install --python "$VENV_PYTHON" -e "."; uv pip install --python "$VENV_PYTHON" pytest pytest-asyncio; }
 else
-  $PIP_CMD install -e ".[dev]" --quiet 2>&1 | grep -v "^WARNING\|^NOTICE\|^notice" || {
+  $PIP_CMD install -e ".[dev]" 2>&1 | grep -v "^NOTICE\|^notice" || {
     warn "Full install failed -- trying core only"
-    $PIP_CMD install -e "." --quiet 2>&1 | grep -v "^WARNING\|^NOTICE\|^notice"
-    $PIP_CMD install pytest pytest-asyncio --quiet
+    $PIP_CMD install -e "." 2>&1 | grep -v "^NOTICE\|^notice"
+    $PIP_CMD install pytest pytest-asyncio
   }
 fi
 log "Core dependencies installed"
 
 # --- Optional: crawl4ai (JS rendering, adaptive crawl) ----------------------
 log "Installing crawl4ai..."
-$PIP_CMD install "crawl4ai>=0.4.0" --quiet 2>/dev/null \
+$PIP_CMD install "crawl4ai>=0.4.0" 2>&1 | tail -5 \
   || warn "crawl4ai install failed -- web crawling will use the lightweight HTTP fallback"
 
 # --- Optional: sentence-transformers (semantic reranking) -------------------
-log "Installing sentence-transformers..."
-$PIP_CMD install "sentence-transformers>=3.0.0" --quiet 2>/dev/null \
+# This pulls in PyTorch (~2GB) -- can take 5-10 min on slow connections
+log "Installing sentence-transformers (large download, may take a few minutes)..."
+$PIP_CMD install "sentence-transformers>=3.0.0" 2>&1 | tail -5 \
   || warn "sentence-transformers install failed -- BM25 keyword ranking will be used instead"
 
 # --- Optional: PyTorch (CPU build) ------------------------------------------
 if ! $PYTHON_CMD -c "import torch" &>/dev/null 2>&1; then
-  log "Installing PyTorch (CPU build)..."
-  $PIP_CMD install torch --index-url https://download.pytorch.org/whl/cpu --quiet 2>/dev/null \
+  log "Installing PyTorch (CPU build -- large download)..."
+  $PIP_CMD install torch --index-url https://download.pytorch.org/whl/cpu 2>&1 | tail -5 \
     || warn "PyTorch CPU install failed.
   GPU (CUDA 12.x): .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cu121
   CPU only:        .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu"
