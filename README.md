@@ -75,24 +75,58 @@ Layer 7 — Infrastructure (always running)
 
 ## Quick start
 
+### Linux / macOS / WSL2
+
 ```bash
 # 1. Bootstrap
 bash scripts/setup.sh
 
-# 2. Add API keys (ELECTRONHUB_API_KEY + BROWSERBASE_API_KEY are the only blockers)
-cp .env.example .env && nano .env
+# 2. Add API keys
+cp forge.secrets.example forge.secrets && nano forge.secrets
+# Required: ELECTRONHUB_API_KEY
 
 # 3. Start all services
 bash scripts/start.sh
 
 # 4. Verify everything works
-python scripts/test_run.py --dry-run
+python3 scripts/test_run.py --dry-run
 
-# 5. Update Forge's knowledge before first run
-python agents/python/infra/knowledge_updater.py
+# 5. Update knowledge before first run
+python3 agents/python/infra/knowledge_updater.py
 
-# 6. Start listening for hackathons (daemon mode)
-python agents/python/orchestrator/commander.py --listen
+# 6. Start listening for hackathons
+python3 agents/python/orchestrator/commander.py --listen
+```
+
+### Windows
+
+**Recommended: use WSL2** for full GPU and Daytona support.
+Install WSL2: `wsl --install` in PowerShell (admin), then follow the Linux instructions above.
+
+**Native Windows (Docker Desktop + Git Bash):**
+
+```powershell
+# PowerShell (run once to allow scripts)
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\scripts\setup.ps1
+```
+
+```bat
+# Git Bash
+bash scripts/setup.sh
+bash scripts/start.sh
+
+# Forge CLI on Windows (use python explicitly)
+python forge scout
+python forge status
+python forge approve
+```
+
+Or use the included `forge.cmd` wrapper:
+
+```bat
+forge.cmd scout
+forge.cmd status
 
 # 7. Or run a specific hackathon
 python agents/python/orchestrator/commander.py --hackathon-id devpost-123

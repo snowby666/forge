@@ -1,0 +1,37 @@
+# .gitattributes -- enforce line endings
+# Shell scripts must always use LF (Unix) line endings.
+# CRLF endings break bash shebangs on Linux/macOS/WSL.
+
+# Default: auto-detect (text gets LF on checkout in *nix, CRLF on Windows)
+* text=auto
+
+# Shell scripts: always LF (CRLF will break shebang on Linux/WSL)
+*.sh     text eol=lf
+forge    text eol=lf
+
+# Windows-only scripts: CRLF is fine
+*.cmd    text eol=crlf
+*.bat    text eol=crlf
+*.ps1    text eol=crlf
+
+# Python: LF everywhere
+*.py     text eol=lf
+
+# TypeScript/JavaScript: auto
+*.ts     text eol=lf
+*.js     text eol=lf
+*.json   text eol=lf
+
+# Docs and config: auto
+*.md     text
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.toml   text eol=lf
+*.example text eol=lf
+
+# Binaries: no text conversion
+*.png    binary
+*.jpg    binary
+*.gif    binary
+*.ico    binary
+*.zip    binary

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Windows users: run as  python forge <command>
+#                or use  forge.cmd <command>
 """
 forge — the CLI entrypoint for the Forge autonomous hackathon swarm.
 
