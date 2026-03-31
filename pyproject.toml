@@ -2,10 +2,18 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Tell hatchling where to find the Python source.
+# Forge is not a traditional package directory — agents/ and config/ are the source.
+[tool.hatch.build.targets.wheel]
+packages = ["agents", "config"]
+
+[tool.hatch.build.targets.sdist]
+include = ["agents", "config", "scripts", "tests", "forge", "*.md", "*.toml", "*.example"]
+
 [project]
 name = "forge"
 version = "2.0.0"
-description = "Forge — autonomous hackathon agent swarm"
+description = "Forge -- autonomous hackathon agent swarm"
 requires-python = ">=3.11"
 
 dependencies = [
@@ -19,26 +27,23 @@ dependencies = [
     "qdrant-client[async]>=1.12.0",
     "redis[asyncio]>=5.2.0",
     "asyncpg>=0.30.0",
-    "temporalio>=1.7.0",
     # ── ForgeSearch dependencies ──────────────────────────────────────────────
     "ddgs>=8.0.0",                        # Free metasearch (DDG/Bing/Google)
-    "bm25s>=0.2.0",                        # Fast BM25 keyword retrieval (Elasticsearch speed)
-    "sentence-transformers>=3.0.0",        # Embeddings (all-MiniLM-L6-v2) + reranker (ms-marco-MiniLM)
-    "torch>=2.3.0",                        # PyTorch for sentence-transformers (RTX 4060 GPU)
-    "crawl4ai>=0.4.0",                     # LLM-ready web crawler: JS rendering, adaptive crawl, structured extraction
+    "bm25s>=0.2.0",                        # Fast BM25 keyword retrieval
+    "sentence-transformers>=3.0.0",        # Embeddings + reranker models
     # ── Other agents ─────────────────────────────────────────────────────────
     "aiohttp>=3.11.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "playwright>=1.48.0",
-    "readmeai>=0.5.0",
-    "edge-tts>=6.1.0",
     "python-dotenv>=1.0.0",
     "structlog>=24.4.0",
     "tenacity>=9.0.0",
-    "daytona-sdk>=0.10.0",
 ]
 
+# Heavy optional deps — installed separately to avoid wheel availability issues
+# on Python 3.13+. Run: pip install -e ".[gpu]" on Linux servers with CUDA.
+# Run: pip install -e ".[full]" to get everything.
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3.0",
@@ -47,6 +52,29 @@ dev = [
     "httpx>=0.27.0",
     "ruff>=0.7.0",
     "mypy>=1.13.0",
+]
+gpu = [
+    # PyTorch — install the right variant for your hardware:
+    #   CPU-only:  pip install torch --index-url https://download.pytorch.org/whl/cpu
+    #   CUDA 12.x: pip install torch --index-url https://download.pytorch.org/whl/cu121
+    # Listed here for documentation; not installed automatically.
+    "torch>=2.3.0",
+]
+crawl = [
+    "crawl4ai>=0.4.0",                    # JS rendering, adaptive crawl, structured extraction
+]
+temporal = [
+    "temporalio>=1.7.0",                  # Temporal workflow orchestration (Linux/WSL recommended)
+]
+daytona = [
+    "daytona-sdk>=0.10.0",               # Daytona sandbox SDK (Linux/WSL only)
+]
+tts = [
+    "edge-tts>=6.1.0",                   # Text-to-speech for demo narration
+    "readmeai>=0.5.0",                    # README generation
+]
+full = [
+    "forge[gpu,crawl,temporal,daytona,tts]",
 ]
 
 [tool.ruff]
@@ -63,3 +91,4 @@ testpaths = ["tests"]
 
 [project.scripts]
 forge = "forge:main"
+

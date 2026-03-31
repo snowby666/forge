@@ -180,12 +180,39 @@ CREATE TABLE IF NOT EXISTS ux_audit_reports (
 );
 EOSQL
 
-# --- Python dependencies -----------------------------------------------------
-log "Installing Python dependencies..."
+# --- Python version warning for 3.13+ ---------------------------------------
+PY_MINOR=$($PYTHON_CMD -c "import sys; print(sys.version_info.minor)")
+PY_MAJOR=$($PYTHON_CMD -c "import sys; print(sys.version_info.major)")
+if [[ "$PY_MAJOR" -eq 3 && "$PY_MINOR" -ge 13 ]]; then
+  warn "Python 3.${PY_MINOR} detected. Some wheels (torch, temporalio, daytona-sdk)
+  may not have pre-built binaries for 3.${PY_MINOR} yet.
+  Forge core will work; optional GPU/Temporal/Daytona features install separately.
+  Recommended: Python 3.11 or 3.12 for maximum compatibility."
+fi
+
+# --- Python dependencies (staged) --------------------------------------------
+log "Installing Python core dependencies..."
 if command -v uv &>/dev/null; then
-  uv pip install -e ".[dev]"
+  uv pip install -e ".[dev]" || uv pip install -e "." && uv pip install pytest pytest-asyncio
 else
-  $PIP_CMD install -e ".[dev]" --quiet
+  $PIP_CMD install -e ".[dev]" --quiet || {
+    warn "Full install failed -- trying core only (common on Python 3.13+)"
+    $PIP_CMD install -e "." --quiet
+    $PIP_CMD install pytest pytest-asyncio --quiet
+  }
+fi
+
+# Optional heavy deps -- install separately, failures are non-fatal
+log "Installing optional deps (crawl4ai, sentence-transformers)..."
+$PIP_CMD install crawl4ai>=0.4.0 --quiet 2>/dev/null ||   warn "crawl4ai install failed -- web crawling will use fallback HTTP extractor"
+$PIP_CMD install sentence-transformers>=3.0.0 --quiet 2>/dev/null ||   warn "sentence-transformers install failed -- semantic reranking will be skipped"
+
+# PyTorch: install CPU-only version by default (GPU users should install manually)
+if ! $PYTHON_CMD -c "import torch" &>/dev/null 2>&1; then
+  log "Installing PyTorch (CPU build)..."
+  $PIP_CMD install torch --index-url https://download.pytorch.org/whl/cpu --quiet 2>/dev/null ||     warn "PyTorch CPU install failed.
+  GPU server: pip install torch --index-url https://download.pytorch.org/whl/cu121
+  CPU-only:   pip install torch --index-url https://download.pytorch.org/whl/cpu"
 fi
 
 # --- Playwright browsers -----------------------------------------------------

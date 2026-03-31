@@ -167,14 +167,57 @@ CREATE TABLE IF NOT EXISTS ux_audit_reports (
 );
 "@ | Set-Content "infra/postgres/init.sql" -Encoding UTF8
 
-# --- Python dependencies -----------------------------------------------------
-Write-Green "Installing Python dependencies..."
+# --- Python version check ----------------------------------------------------
+$PyMinor = (& $PYTHON_CMD -c "import sys; print(sys.version_info.minor)" 2>$null)
+$PyMajor = (& $PYTHON_CMD -c "import sys; print(sys.version_info.major)" 2>$null)
+if ([int]$PyMajor -eq 3 -and [int]$PyMinor -ge 13) {
+    Write-Yellow @"
+Python 3.$PyMinor detected. Some wheels (torch, temporalio, daytona-sdk)
+may not have pre-built binaries for Python 3.$PyMinor yet.
+Forge core will work. For maximum compatibility use Python 3.11 or 3.12.
+"@
+}
+
+# --- Python dependencies (staged) --------------------------------------------
+Write-Green "Installing Python core dependencies..."
 if (-not $DryRun) {
-    # Try uv first (faster), fall back to pip
+    $installed = $false
     if (Get-Command uv -ErrorAction SilentlyContinue) {
-        uv pip install -e ".[dev]"
-    } else {
-        & $PYTHON_CMD -m pip install -e ".[dev]" --quiet
+        try { uv pip install -e ".[dev]"; $installed = $true } catch {}
+    }
+    if (-not $installed) {
+        try {
+            & $PYTHON_CMD -m pip install -e ".[dev]" --quiet
+            $installed = $true
+        } catch {
+            Write-Yellow "Full install failed -- trying core only (common on Python 3.13+)"
+            & $PYTHON_CMD -m pip install -e "." --quiet
+            & $PYTHON_CMD -m pip install pytest pytest-asyncio --quiet
+        }
+    }
+
+    # Optional heavy deps
+    Write-Green "Installing optional deps (crawl4ai, sentence-transformers)..."
+    try { & $PYTHON_CMD -m pip install "crawl4ai>=0.4.0" --quiet } catch {
+        Write-Yellow "crawl4ai install failed -- web crawling will use fallback HTTP extractor"
+    }
+    try { & $PYTHON_CMD -m pip install "sentence-transformers>=3.0.0" --quiet } catch {
+        Write-Yellow "sentence-transformers install failed -- semantic reranking will be skipped"
+    }
+
+    # PyTorch CPU build
+    $hasTorch = & $PYTHON_CMD -c "import torch; print('ok')" 2>$null
+    if ($hasTorch -ne "ok") {
+        Write-Green "Installing PyTorch (CPU build)..."
+        try {
+            & $PYTHON_CMD -m pip install torch --index-url https://download.pytorch.org/whl/cpu --quiet
+        } catch {
+            Write-Yellow @"
+PyTorch CPU install failed.
+GPU (CUDA 12.x): pip install torch --index-url https://download.pytorch.org/whl/cu121
+CPU only:        pip install torch --index-url https://download.pytorch.org/whl/cpu
+"@
+        }
     }
 }
 
