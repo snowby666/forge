@@ -123,6 +123,10 @@ if [ ! -f forge.secrets ]; then
   cp forge.secrets.example forge.secrets 2>/dev/null || true
 fi
 
+# ── Step 5b: Clean stale venv state from NTFS copy ───────────────────────────
+# .venv symlink from NTFS won't work here; remove it so setup.sh creates fresh
+rm -f .venv 2>/dev/null || true
+
 # ── Step 6: Run setup.sh ─────────────────────────────────────────────────────
 log "Running setup..."
 bash scripts/setup.sh
