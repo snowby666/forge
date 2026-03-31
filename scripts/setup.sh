@@ -74,7 +74,8 @@ if ! command -v docker &>/dev/null; then
     err "Docker not installed. See: https://docs.docker.com/engine/install/"
   fi
 fi
-log "Docker: $(docker --version | cut -d' ' -f3 | tr -d ',')"
+DOCKER_VER=$(docker --version 2>/dev/null | head -1 | grep -oP 'Docker version \K[^,]+' || echo "installed")
+log "Docker: ${DOCKER_VER}"
 
 # --- Node.js -----------------------------------------------------------------
 if ! command -v node &>/dev/null; then
@@ -173,15 +174,35 @@ if [[ "$PY_MAJOR" -eq 3 && "$PY_MINOR" -ge 13 ]]; then
   Forge core will work. For maximum compatibility use Python 3.11 or 3.12."
 fi
 
+# --- Ensure pip is available -------------------------------------------------
+# WSL2 Ubuntu and some Linux distros ship python3 without pip.
+if ! $PYTHON_CMD -m pip --version &>/dev/null 2>&1; then
+  log "pip not found -- attempting to install..."
+  if [[ "$OS_TYPE" == "linux" || "$OS_TYPE" == "wsl" ]]; then
+    if command -v apt-get &>/dev/null; then
+      sudo apt-get install -y python3-pip python3-venv 2>/dev/null         || $PYTHON_CMD -m ensurepip --upgrade 2>/dev/null         || err "Cannot install pip. Run: sudo apt install python3-pip"
+    elif command -v dnf &>/dev/null; then
+      sudo dnf install -y python3-pip 2>/dev/null         || err "Cannot install pip. Run: sudo dnf install python3-pip"
+    else
+      $PYTHON_CMD -m ensurepip --upgrade 2>/dev/null         || err "pip not found. Install manually: https://pip.pypa.io/en/stable/installation/"
+    fi
+  else
+    $PYTHON_CMD -m ensurepip --upgrade 2>/dev/null       || err "pip not found. Install manually: https://pip.pypa.io/en/stable/installation/"
+  fi
+  # Upgrade pip to latest
+  $PYTHON_CMD -m pip install --upgrade pip --quiet 2>/dev/null || true
+  log "pip installed: $($PYTHON_CMD -m pip --version)"
+fi
+
 # --- Python core dependencies ------------------------------------------------
 log "Installing Python core dependencies..."
 if command -v uv &>/dev/null; then
   uv pip install -e ".[dev]" || { uv pip install -e "."; uv pip install pytest pytest-asyncio; }
 else
-  $PIP_CMD install -e ".[dev]" --quiet 2>&1 | grep -v "^WARNING\|^NOTICE\|^notice" || {
-    warn "Full install failed -- trying core only (common on Python 3.13+)"
-    $PIP_CMD install -e "." --quiet 2>&1 | grep -v "^WARNING\|^NOTICE\|^notice"
-    $PIP_CMD install pytest pytest-asyncio --quiet
+  $PYTHON_CMD -m pip install -e ".[dev]" --quiet 2>&1 | grep -v "^WARNING\|^NOTICE\|^notice" || {
+    warn "Full install failed -- trying core only"
+    $PYTHON_CMD -m pip install -e "." --quiet 2>&1 | grep -v "^WARNING\|^NOTICE\|^notice"
+    $PYTHON_CMD -m pip install pytest pytest-asyncio --quiet
   }
 fi
 

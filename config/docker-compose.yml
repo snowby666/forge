@@ -1,5 +1,5 @@
 # NOTE: Copy .env.example to .env and fill in passwords before running `docker compose up`
-version: "3.9"
+# version: field is obsolete in Compose v2 -- removed to suppress the warning
 
 services:
   postgres:
@@ -35,7 +35,7 @@ services:
     ports:
       - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-change_me}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -73,8 +73,8 @@ services:
       DB_POSTGRESDB_PORT: 5432
       DB_POSTGRESDB_DATABASE: n8n
       DB_POSTGRESDB_USER: ${POSTGRES_USER:-backbone}
-      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
-      N8N_AI_OPENAI_API_KEY: ${ELECTRONHUB_API_KEY}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      N8N_AI_OPENAI_API_KEY: ${ELECTRONHUB_API_KEY:-not_set}
       N8N_AI_OPENAI_BASE_URL: ${ELECTRONHUB_BASE_URL:-https://api.electronhub.ai/v1}
     volumes:
       - ./infra/n8n/data:/home/node/.n8n
@@ -92,7 +92,7 @@ services:
       DB: postgresql
       DB_PORT: 5432
       POSTGRES_USER: ${POSTGRES_USER:-backbone}
-      POSTGRES_PWD: ${POSTGRES_PASSWORD}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-change_me}
       POSTGRES_SEEDS: postgres
       DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/dynamicconfig.yaml
     volumes:
@@ -113,31 +113,29 @@ services:
     depends_on:
       - temporal
 
-
-  # ── ForgeSearch: SearXNG self-hosted metasearch ──────────────────────────────
-  # Queries 70+ search engines simultaneously (Google, Bing, DDG, Startpage...)
-  # Completely free. Set SEARXNG_URL=http://searxng:8080 in forge.secrets.
-  # Disable by removing this service and unsetting SEARXNG_URL.
+  # ── SearXNG self-hosted metasearch (ForgeSearch) ──────────────────────────
+  # Queries 70+ engines simultaneously (Google, Bing, DDG, Startpage...). Free.
+  # Set SEARXNG_URL=http://searxng:8081 in forge.secrets to enable.
+  # Uses port 8081 to avoid conflict with temporal-ui on 8080.
   searxng:
     image: searxng/searxng:latest
     container_name: forge-searxng
     restart: unless-stopped
     environment:
-      - SEARXNG_BASE_URL=http://localhost:8080
+      - SEARXNG_BASE_URL=http://localhost:8081
       - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-forge-searxng-secret-change-this}
     volumes:
       - ./infra/searxng:/etc/searxng:rw
     ports:
-      - "8080:8080"
+      - "8081:8080"
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8080/search?q=test&format=json"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/healthz || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
     depends_on:
       - redis
-    networks:
-      - forge-net
+    # Uses the default network -- no custom network needed
 
 networks:
   default:
