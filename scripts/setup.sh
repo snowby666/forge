@@ -113,6 +113,8 @@ if [ ! -f forge.secrets ]; then
   cp forge.secrets.example forge.secrets
   warn "forge.secrets created -- add your API keys (gitignored)"
 fi
+# Strip Windows CRLF from config files (NTFS /mnt/c/ + git autocrlf cause \r\n)
+sed -i 's/\r$//' .env forge.secrets 2>/dev/null || true
 
 # --- Infrastructure directories ----------------------------------------------
 log "Creating infra directories..."

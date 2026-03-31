@@ -58,6 +58,9 @@ PYTHON_CMD="${VENV_PYTHON:-python}"
 
 # --- Load .env ---------------------------------------------------------------
 [[ -f .env ]] || err ".env not found -- run scripts/setup.sh first"
+# Strip Windows CRLF line endings (files on NTFS /mnt/c/ get \r\n from Windows editors/git)
+sed -i 's/\r$//' .env 2>/dev/null || true
+[[ -f forge.secrets ]] && { sed -i 's/\r$//' forge.secrets 2>/dev/null || true; }
 set -a; source .env; set +a
 
 # --- Validate .env has real passwords ----------------------------------------
