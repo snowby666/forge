@@ -249,15 +249,28 @@ export PYTHONUTF8=1
 export PYTHONIOENCODING=utf-8
 
 # --- Python core dependencies ------------------------------------------------
+# On NTFS mounts, editable installs (-e) fail because pip/hatchling writes
+# build metadata (.egg-info) to the project dir on NTFS. Use regular install.
+if [[ "$ON_NTFS" == "true" ]]; then
+  PIP_EDIT_FLAG=""
+  info "NTFS detected -- using non-editable install (pip install . instead of -e .)"
+else
+  PIP_EDIT_FLAG="-e"
+fi
+
 log "Installing Python core dependencies (this takes 1-3 minutes)..."
 if command -v uv &>/dev/null; then
-  uv pip install --python "$VENV_PYTHON" -e ".[dev]" \
-    || { uv pip install --python "$VENV_PYTHON" -e "."; uv pip install --python "$VENV_PYTHON" pytest pytest-asyncio; }
+  uv pip install --python "$VENV_PYTHON" $PIP_EDIT_FLAG ".[dev]" \
+    || { uv pip install --python "$VENV_PYTHON" $PIP_EDIT_FLAG "."; uv pip install --python "$VENV_PYTHON" pytest pytest-asyncio; }
 else
-  $PIP_CMD install -e ".[dev]" 2>&1 | grep -v "^NOTICE\|^notice" || {
+  $PIP_CMD install $PIP_EDIT_FLAG ".[dev]" 2>&1 || {
     warn "Full install failed -- trying core only"
-    $PIP_CMD install -e "." 2>&1 | grep -v "^NOTICE\|^notice"
-    $PIP_CMD install pytest pytest-asyncio
+    $PIP_CMD install $PIP_EDIT_FLAG "." 2>&1 || {
+      err "pip install failed. Check errors above.
+  If on WSL2/NTFS, try cloning the repo to your Linux home directory:
+    cp -r /mnt/c/.../forge ~/forge && cd ~/forge && bash scripts/setup.sh"
+    }
+    $PIP_CMD install pytest pytest-asyncio || true
   }
 fi
 log "Core dependencies installed"
