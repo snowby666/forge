@@ -183,6 +183,7 @@ fi
 
 FORGE_DIR="$(pwd)"
 VENV_DIR=".venv"
+NATIVE_VENV_DIR="$HOME/.forge-venv"
 
 # Detect if we're on a Windows NTFS mount (WSL2 running forge from /mnt/...)
 ON_NTFS=false
@@ -199,7 +200,6 @@ fi
 
 if [[ "$ON_NTFS" == "true" ]]; then
   # Use native WSL2 filesystem for the venv to avoid NTFS permission errors
-  NATIVE_VENV_DIR="$HOME/.forge-venv"
   if [ ! -d "$NATIVE_VENV_DIR" ]; then
     log "Creating virtual environment in WSL2 native filesystem (~/.forge-venv)..."
     log "(Project is on NTFS /mnt/c/ -- venv must be on native ext4 filesystem)"
@@ -226,9 +226,14 @@ else
 fi
 
 # Activate venv and update PYTHON_CMD / PIP_CMD to point inside it
+# CRITICAL: On NTFS mounts, use the native venv path directly for pip operations.
+# The .venv symlink lives on NTFS and pip's temp-file operations fail through it.
 if [[ "$OS_TYPE" == "windows" ]]; then
   VENV_PYTHON="$VENV_DIR/Scripts/python"
   VENV_PIP="$VENV_DIR/Scripts/pip"
+elif [[ "$ON_NTFS" == "true" ]]; then
+  VENV_PYTHON="$NATIVE_VENV_DIR/bin/python"
+  VENV_PIP="$NATIVE_VENV_DIR/bin/pip"
 else
   VENV_PYTHON="$VENV_DIR/bin/python"
   VENV_PIP="$VENV_DIR/bin/pip"
