@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# forge-deploy.sh -- One-shot deploy: copies to native Linux FS, sets up, starts everything.
+# forge-deploy.sh -- One-shot deploy. Zero interaction. Handles everything.
 # Usage: bash forge-deploy.sh
-# That's it. No other commands needed.
 set -euo pipefail
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -31,68 +30,45 @@ fi
 
 # ── Step 2: Copy to native Linux filesystem if on NTFS ───────────────────────
 if [[ "$ON_NTFS" == "true" ]]; then
-  log "WSL2 + NTFS detected. Copying project to native Linux filesystem..."
-  log "Source: $SCRIPT_DIR"
-  log "Target: $DEPLOY_DIR"
+  log "WSL2 + NTFS detected — copying to native Linux filesystem..."
+  log "Source: $SCRIPT_DIR → Target: $DEPLOY_DIR"
 
-  if [ -d "$DEPLOY_DIR" ]; then
-    log "Removing old $DEPLOY_DIR..."
-    rm -rf "$DEPLOY_DIR"
-  fi
-
+  rm -rf "$DEPLOY_DIR" 2>/dev/null || true
   cp -r "$SCRIPT_DIR" "$DEPLOY_DIR"
-  log "Copied to $DEPLOY_DIR"
 
-  # Re-exec this script from the native filesystem
-  cd "$DEPLOY_DIR"
+  # Re-exec from native filesystem
   exec bash "$DEPLOY_DIR/forge-deploy.sh"
 fi
 
-# From here, we're guaranteed to be on a native filesystem
+# From here we're guaranteed to be on a native filesystem
 cd "$SCRIPT_DIR"
 log "Working directory: $(pwd)"
 
 # ── Step 3: Install Docker if missing ─────────────────────────────────────────
 if ! command -v docker &>/dev/null; then
-  log "Docker not found. Installing Docker Engine..."
+  log "Docker not found — installing..."
   curl -fsSL https://get.docker.com | sudo sh
   sudo usermod -aG docker "$USER"
-  log "Docker installed. You may need to log out and back in for group changes."
-  log "Trying to continue with sudo docker..."
 fi
 
-# Check docker socket permissions
 if ! docker info &>/dev/null 2>&1; then
   if sudo docker info &>/dev/null 2>&1; then
-    warn "Docker requires sudo. Adding $USER to docker group..."
     sudo usermod -aG docker "$USER"
-    # Use sg to get the group in this session without logout
-    SG_AVAILABLE=true
-    sg docker -c "docker info" &>/dev/null 2>&1 || SG_AVAILABLE=false
-    if [[ "$SG_AVAILABLE" == "false" ]]; then
-      warn "Cannot activate docker group in current session."
-      warn "Run these commands manually after this script:"
-      warn "  newgrp docker"
-      warn "  bash forge-deploy.sh"
-      exit 1
-    fi
-    # Re-exec under the docker group
+    warn "Docker group added. Re-running with new group..."
     exec sg docker -c "bash $(pwd)/forge-deploy.sh"
   else
-    err "Docker is not running. Start Docker and re-run this script."
+    sudo service docker start 2>/dev/null || true
+    sleep 2
+    docker info &>/dev/null 2>&1 || err "Docker is not running. Start Docker and re-run."
   fi
 fi
 
 log "Docker: $(docker --version | head -1)"
 
-# ── Step 4: Strip CRLF from all text files ────────────────────────────────────
+# ── Step 4: Strip CRLF from all config files ─────────────────────────────────
 log "Fixing line endings..."
-find . -maxdepth 1 -name "*.env*" -o -name "*.secrets*" -o -name "*.example" | while read -r f; do
-  sed -i 's/\r$//' "$f" 2>/dev/null || true
-done
-find scripts config -name "*.sh" -o -name "*.yml" -o -name "*.yaml" -o -name "*.sql" 2>/dev/null | while read -r f; do
-  sed -i 's/\r$//' "$f" 2>/dev/null || true
-done
+find . -maxdepth 1 \( -name "*.env*" -o -name "*.secrets*" -o -name "*.example" \) -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+find scripts config -type f \( -name "*.sh" -o -name "*.yml" -o -name "*.yaml" -o -name "*.sql" \) -exec sed -i 's/\r$//' {} + 2>/dev/null || true
 
 # ── Step 5: Generate .env with real passwords ─────────────────────────────────
 if [ ! -f .env ]; then
@@ -102,7 +78,7 @@ sed -i 's/\r$//' .env
 
 gen_pw() { openssl rand -base64 18 | tr -d '=/+' | head -c 24; }
 
-CURRENT_PG_PASS=$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2-)
+CURRENT_PG_PASS=$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2- || echo "")
 if [[ "$CURRENT_PG_PASS" == "change_this_strong_password" || "$CURRENT_PG_PASS" == "change_me" || -z "$CURRENT_PG_PASS" ]]; then
   PG_PASS=$(gen_pw)
   REDIS_PASS=$(gen_pw)
@@ -115,7 +91,6 @@ if [[ "$CURRENT_PG_PASS" == "change_this_strong_password" || "$CURRENT_PG_PASS" 
   sed -i "s|^REDIS_URL=.*|REDIS_URL=redis://:${REDIS_PASS}@localhost:6379|" .env
   sed -i "s|^QDRANT_API_KEY=.*|QDRANT_API_KEY=${QDRANT_KEY}|" .env
   sed -i "s|^N8N_PASSWORD=.*|N8N_PASSWORD=${N8N_PASS}|" .env
-
   log "Generated secure passwords in .env"
 fi
 
@@ -123,22 +98,142 @@ if [ ! -f forge.secrets ]; then
   cp forge.secrets.example forge.secrets 2>/dev/null || true
 fi
 
-# ── Step 5b: Clean stale venv state from NTFS copy ───────────────────────────
-# .venv symlink from NTFS won't work here; remove it so setup.sh creates fresh
-rm -f .venv 2>/dev/null || true
+# ── Step 6: Ensure forge.py exists (entry point for pip install) ──────────────
+if [ -f forge ] && [ ! -f forge.py ]; then
+  cp forge forge.py
+  log "Created forge.py from forge CLI script"
+fi
 
-# ── Step 6: Run setup.sh ─────────────────────────────────────────────────────
-log "Running setup..."
-bash scripts/setup.sh
+# ── Step 7: Create fresh Python venv ──────────────────────────────────────────
+log "Setting up Python virtual environment..."
+rm -rf .venv ~/.forge-venv 2>/dev/null || true
 
-# ── Step 7: Tear down any old Docker state ────────────────────────────────────
-log "Cleaning old Docker state..."
+# Ensure python3-venv is available
+if command -v apt-get &>/dev/null; then
+  sudo apt-get install -y python3-venv python3-full -qq 2>/dev/null || true
+fi
+
+PYTHON_CMD=""
+for cmd in python3 python3.12 python3.11; do
+  if command -v "$cmd" &>/dev/null; then
+    VER=$("$cmd" -c "import sys; v=sys.version_info; print(f'{v.major}.{v.minor}')" 2>/dev/null || echo "0.0")
+    MAJOR=$(echo "$VER" | cut -d. -f1)
+    MINOR=$(echo "$VER" | cut -d. -f2)
+    if [[ "$MAJOR" -eq 3 && "$MINOR" -ge 11 ]]; then
+      PYTHON_CMD="$cmd"
+      break
+    fi
+  fi
+done
+[[ -n "$PYTHON_CMD" ]] || err "Python 3.11+ not found. Install: sudo apt install python3.12 python3.12-venv"
+
+$PYTHON_CMD -m venv .venv || err "Failed to create venv. Run: sudo apt install python3-venv python3-full"
+source .venv/bin/activate
+pip install --upgrade pip --quiet
+
+log "Python: $($PYTHON_CMD --version) | pip: $(pip --version | cut -d' ' -f2)"
+
+# ── Step 8: Install ALL Python dependencies ───────────────────────────────────
+log "Installing core dependencies (1-3 min)..."
+pip install -e ".[dev]" 2>&1 | tail -3
+
+log "Installing crawl4ai..."
+pip install "crawl4ai>=0.4.0" 2>&1 | tail -3 || warn "crawl4ai install failed — lightweight HTTP fallback will be used"
+
+log "Installing sentence-transformers (large download, may take a few minutes)..."
+pip install "sentence-transformers>=3.0.0" 2>&1 | tail -3 || warn "sentence-transformers failed — BM25 keyword ranking will be used"
+
+# ── Step 9: Install Playwright browsers ───────────────────────────────────────
+log "Installing Playwright Chromium..."
+playwright install chromium --with-deps 2>&1 | tail -5 || warn "Playwright install had issues"
+
+# ── Step 10: Install browser layer (Node.js) ─────────────────────────────────
+if [ -d agents/browser ] && [ -f agents/browser/package.json ]; then
+  log "Installing browser layer..."
+  cd agents/browser && npm install --silent 2>/dev/null && cd ../..
+fi
+
+# ── Step 11: Create infrastructure config files ──────────────────────────────
+if [ ! -f config/postgres-init.sql ]; then
+cat > config/postgres-init.sql << 'EOSQL'
+CREATE DATABASE n8n;
+GRANT ALL PRIVILEGES ON DATABASE n8n TO backbone;
+\c backbone;
+
+CREATE TABLE IF NOT EXISTS hackathons (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL,
+  platform TEXT, theme TEXT, deadline TIMESTAMPTZ, score INTEGER,
+  status TEXT DEFAULT 'discovered', concept_json JSONB,
+  project_url TEXT, submission_url TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS agent_tasks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  hackathon_id TEXT REFERENCES hackathons(id),
+  agent_id TEXT NOT NULL, status TEXT DEFAULT 'pending',
+  input_json JSONB, output_json JSONB, error TEXT,
+  iterations INTEGER DEFAULT 0, started_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS ux_audit_reports (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  hackathon_id TEXT REFERENCES hackathons(id),
+  preview_url TEXT, overall_score FLOAT, approved BOOLEAN,
+  report_json JSONB, created_at TIMESTAMPTZ DEFAULT NOW()
+);
+EOSQL
+  log "Created config/postgres-init.sql"
+fi
+
+if [ ! -f config/temporal-dynamicconfig.yaml ]; then
+cat > config/temporal-dynamicconfig.yaml << 'EOCONF'
+system.forceSearchAttributesCacheRefreshOnRead:
+  - value: true
+    constraints: {}
+EOCONF
+  log "Created config/temporal-dynamicconfig.yaml"
+fi
+
+# ── Step 12: Start Docker services ────────────────────────────────────────────
+log "Starting Docker services..."
 set -a; source .env 2>/dev/null || true; set +a
 docker compose -f config/docker-compose.yml down -v 2>/dev/null || true
+docker compose -f config/docker-compose.yml up -d
 
-# ── Step 8: Start everything ─────────────────────────────────────────────────
-log "Starting services..."
-bash scripts/start.sh
+log "Waiting for PostgreSQL..."
+for i in $(seq 1 60); do
+  docker exec forge-postgres pg_isready -U "${POSTGRES_USER:-backbone}" &>/dev/null && break
+  sleep 1
+done
+log "PostgreSQL ready"
+
+log "Waiting for Redis..."
+for i in $(seq 1 30); do
+  docker exec forge-redis redis-cli -a "${REDIS_PASSWORD:-changeme}" ping &>/dev/null && break
+  sleep 1
+done
+log "Redis ready"
+
+log "Waiting for Qdrant..."
+for i in $(seq 1 30); do
+  curl -sf http://localhost:6333/readyz &>/dev/null && break
+  sleep 2
+done
+log "Qdrant ready"
+
+# ── Step 13: Initialize Qdrant collections ────────────────────────────────────
+log "Initializing Qdrant collections..."
+python -c "
+import asyncio, sys
+sys.path.insert(0, '.')
+async def main():
+    from agents.python.infra.memory_keeper import ensure_collections
+    await ensure_collections()
+    print('Collections ready')
+asyncio.run(main())
+" 2>&1 || warn "Qdrant collection init failed (may already exist)"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
@@ -146,11 +241,12 @@ echo -e "${BOLD}╔════════════════════�
 echo -e "${BOLD}║       Forge is running!                          ║${NC}"
 echo -e "${BOLD}╚══════════════════════════════════════════════════╝${NC}"
 echo ""
-info "Project location: $(pwd)"
-info "Activate venv:    source .venv/bin/activate"
-info ""
+info "Project:  $(pwd)"
+info "Activate: source $(pwd)/.venv/bin/activate"
+echo ""
 info "Next:"
-info "  1. Edit forge.secrets -- add ELECTRONHUB_API_KEY"
-info "  2. python scripts/test_run.py --dry-run"
-info "  3. python agents/python/orchestrator/commander.py --listen"
+info "  1. Edit forge.secrets — add ELECTRONHUB_API_KEY"
+info "  2. source .venv/bin/activate"
+info "  3. forge scout --dry-run"
+info "  4. forge test"
 echo ""

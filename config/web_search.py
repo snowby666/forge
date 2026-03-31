@@ -1165,9 +1165,25 @@ _DEVFOLIO_SCHEMA = {
 }
 
 _PLATFORM_CONFIG: dict[str, dict] = {
-    "devpost":   {"url": "https://devpost.com/hackathons?order_by=prize-amount", "schema": _DEVPOST_SCHEMA},
-    "lablab":    {"url": "https://lablab.ai/event",                              "schema": _LABLAB_SCHEMA},
-    "devfolio":  {"url": "https://devfolio.co/hackathons",                       "schema": _DEVFOLIO_SCHEMA},
+    "devpost":  {
+        "url": "https://devpost.com/hackathons?order_by=prize-amount",
+        "schema": _DEVPOST_SCHEMA,
+        "wait_until": "networkidle",
+        "timeout": 30000,
+    },
+    "lablab":   {
+        "url": "https://lablab.ai/event",
+        "schema": _LABLAB_SCHEMA,
+        "wait_until": "networkidle",
+        "timeout": 30000,
+    },
+    "devfolio": {
+        "url": "https://devfolio.co/hackathons",
+        "schema": _DEVFOLIO_SCHEMA,
+        "wait_until": "domcontentloaded",
+        "timeout": 45000,
+        "delay_before_extract": 5.0,
+    },
 }
 
 
@@ -1216,9 +1232,10 @@ async def scrape_hackathon_listings(
                         cache_mode=CacheMode.ENABLED,
                         extraction_strategy=extraction_strategy,
                         remove_overlay_elements=True,
-                        wait_until="networkidle",
-                        page_timeout=25000,
+                        wait_until=cfg.get("wait_until", "domcontentloaded"),
+                        page_timeout=cfg.get("timeout", 30000),
                         scroll_delay=0.3,
+                        delay_before_return_html=cfg.get("delay_before_extract", 1.0),
                     )
 
                     result = await crawler.arun(url=cfg["url"], config=run_cfg)
@@ -1252,7 +1269,7 @@ async def scrape_hackathon_listings(
                             logger.debug(f"[forge:search] {platform}: CSS extraction failed, returned raw markdown")
 
                 except Exception as e:
-                    logger.warning(f"[forge:search] {platform} scrape failed: {e}")
+                    logger.warning(f"[forge:search] {platform} scrape skipped: {type(e).__name__}: {str(e)[:80]}")
                     continue
 
     except ImportError:
