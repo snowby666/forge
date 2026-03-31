@@ -33,6 +33,37 @@ class AgentDef:
     sop_inputs: list[str]   # artifact types this agent CONSUMES
     sop_outputs: list[str]  # artifact types this agent PRODUCES
 
+    # ── Claude Code-inspired fields ───────────────────────────────────────────
+    # Adapted from src/Tool.ts: isConcurrencySafe(), isReadOnly()
+    is_concurrency_safe: bool = True
+    """Can this agent run in parallel with other agents without state conflicts?
+    False = must wait for dependencies to fully complete before starting.
+    Commander uses this to build the correct parallel execution graph."""
+
+    is_read_only: bool = False
+    """Does this agent only read data (no writes to disk, Redis, or external services)?
+    Read-only agents can always run concurrently. Non-read-only agents respect is_concurrency_safe."""
+
+    requires_plan_approval: bool = False
+    """Before executing, does this agent need to show a plan and get batch approval?
+    Adapted from Claude Code's EnterPlanModeTool pattern.
+    True = agent presents its intended actions before executing any of them."""
+
+    permission_rules: list[str] = field(default_factory=list)
+    """Wildcard permission rules this agent is pre-approved for.
+    Adapted from Claude Code's permission rule syntax: 'Bash(git *)', 'FileEdit(src/*)'.
+    Format: 'TOOL(pattern)' — empty list = ask human for each destructive action."""
+
+    max_tokens_per_run: int = 50_000
+    """Soft token budget for this agent per hackathon run.
+    Monitor Agent tracks actual spend and alerts when exceeded.
+    Adapted from Claude Code's cost-tracker.ts pattern."""
+
+    produces_file_patches: bool = False
+    """Does this agent output PATCH: / FIND: / REPLACE: / END blocks for file editing?
+    Adapted from Claude Code's FileEditTool string-replacement protocol.
+    When True, Polish Agent applies patches using the standard patch parser."""
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LAYER 0: COMMAND (1 agent)

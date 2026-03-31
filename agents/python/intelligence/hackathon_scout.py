@@ -123,15 +123,35 @@ async def score_hackathon(brief: HackathonBrief) -> HackathonBrief:
 
 
 async def call_browser_scrape(platforms: list[str], limit: int = 5) -> list[dict]:
-    """Ask browser layer to scrape hackathon listings."""
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            f"{BROWSER_URL}/scrape",
-            json={"platforms": platforms, "limit_per_platform": limit},
-            timeout=aiohttp.ClientTimeout(total=300),
-        ) as resp:
-            data = await resp.json()
-            return data.get("hackathons", [])
+    """
+    Scrape hackathon listings.
+    Primary: Crawl4AI native Python extraction (JS rendering, no Stagehand server needed).
+    Fallback: Stagehand browser layer (TypeScript server on BROWSER_URL).
+    """
+    # Try Crawl4AI first — handles JS-rendered SPAs natively, zero extra process
+    try:
+        from config.web_search import scrape_hackathon_listings
+        listings = await scrape_hackathon_listings(platforms, limit_per_platform=limit)
+        if listings:
+            logger.info(f"[forge:scout] Crawl4AI extracted {len(listings)} listings")
+            return listings
+        logger.debug("[forge:scout] Crawl4AI returned no listings — trying Stagehand fallback")
+    except Exception as e:
+        logger.debug(f"[forge:scout] Crawl4AI scrape failed ({e}) — trying Stagehand")
+
+    # Fallback: original Stagehand browser layer
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{BROWSER_URL}/scrape",
+                json={"platforms": platforms, "limit_per_platform": limit},
+                timeout=aiohttp.ClientTimeout(total=300),
+            ) as resp:
+                data = await resp.json()
+                return data.get("hackathons", [])
+    except Exception as e:
+        logger.warning(f"[forge:scout] Stagehand fallback also failed: {e}")
+        return []
 
 
 async def call_browser_register(url: str, platform: str, dry_run: bool = False) -> bool:

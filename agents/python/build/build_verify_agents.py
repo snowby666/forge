@@ -370,8 +370,16 @@ async def run_security_agent(
     hackathon_id: str,
     repo_path: str = "",
 ) -> SecurityReport:
+    from config.forge_tools import feature
     AGENT = ALL_AGENTS["security"]
     blockers: list[SecurityIssue] = []
+
+    # Feature 8: allow skipping security scan during development
+    if feature("SKIP_SECURITY_SCAN"):
+        logger.info("[forge:security] Skipped — SKIP_SECURITY_SCAN flag enabled")
+        return SecurityReport(blockers=[], high=[], medium=[], passed=True,
+                              scan_commands_run=["skipped via feature flag"])
+
     high: list[SecurityIssue] = []
     medium: list[SecurityIssue] = []
     scan_commands: list[str] = []
@@ -538,6 +546,25 @@ class CodeReviewReport(BaseModel):
     summary: str
 
 
+def grep_codebase(pattern: str, root: Path, file_glob: str = "*.tsx") -> list[str]:
+    """
+    Search codebase for a specific pattern.
+    Adapted from Claude Code's GrepTool — evidence-based review instead of random sampling.
+    Returns list of "file:line: matched_line" strings (max 20 results).
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["grep", "-rn", "--include", file_glob, "-m", "5", pattern, str(root)],
+            capture_output=True, text=True, timeout=15,
+        )
+        lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+        # Strip absolute path prefix for readability
+        return [l.replace(str(root) + "/", "") for l in lines[:20]]
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+
+
 async def run_code_reviewer(
     hackathon_id: str,
     preview_url: str,
@@ -546,30 +573,59 @@ async def run_code_reviewer(
     AGENT = ALL_AGENTS["code_reviewer"]
     output_dir = Path(f"/tmp/hackathon-{hackathon_id}")
 
-    # Collect all TypeScript/Python files to review
-    fe_files = list(output_dir.rglob("*.tsx")) + list(output_dir.rglob("*.ts"))
-    be_files = list(output_dir.rglob("*.py"))
+    # ── Feature 4: Grep-based evidence gathering (GrepTool pattern) ──────────
+    # Search for specific anti-pattern evidence across the whole codebase
+    # instead of reading 6 random files.
+    grep_evidence: list[str] = []
 
-    # Sample the most important files (too many to review all)
-    review_targets = []
-    for f in fe_files[:6]:
-        try:
-            content = f.read_text(errors="ignore")
-            if len(content) > 100:
-                review_targets.append(f"--- {f.name} ---\n{content[:1500]}")
-        except Exception:
-            pass
-    for f in be_files[:4]:
-        try:
-            content = f.read_text(errors="ignore")
-            if len(content) > 100:
-                review_targets.append(f"--- {f.name} ---\n{content[:1000]}")
-        except Exception:
-            pass
+    if output_dir.exists():
+        checks = [
+            # (label, pattern, glob, severity_hint)
+            ("TypeScript 'any' type",       ": any",              "*.tsx",  "BLOCKER"),
+            ("TypeScript 'any' type",       ": any",              "*.ts",   "BLOCKER"),
+            ("Hardcoded hex color",         r"#[0-9a-fA-F]{3,6}", "*.tsx",  "BLOCKER"),
+            ("console.error in prod",       "console.error",      "*.tsx",  "BLOCKER"),
+            ("Fixed pixel width (mobile)",  r"width: [0-9]*px",   "*.tsx",  "BLOCKER"),
+            ("Missing DEMO_MODE guard",     "useEffect",          "*.tsx",  "WARNING"),
+            ("Placeholder text",            "placeholder text",   "*.tsx",  "WARNING"),
+            ("ISO date string (unformatted)","toISOString",        "*.tsx",  "WARNING"),
+            ("Missing aria-label",          "onClick={",          "*.tsx",  "WARNING"),
+            ("Secret in code",              "sk-",                "*.ts",   "BLOCKER"),
+            ("TODO comment",                "TODO",               "*.tsx",  "WARNING"),
+        ]
+        for label, pattern, glob, severity in checks:
+            hits = grep_codebase(pattern, output_dir, glob)
+            if hits:
+                grep_evidence.append(
+                    f"[{severity}] {label} — {len(hits)} occurrence(s):\n"
+                    + "\n".join(f"  {h}" for h in hits[:4])
+                )
 
-    if not review_targets:
-        # No local files — review based on personality and design spec
-        review_targets = [f"Design personality: {design_spec.get('personality', 'unknown')}"]
+        # Also run tsc --noEmit for type errors (LSPTool pattern)
+        tsc_errors: list[str] = []
+        pkg_json = output_dir / "package.json"
+        if pkg_json.exists():
+            try:
+                import subprocess
+                tsc_result = subprocess.run(
+                    ["npx", "tsc", "--noEmit", "--strict", "--pretty", "false"],
+                    cwd=str(output_dir),
+                    capture_output=True, text=True, timeout=60,
+                )
+                if tsc_result.returncode != 0:
+                    tsc_lines = [l for l in tsc_result.stdout.splitlines() if "error TS" in l]
+                    tsc_errors = tsc_lines[:10]
+                    grep_evidence.append(
+                        f"[BLOCKER] TypeScript compiler errors — {len(tsc_lines)} error(s):\n"
+                        + "\n".join(f"  {e}" for e in tsc_errors[:5])
+                    )
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass  # tsc not available; grep evidence is sufficient
+
+    evidence_block = (
+        "\n\nGrep evidence from full codebase scan:\n" + "\n\n".join(grep_evidence)
+        if grep_evidence else "\n\nNo codebase found locally — reviewing based on design spec."
+    )
 
     class ReviewOutput(BaseModel):
         blockers: list[dict]
@@ -582,32 +638,33 @@ async def run_code_reviewer(
         system_prompt=AGENT.system_prompt,
         messages=[{
             "role": "user",
-            "content": f"""Review this code for the Forge hackathon project.
+            "content": f"""Review this Forge hackathon project using the evidence below.
 
-Files sampled:
-{chr(10).join(review_targets[:5])}
+Design personality: {design_spec.get('personality', 'unknown')}
+{evidence_block}
 
-Design personality used: {design_spec.get('personality', 'unknown')}
+For each grep hit, generate a specific BLOCKER or WARNING with:
+- file: the exact file from the grep output
+- description: what the issue is and why it matters to judges
+- fix: the specific one-line change to fix it
 
-Check for BLOCKERS (must fix — visible to judges):
+BLOCKER criteria (fails demo in first 30 seconds):
 - TypeScript 'any' types in component files
 - Hardcoded hex colors instead of design tokens
-- Missing loading states on async operations
-- Missing empty states on any list/table
 - console.error() calls in production paths
-- Mobile overflow at 375px width (check for fixed widths)
-- Demo mode returns empty data (NEXT_PUBLIC_DEMO_MODE not handled)
+- Mobile overflow at 375px width (fixed px widths)
+- Secrets or API keys committed to code
 
-Check for WARNINGS (should fix in polish):
+WARNING criteria (fix in polish pass):
 - Generic placeholder text still in copy
-- hover: opacity-only (should be bg-color change)
-- Missing aria-label on icon-only buttons
-- Dates shown as ISO strings instead of relative
+- ISO date strings shown to users (should be relative)
+- Missing aria-label on onClick handlers (accessibility)
+- TODO comments (unfinished work visible to judges)
 
 Return JSON with blockers and warnings as lists of {{file, description, fix}}.
-""",
+Be specific — reference exact file paths from the grep evidence.""",
         }],
-        temperature=0.1,
+        temperature=0.0,
     )
 
     blockers = [ReviewIssue(severity="BLOCKER", file=i.get("file", "unknown"),
@@ -624,7 +681,8 @@ Return JSON with blockers and warnings as lists of {{file, description, fix}}.
         summary=review.summary,
     )
     logger.info(
-        f"[forge:code_reviewer] {len(blockers)} blockers, {len(warnings)} warnings — approved={report.approved}"
+        f"[forge:code_reviewer] {len(grep_evidence)} grep hits → "
+        f"{len(blockers)} blockers, {len(warnings)} warnings — approved={report.approved}"
     )
     return report
 

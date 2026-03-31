@@ -4,6 +4,33 @@ Base URL: https://api.electronhub.ai/v1 (OpenAI-compatible)
 
 NEVER instantiate AsyncOpenAI directly in agent code.
 ALWAYS import complete(), complete_json(), or embed() from here.
+
+Model overrides — set any of these in .env or forge.secrets:
+  FORGE_MODEL_HEAVY    default: claude-opus-4-6
+  FORGE_MODEL_STANDARD default: claude-sonnet-4-6
+  FORGE_MODEL_DESIGN   default: claude-sonnet-4-6
+  FORGE_MODEL_WRITING  default: gpt-4.1
+  FORGE_MODEL_BULK     default: gpt-4.1-mini
+  FORGE_MODEL_FAST     default: gpt-5-nano
+  FORGE_MODEL_VISION   default: claude-sonnet-4-6  (vision-capable)
+
+Max token overrides per tier:
+  FORGE_MAX_TOKENS_HEAVY    default: 32000
+  FORGE_MAX_TOKENS_STANDARD default: 16000
+  FORGE_MAX_TOKENS_DESIGN   default: 16000
+  FORGE_MAX_TOKENS_WRITING  default: 16000
+  FORGE_MAX_TOKENS_BULK     default: 8000
+  FORGE_MAX_TOKENS_FAST     default: 4000
+  FORGE_MAX_TOKENS_VISION   default: 16000
+
+Models as of 2026-03-31 (from https://api.electronhub.ai/v1/models):
+  claude-opus-4-6    Anthropic flagship; 80.8% SWE-bench; 128k output; $5/$25 /MTok
+  claude-sonnet-4-6  Balanced SOTA; 79.6% SWE-bench; 64k output; $3/$15 /MTok
+  claude-haiku-4-5   Fast Claude; sub-second; $0.25/$1.25 /MTok
+  gpt-4.1            OpenAI flagship; 54.6% SWE-bench; 1M ctx; $2/$8 /MTok
+  gpt-4.1-mini       Balanced OpenAI; 1M ctx; $0.40/$1.60 /MTok
+  gpt-4.1-nano       Ultra-cheap OpenAI; 1M ctx; $0.10/$0.40 /MTok
+  gpt-5-nano         GPT-5 micro; 400k ctx; $0.05/$0.40 /MTok
 """
 
 from __future__ import annotations
@@ -13,12 +40,38 @@ import json
 import logging
 import os
 from enum import Enum
+from pathlib import Path
 from typing import Any, Type, TypeVar
 
 from openai import AsyncOpenAI, APIStatusError
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+
+# ── Secrets file loader ───────────────────────────────────────────────────────
+# forge.secrets is gitignored. It holds model overrides and API keys.
+# env vars take precedence; secrets file fills in the rest.
+
+def _load_secrets() -> None:
+    secrets_file = Path(os.path.dirname(__file__)).parent / "forge.secrets"
+    if not secrets_file.exists():
+        return
+    try:
+        for line in secrets_file.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key   = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except Exception as e:
+        logger.debug(f"[forge:llm] Could not load forge.secrets: {e}")
+
+_load_secrets()
+
 
 # ── Singleton client ──────────────────────────────────────────────────────────
 
@@ -29,7 +82,10 @@ def get_client() -> AsyncOpenAI:
     if _client is None:
         key = os.environ.get("ELECTRONHUB_API_KEY")
         if not key:
-            raise RuntimeError("ELECTRONHUB_API_KEY not set")
+            raise RuntimeError(
+                "ELECTRONHUB_API_KEY not set. "
+                "Add it to .env or forge.secrets: ELECTRONHUB_API_KEY=your_key"
+            )
         _client = AsyncOpenAI(
             api_key=key,
             base_url=os.environ.get("ELECTRONHUB_BASE_URL", "https://api.electronhub.ai/v1"),
@@ -40,65 +96,135 @@ def get_client() -> AsyncOpenAI:
 # ── Model tiers ───────────────────────────────────────────────────────────────
 
 class Tier(str, Enum):
-    HEAVY    = "heavy"     # architecture, hard debugging — Opus
-    STANDARD = "standard"  # most agent work — Sonnet
-    BULK     = "bulk"      # tests, lint, boilerplate — gpt-4o-mini
-    FAST     = "fast"      # classification, browser actions — Haiku
-    VISION   = "vision"    # image/design analysis — gemini-2.0-flash
-    WRITING  = "writing"   # README, pitch copy, demo scripts — gpt-4o
-    DESIGN   = "design"    # UI aesthetic reasoning — claude-sonnet (high temp)
+    HEAVY    = "heavy"    # Architecture, complex reasoning — Opus 4.6
+    STANDARD = "standard" # Most agent work — Sonnet 4.6
+    DESIGN   = "design"   # UI aesthetic reasoning — Sonnet 4.6 high temp
+    WRITING  = "writing"  # README, pitch copy, scripts — GPT-4.1
+    BULK     = "bulk"     # Tests, lint, boilerplate — GPT-4.1-mini
+    FAST     = "fast"     # Classification, scoring — GPT-5-nano
+    VISION   = "vision"   # Screenshot/design analysis — Sonnet 4.6
 
 
-MODELS: dict[Tier, str] = {
-    Tier.HEAVY:    "claude-opus-4-5",
-    Tier.STANDARD: "claude-sonnet-4-5",
-    Tier.BULK:     "gpt-4o-mini",
-    Tier.FAST:     "claude-haiku-4-5",
-    Tier.VISION:   "gemini-2.0-flash",
-    Tier.WRITING:  "gpt-4o",
-    Tier.DESIGN:   "claude-sonnet-4-5",   # same model, higher temperature
+# ── SOTA defaults (March 2026) ────────────────────────────────────────────────
+
+_DEFAULT_MODELS: dict[Tier, str] = {
+    Tier.HEAVY:    "claude-opus-4-6",    # 80.8% SWE-bench, best reasoning
+    Tier.STANDARD: "claude-sonnet-4-6",  # 79.6% SWE-bench, best value Claude
+    Tier.DESIGN:   "claude-sonnet-4-6",  # Vision + aesthetic sense
+    Tier.WRITING:  "gpt-4.1",            # Strong instruction following, $2/$8
+    Tier.BULK:     "gpt-4.1-mini",       # Cost-efficient coding, $0.40/$1.60
+    Tier.FAST:     "gpt-5-nano",         # Cheapest reasoning, $0.05/$0.40
+    Tier.VISION:   "claude-sonnet-4-6",  # Native vision support
 }
 
-MAX_TOKENS: dict[Tier, int] = {
-    Tier.HEAVY:    8192,
-    Tier.STANDARD: 4096,
-    Tier.BULK:     2048,
-    Tier.FAST:      512,
-    Tier.VISION:   4096,
-    Tier.WRITING:  4096,
-    Tier.DESIGN:   4096,
+def _get_model(tier: Tier) -> str:
+    """Return model for tier, honouring FORGE_MODEL_<TIER> env override."""
+    return os.environ.get(f"FORGE_MODEL_{tier.value.upper()}", _DEFAULT_MODELS[tier])
+
+def get_models() -> dict[Tier, str]:
+    """Return every active model (useful for logging/debugging)."""
+    return {tier: _get_model(tier) for tier in Tier}
+
+MODELS = get_models()
+
+
+# ── Max output tokens ─────────────────────────────────────────────────────────
+# Raised from legacy 4096/8192.
+# Sonnet 4.6 → 64k output; Opus 4.6 → 128k output; GPT-4.1 → 32k output.
+
+_DEFAULT_MAX_TOKENS: dict[Tier, int] = {
+    Tier.HEAVY:    32_000,  # Cap Opus at 32k for cost control (supports 128k)
+    Tier.STANDARD: 16_000,  # Sonnet 4.6 supports 64k; 16k covers all agent tasks
+    Tier.DESIGN:   16_000,  # Component specs + design tokens
+    Tier.WRITING:  16_000,  # READMEs, pitch decks, demo scripts
+    Tier.BULK:     8_000,   # Tests + boilerplate rarely exceed 8k
+    Tier.FAST:     4_000,   # Short classification/scoring outputs
+    Tier.VISION:   16_000,  # Screenshot audit reports
 }
+
+def _get_max_tokens(tier: Tier) -> int:
+    """Return max_tokens for tier, honouring FORGE_MAX_TOKENS_<TIER> env override."""
+    raw = os.environ.get(f"FORGE_MAX_TOKENS_{tier.value.upper()}")
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning(
+                f"[forge:llm] Invalid FORGE_MAX_TOKENS_{tier.value.upper()}='{raw}', "
+                f"using default {_DEFAULT_MAX_TOKENS[tier]}"
+            )
+    return _DEFAULT_MAX_TOKENS[tier]
+
+MAX_TOKENS = {tier: _get_max_tokens(tier) for tier in Tier}
+
+
+# ── Default temperatures ──────────────────────────────────────────────────────
 
 DEFAULT_TEMP: dict[Tier, float] = {
     Tier.HEAVY:    0.1,
     Tier.STANDARD: 0.2,
+    Tier.DESIGN:   0.7,   # High creativity for design work
+    Tier.WRITING:  0.4,
     Tier.BULK:     0.0,
     Tier.FAST:     0.0,
     Tier.VISION:   0.2,
-    Tier.WRITING:  0.4,
-    Tier.DESIGN:   0.7,   # higher creativity for design work
 }
 
-FALLBACK: dict[str, str] = {
-    "claude-opus-4-5":   "claude-sonnet-4-5",
-    "claude-sonnet-4-5": "gpt-4o",
-    "gpt-4o":            "gpt-4o-mini",
-    "gpt-4o-mini":       "claude-haiku-4-5",
-    "gemini-2.0-flash":  "claude-sonnet-4-5",
-}
+
+# ── Fallback chain ────────────────────────────────────────────────────────────
+# Built dynamically so it works regardless of model overrides.
+
+def _build_fallback() -> dict[str, str]:
+    ordered = [Tier.HEAVY, Tier.STANDARD, Tier.WRITING, Tier.BULK, Tier.FAST]
+    chain: dict[str, str] = {}
+    for i in range(len(ordered) - 1):
+        a, b = _get_model(ordered[i]), _get_model(ordered[i + 1])
+        if a != b:  # don't add self-loops when tiers share the same model
+            chain[a] = b
+    # FAST tier (gpt-5-nano) needs an explicit terminal fallback to gpt-4.1-nano
+    fast_model = _get_model(Tier.FAST)
+    if fast_model not in chain:
+        chain[fast_model] = "gpt-4.1-nano"
+    # VISION and DESIGN → STANDARD (may already be there if same model)
+    vision_m   = _get_model(Tier.VISION)
+    design_m   = _get_model(Tier.DESIGN)
+    standard_m = _get_model(Tier.STANDARD)
+    writing_m  = _get_model(Tier.WRITING)
+    bulk_m     = _get_model(Tier.BULK)
+    if vision_m != standard_m:
+        chain[vision_m] = standard_m
+    if design_m != standard_m:
+        chain[design_m] = standard_m
+    # Explicit terminal for standard → writing when same model
+    if standard_m not in chain:
+        chain[standard_m] = writing_m if writing_m != standard_m else bulk_m
+    # Legacy model names so old forge.secrets files still fall back correctly
+    chain.update({
+        "claude-opus-4-5":    standard_m,
+        "claude-sonnet-4-5":  writing_m,
+        "gemini-2.0-flash":   standard_m,
+        "gpt-4o":             writing_m,
+        "gpt-4o-mini":        fast_model,
+        "gpt-4.1-nano":       fast_model,
+    })
+    # Remove any self-loops that snuck in
+    chain = {k: v for k, v in chain.items() if k != v}
+    return chain
+
+FALLBACK = _build_fallback()
 
 
 # ── Task → tier routing ───────────────────────────────────────────────────────
 
 TASK_TIER: dict[str, Tier] = {
-    # Intelligence layer
+    # Intelligence
     "scout-hackathons":         Tier.FAST,
     "score-hackathon":          Tier.FAST,
     "analyze-competitors":      Tier.STANDARD,
     "profile-judges":           Tier.STANDARD,
     "research-sponsor-apis":    Tier.STANDARD,
 
-    # Strategy layer
+    # Strategy
     "generate-concepts":        Tier.STANDARD,
     "write-user-stories":       Tier.STANDARD,
     "create-sprint-plan":       Tier.STANDARD,
@@ -106,7 +232,7 @@ TASK_TIER: dict[str, Tier] = {
     "design-db-schema":         Tier.STANDARD,
     "debug-architecture":       Tier.HEAVY,
 
-    # Design layer — THE MOST IMPORTANT
+    # Design — highest impact on hackathon outcome
     "design-system-create":     Tier.DESIGN,
     "generate-color-palette":   Tier.DESIGN,
     "write-component-spec":     Tier.DESIGN,
@@ -116,7 +242,7 @@ TASK_TIER: dict[str, Tier] = {
     "audit-visual-hierarchy":   Tier.VISION,
     "generate-brand-identity":  Tier.DESIGN,
 
-    # Build layer
+    # Build
     "generate-component":       Tier.STANDARD,
     "generate-page":            Tier.STANDARD,
     "generate-api-route":       Tier.STANDARD,
@@ -128,41 +254,73 @@ TASK_TIER: dict[str, Tier] = {
     "write-migrations":         Tier.STANDARD,
     "fix-python-error":         Tier.STANDARD,
 
-    # Verify layer
+    # Verify
     "review-code":              Tier.STANDARD,
     "audit-ux-flow":            Tier.DESIGN,
     "check-accessibility":      Tier.STANDARD,
     "run-lighthouse-analysis":  Tier.FAST,
     "security-scan":            Tier.STANDARD,
 
-    # Polish layer
+    # Polish
     "polish-animations":        Tier.STANDARD,
     "rewrite-ux-copy":          Tier.WRITING,
     "seed-demo-data":           Tier.BULK,
     "generate-logo":            Tier.DESIGN,
     "generate-og-image":        Tier.DESIGN,
 
-    # Submission layer
+    # Submission
     "write-demo-script":        Tier.WRITING,
     "write-readme":             Tier.WRITING,
     "write-pitch-deck":         Tier.WRITING,
     "write-submission-copy":    Tier.WRITING,
 
-    # Browser layer
+    # Browser
     "browser-act":              Tier.FAST,
     "browser-extract":          Tier.FAST,
 }
 
 
 def resolve(task: str) -> tuple[str, Tier]:
+    """Return (model_id, tier) for a given task name."""
     tier = TASK_TIER.get(task, Tier.STANDARD)
-    return MODELS[tier], tier
+    return _get_model(tier), tier
 
 
 # ── Core helpers ──────────────────────────────────────────────────────────────
 
 Message = dict[str, str]
 T = TypeVar("T", bound=BaseModel)
+
+
+async def _compress_messages(messages: list[Message], system_prompt: str | None) -> list[Message]:
+    """
+    Compress conversation history when context limit is hit.
+    Adapted from Claude Code's /compact command pattern.
+
+    Keeps the last 3 messages verbatim; summarises everything older.
+    The system_prompt is NOT included in the summary text — the caller
+    prepends it separately, so no leak into user-visible history.
+    """
+    if len(messages) <= 4:
+        return messages
+
+    recent = messages[-3:]
+    older  = messages[:-3]
+    summary_text = "\n".join(
+        f"[{m.get('role', 'user').upper()}]: {str(m.get('content', ''))[:300]}"
+        for m in older
+    )
+    summary_msg: Message = {
+        "role": "user",
+        "content": (
+            f"[Context compressed — {len(older)} earlier messages summarised]\n"
+            f"Prior conversation summary:\n{summary_text[:1500]}\n\n"
+            f"Continuing from the most recent context:"
+        ),
+    }
+    compressed = [summary_msg] + recent
+    logger.info(f"[forge:llm] Context compressed: {len(messages)} → {len(compressed)} messages")
+    return compressed
 
 
 async def complete(
@@ -173,9 +331,14 @@ async def complete(
     temperature: float | None = None,
     max_retries: int = 3,
 ) -> str:
-    model, tier = resolve(task)
-    temp = temperature if temperature is not None else DEFAULT_TEMP[tier]
-    max_tokens = MAX_TOKENS[tier]
+    """
+    Core LLM call. Resolves model from task name, respects env/secrets overrides,
+    applies context compression on overflow, falls back on rate limits.
+    """
+    model, tier   = resolve(task)
+    temp          = temperature if temperature is not None else DEFAULT_TEMP[tier]
+    max_tok       = _get_max_tokens(tier)
+    current_model = model
 
     full_messages: list[Message] = []
     if system_prompt:
@@ -183,28 +346,47 @@ async def complete(
     full_messages.extend(messages)
 
     client = get_client()
-    current_model = model
 
     for attempt in range(max_retries):
         try:
             resp = await client.chat.completions.create(
                 model=current_model,
                 messages=full_messages,  # type: ignore[arg-type]
-                max_tokens=max_tokens,
+                max_tokens=max_tok,
                 temperature=temp,
             )
             return resp.choices[0].message.content or ""
+
         except APIStatusError as e:
+            # Context length exceeded — compress and retry once
+            if e.status_code == 400 and "context" in str(e).lower():
+                logger.warning(
+                    f"[forge:llm] Context length exceeded for task={task} "
+                    f"model={current_model} — compressing"
+                )
+                compressed = await _compress_messages(messages, system_prompt)
+                if len(compressed) < len(messages):
+                    messages = compressed
+                    full_messages = []
+                    if system_prompt:
+                        full_messages.append({"role": "system", "content": system_prompt})
+                    full_messages.extend(messages)
+                    continue
+                raise  # already at minimum
+
+            # Rate limit or server error — fall back to cheaper model
             if e.status_code in (429, 500, 502, 503, 504):
                 fb = FALLBACK.get(current_model)
                 if fb:
-                    logger.warning(f"[forge:llm] {e.status_code} → fallback {current_model}→{fb}")
+                    logger.warning(
+                        f"[forge:llm] {e.status_code} on {current_model} → fallback to {fb}"
+                    )
                     current_model = fb
                     await asyncio.sleep(2 ** attempt)
                     continue
             raise
 
-    raise RuntimeError(f"[forge:llm] exhausted retries for task={task}")
+    raise RuntimeError(f"[forge:llm] exhausted {max_retries} retries for task={task}")
 
 
 async def complete_json(
@@ -215,6 +397,7 @@ async def complete_json(
     system_prompt: str | None = None,
     temperature: float | None = None,
 ) -> T:
+    """Call complete() and parse the response as a Pydantic model."""
     schema = json.dumps(response_model.model_json_schema(), indent=2)
     sys = (system_prompt or "") + f"\n\nRespond ONLY with valid JSON matching:\n{schema}"
     raw = await complete(task=task, messages=messages, system_prompt=sys, temperature=temperature)
@@ -225,6 +408,7 @@ async def complete_json(
 
 
 async def embed(text: str) -> list[float]:
+    """Generate a text embedding via ElectronHub (text-embedding-3-small)."""
     resp = await get_client().embeddings.create(model="text-embedding-3-small", input=text)
     return resp.data[0].embedding
 
@@ -233,6 +417,7 @@ async def complete_batch(
     tasks: list[dict[str, Any]],
     concurrency: int = 5,
 ) -> list[str]:
+    """Run multiple complete() calls in parallel with a concurrency cap."""
     sem = asyncio.Semaphore(concurrency)
     async def _run(item: dict[str, Any]) -> str:
         async with sem:

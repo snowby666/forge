@@ -17,6 +17,7 @@ PY_VER=$(python3 -c "import sys; print(sys.version_info.minor)")
 [ "$PY_VER" -ge 11 ] || err "Python 3.11+ required (found 3.$PY_VER)"
 
 [ ! -f .env ] && cp .env.example .env && warn ".env created — fill in ELECTRONHUB_API_KEY + BROWSERBASE_API_KEY"
+[ ! -f forge.secrets ] && cp forge.secrets.example forge.secrets && warn "forge.secrets created — set ELECTRONHUB_API_KEY and optionally override models"
 
 log "Creating infra directories..."
 mkdir -p infra/postgres/data infra/redis/data infra/qdrant/data infra/temporal infra/n8n/data

@@ -7,7 +7,7 @@ Usage:
   forge run [--id ID]      Full autonomous build cycle
   forge status [--id ID]   Live view of all agent statuses
   forge approve            Human checkpoint interface
-  forge submit [--id ID]   Trigger final submission
+  forge plan [--id ID]     Show build plan (tasks, critical path, risks)
   forge knowledge          Update design + strategy intelligence
   forge test               Run system health checks
   forge ls                 List all active hackathons
@@ -161,10 +161,28 @@ async def cmd_status(args):
                 statuses.append(f"{icon} {name}")
             print(f"  {DIM}{layer:<12}{RESET}  {'  '.join(statuses)}")
 
-        # Check current phase
-        checkpoint_raw = await redis.get(f"checkpoint:{hackathon_id}:concept_approval")
-        if checkpoint_raw == "pending":
-            print(f"\n  {YELLOW}⚡ Waiting for you:{RESET} Concept approval ready → 'forge approve concept --id {hackathon_id}'")
+        # Check pending checkpoints
+        for cp_name, cp_label in [
+            ("concept_approval", "Concept approval"),
+            ("design_approval", "Design approval"),
+            ("quality_review", "Quality review"),
+            ("submission_approval", "Submit approval"),
+        ]:
+            cp_raw = await redis.get(f"checkpoint:{hackathon_id}:{cp_name}")
+            if cp_raw == "pending":
+                short = cp_name.split("_")[0]
+                print(f"\n  {YELLOW}⚡ Waiting for you:{RESET} {cp_label} → 'forge approve {short} --id {hackathon_id}'")
+
+        # Cost summary (adapted from Claude Code's cost-tracker.ts)
+        try:
+            from config.forge_tools import get_run_cost_summary
+            cost = await get_run_cost_summary(redis, hackathon_id)
+            if cost["total_usd"] > 0:
+                top = sorted(cost["by_agent"].items(), key=lambda x: x[1]["cost_usd"], reverse=True)[:2]
+                top_str = ", ".join(f"{a}: ${v['cost_usd']:.3f}" for a, v in top)
+                print(f"  {DIM}Cost so far: ${cost['total_usd']:.3f} · {cost['total_tokens']:,} tokens · Top: {top_str}{RESET}")
+        except Exception:
+            pass
 
     await redis.aclose()
 
@@ -243,6 +261,67 @@ async def cmd_approve(args):
             warn("Not approved. Forge waits.")
 
     await redis.aclose()
+
+
+async def cmd_plan(args):
+    """Show the build plan for a hackathon run (Feature 6: /ultraplan)."""
+    from redis.asyncio import Redis
+    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+
+    hackathon_id = args.id
+    if not hackathon_id:
+        keys = await redis.keys("hackathon:*:brief")
+        if not keys:
+            warn("No active hackathons. Run 'forge scout' first.")
+            await redis.aclose()
+            return
+        hackathon_id = keys[0].split(":")[1]
+
+    plan_raw = await redis.get(f"hackathon:{hackathon_id}:build_plan")
+    await redis.aclose()
+
+    if not plan_raw:
+        warn(f"No build plan yet for {hackathon_id}. Plan is generated after design phase.")
+        info("Run 'forge status' to see current phase.")
+        return
+
+    plan = json.loads(plan_raw)
+    section(f"Build Plan — {hackathon_id}")
+
+    tasks = plan.get("tasks", [])
+    critical_path = set(plan.get("critical_path", []))
+    total_hours   = plan.get("total_estimated_hours", 0)
+    biggest_risk  = plan.get("biggest_risk", "")
+    demo_comps    = plan.get("demo_path_components", [])
+
+    RISK_COLOR = {"low": GREEN, "medium": YELLOW, "high": RED}
+
+    print(f"\n  {BOLD}Tasks ({len(tasks)}){RESET}  ·  {total_hours:.1f}h total estimated\n")
+    for t in tasks:
+        agent     = t.get("agent", "?")
+        desc      = t.get("description", "")
+        deps      = t.get("depends_on", [])
+        hours     = t.get("estimated_hours", 0)
+        risk      = t.get("risk", "low")
+        is_crit   = agent in critical_path
+        cp_marker = f" {CYAN}[critical path]{RESET}" if is_crit else ""
+        risk_col  = RISK_COLOR.get(risk, DIM)
+        dep_str   = f"  {DIM}after: {', '.join(deps)}{RESET}" if deps else ""
+        print(f"  {GREEN}▸{RESET} {BOLD}{agent:<22}{RESET}  {hours:.1f}h  "
+              f"{risk_col}{risk:<6}{RESET}{cp_marker}")
+        print(f"    {DIM}{desc[:72]}{RESET}{dep_str}")
+        print()
+
+    if demo_comps:
+        print(f"  {BOLD}Demo path components (judges see these):{RESET}")
+        for c in demo_comps:
+            print(f"  {CYAN}·{RESET} {c}")
+        print()
+
+    if biggest_risk:
+        print(f"  {YELLOW}⚠ Biggest risk:{RESET} {biggest_risk[:100]}")
+
+    print()
 
 
 async def cmd_knowledge(args):
@@ -393,6 +472,10 @@ def main():
     p_approve.add_argument("checkpoint", nargs="?", choices=["concept", "design", "quality", "submit"], help="Which checkpoint")
     p_approve.add_argument("--id", metavar="HACKATHON_ID", help="Hackathon ID (auto-detected if omitted)")
 
+    # plan
+    p_plan = sub.add_parser("plan", help="Show the build plan (tasks, critical path, risks)")
+    p_plan.add_argument("--id", metavar="HACKATHON_ID", help="Hackathon ID")
+
     # knowledge
     p_knowledge = sub.add_parser("knowledge", help="Update design + strategy intelligence")
     p_knowledge.add_argument("--dry-run", action="store_true", help="Preview without writing")
@@ -423,6 +506,8 @@ def main():
                            "quality": "quality_review", "submit": "submission_approval"}
                 args.checkpoint = mapping.get(args.checkpoint, args.checkpoint)
             await cmd_approve(args)
+        elif args.command == "plan":
+            await cmd_plan(args)
         elif args.command == "knowledge":
             await cmd_knowledge(args)
         elif args.command == "ls":

@@ -104,8 +104,9 @@ async def run_monitor_worker() -> None:
     logger.info("[forge:monitor] Monitor worker running")
 
     async def periodic_check():
+        from config.forge_tools import check_due_cron_triggers, get_run_cost_summary
         while True:
-            # Check all active hackathons
+            # 1. Check agent health for all active hackathons
             keys = await redis.keys("hackathon:*:brief")
             for key in keys:
                 hackathon_id = key.split(":")[1]
@@ -113,6 +114,35 @@ async def run_monitor_worker() -> None:
                 failed = [a for a, s in health.items() if s == "failed"]
                 if failed:
                     logger.warning(f"[forge:monitor] Failed agents for {hackathon_id}: {failed}")
+
+                # 2. Check cost budgets (adapted from Claude Code's cost-tracker.ts)
+                try:
+                    cost = await get_run_cost_summary(redis, hackathon_id)
+                    if cost["total_usd"] > 10.0:
+                        await send_slack_alert(
+                            f"[forge:monitor] Cost alert for {hackathon_id}: "
+                            f"${cost['total_usd']:.2f} total so far\n"
+                            f"Top spender: {max(cost['by_agent'].items(), key=lambda x: x[1]['cost_usd'], default=('none', {'cost_usd': 0}))[0]}"
+                        )
+                except Exception:
+                    pass
+
+            # 3. Fire any due cron triggers (adapted from Claude Code's ScheduleCronTool)
+            try:
+                due = await check_due_cron_triggers(redis)
+                for trigger in due:
+                    agent_id   = trigger["agent_id"]
+                    h_id       = trigger["hackathon_id"]
+                    input_data = trigger.get("input_data", {})
+                    logger.info(f"[forge:monitor] Firing cron trigger: {trigger['trigger_id']}")
+                    await redis.publish("agent:trigger", json.dumps({
+                        "hackathon_id": h_id,
+                        "agent": agent_id,
+                        "input": input_data,
+                    }))
+            except Exception as e:
+                logger.warning(f"[forge:monitor] Cron check failed: {e}")
+
             await asyncio.sleep(60)  # check every minute
 
     # Run periodic check in background
@@ -125,8 +155,8 @@ async def run_monitor_worker() -> None:
         try:
             payload = json.loads(message["data"])
             agent_id = payload.get("agent_id")
-            latency = payload.get("latency_ms")
-            success = payload.get("success", True)
+            latency  = payload.get("latency_ms")
+            success  = payload.get("success", True)
             if agent_id and latency:
                 _metrics.record_latency(agent_id, latency)
             if agent_id and not success:

@@ -62,12 +62,17 @@ async def create_project_plan(
     sponsor_map: dict,
     redis: Redis,
 ) -> ProjectPlan:
+    from config.run_context import build_run_context, build_memdir_context_for_agent
     AGENT = ALL_AGENTS["pm"]
+
+    # Feature 2: inject runtime context
+    run_ctx = await build_run_context(hackathon_id, redis)
+    memdir_ctx = await build_memdir_context_for_agent("pm")
 
     plan = await complete_json(
         task="create-sprint-plan",
         response_model=ProjectPlan,
-        system_prompt=AGENT.system_prompt,
+        system_prompt=AGENT.system_prompt + run_ctx + memdir_ctx,
         messages=[{
             "role": "user",
             "content": f"""Create the detailed project plan for the approved concept.
@@ -152,7 +157,12 @@ async def design_architecture(
     project_plan: dict,
     redis: Redis,
 ) -> tuple[DbSchema, ApiContract, DependencyGraph]:
+    from config.run_context import build_run_context, build_memdir_context_for_agent
     AGENT = ALL_AGENTS["tech_architect"]
+
+    # Feature 2: inject runtime context so architect knows deadline pressure
+    run_ctx = await build_run_context(hackathon_id, redis)
+    memdir_ctx = await build_memdir_context_for_agent("tech_architect")
 
     class ArchitectureOutput(BaseModel):
         db_schema: DbSchema
@@ -162,7 +172,7 @@ async def design_architecture(
     arch = await complete_json(
         task="design-api-contract",
         response_model=ArchitectureOutput,
-        system_prompt=AGENT.system_prompt,
+        system_prompt=AGENT.system_prompt + run_ctx + memdir_ctx,
         messages=[{
             "role": "user",
             "content": f"""Design the complete technical architecture for this project.

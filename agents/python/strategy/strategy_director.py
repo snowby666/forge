@@ -98,12 +98,36 @@ async def generate_concepts(
     comp_report: dict,
     judge_profile: dict,
     sponsor_map: dict,
+    hackathon_id: str = "",
 ) -> ConceptBrief:
+
+    # ── Feature 1: Query memory for what worked in past similar hackathons ────
+    past_learnings = ""
+    memdir_notes = ""
+    try:
+        from agents.python.infra.memory_keeper import get_memory_keeper
+        from config.run_context import build_memdir_context_for_agent
+
+        memory = get_memory_keeper()
+        theme = hackathon_brief.get("theme", hackathon_brief.get("name", "hackathon"))
+        past_results = await memory.get_relevant_past(theme, limit=4)
+
+        if past_results:
+            past_lines = []
+            for r in past_results:
+                mem = r.get("memory", r.get("text", str(r)))
+                past_lines.append(f"  - {mem}")
+            past_learnings = "\n=== MEMORY FROM PAST RUNS (what worked and failed) ===\n" + "\n".join(past_lines) + "\n"
+            logger.info(f"[forge:strategy] Loaded {len(past_results)} past learnings from memory")
+
+        memdir_notes = await build_memdir_context_for_agent("strategy_director")
+    except Exception as e:
+        logger.warning(f"[forge:strategy] Memory query failed (continuing without it): {e}")
 
     brief = await complete_json(
         task="generate-concepts",
         response_model=ConceptBrief,
-        system_prompt=AGENT.system_prompt,
+        system_prompt=AGENT.system_prompt + memdir_notes,
         messages=[{
             "role": "user",
             "content": f"""Generate exactly 3 project concepts for this hackathon.
@@ -120,7 +144,7 @@ Each concept must be genuinely distinct — not just variations of the same idea
 
 === SPONSOR MAP (available prizes and integration complexity) ===
 {json.dumps(sponsor_map, indent=2)}
-
+{past_learnings}
 HARD REQUIREMENTS FOR EACH CONCEPT:
 1. Exactly 2 core features maximum (PM agent will enforce this — don't fight it)
 2. Demo works without user login (demo mode with seeded data)
@@ -180,6 +204,7 @@ async def run_worker() -> None:
                 comp_report=inp.get("comp_report", {}),
                 judge_profile=inp.get("judge_profile", {}),
                 sponsor_map=inp.get("sponsor_map", {}),
+                hackathon_id=hackathon_id,
             )
 
             # Store for human checkpoint

@@ -20,6 +20,13 @@ dependencies = [
     "redis[asyncio]>=5.2.0",
     "asyncpg>=0.30.0",
     "temporalio>=1.7.0",
+    # ── ForgeSearch dependencies ──────────────────────────────────────────────
+    "ddgs>=8.0.0",                        # Free metasearch (DDG/Bing/Google)
+    "bm25s>=0.2.0",                        # Fast BM25 keyword retrieval (Elasticsearch speed)
+    "sentence-transformers>=3.0.0",        # Embeddings (all-MiniLM-L6-v2) + reranker (ms-marco-MiniLM)
+    "torch>=2.3.0",                        # PyTorch for sentence-transformers (RTX 4060 GPU)
+    "crawl4ai>=0.4.0",                     # LLM-ready web crawler: JS rendering, adaptive crawl, structured extraction
+    # ── Other agents ─────────────────────────────────────────────────────────
     "aiohttp>=3.11.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",

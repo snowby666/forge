@@ -104,6 +104,42 @@ graph TD
 
 ---
 
+
+## Overriding models
+
+Any tier's model can be overridden without touching code. Create `forge.secrets` (gitignored):
+
+```bash
+cp forge.secrets.example forge.secrets
+```
+
+Then edit the file:
+
+```bash
+# Use a cheaper model for HEAVY during development
+FORGE_MODEL_HEAVY=claude-sonnet-4-6
+
+# Use GPT-4.1 for all writing tasks
+FORGE_MODEL_WRITING=gpt-4.1
+
+# Bump max tokens for standard tier (16k default)
+FORGE_MAX_TOKENS_STANDARD=32000
+```
+
+All `FORGE_MODEL_*` and `FORGE_MAX_TOKENS_*` variables work in both `.env` and `forge.secrets`. Environment variables always win over `forge.secrets`.
+
+## Model catalog (2026-03-31)
+
+| Model | SWE-bench | Context | Output | $/MTok in/out |
+|---|---|---|---|---|
+| `claude-opus-4-6` | 80.8% | 1M | 128k | $5/$25 |
+| `claude-sonnet-4-6` | 79.6% | 1M | 64k | $3/$15 |
+| `claude-haiku-4-5` | — | 200k | 8k | $0.25/$1.25 |
+| `gpt-4.1` | 54.6% | 1M | 32k | $2/$8 |
+| `gpt-4.1-mini` | 31.6% | 1M | 16k | $0.40/$1.60 |
+| `gpt-4.1-nano` | 9.8% | 1M | 16k | $0.10/$0.40 |
+| `gpt-5-nano` | — | 400k | 16k | $0.05/$0.40 |
+
 ## Fallback chain
 
 ```mermaid

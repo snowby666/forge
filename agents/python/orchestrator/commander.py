@@ -256,13 +256,86 @@ async def run_design(state: HackathonState) -> dict:
         f"• Screens: {design_data.get('screen_count')}\n"
         f"• Components: {design_data.get('component_count')} ({design_data.get('demo_critical_components')} demo-critical)\n"
         f"• Self-critique score: {design_data.get('self_critique', {}).get('overall_score', '?')}/10\n\n"
-        f"Review DESIGN.md and Figma before approving."
+        f"Review DESIGN.md and Figma before approving.\n"
+        f"Run `forge plan --id {state['hackathon_id']}` to see the full build plan."
     )
     await redis.aclose()
     return {"design_spec": design_data}
 
 
-async def wait_design_approval(state: HackathonState) -> dict:
+async def generate_build_plan(state: HackathonState) -> dict:
+    """
+    Feature 6: Generate a structured build plan before design approval.
+    Adapted from Claude Code's /ultraplan command.
+
+    Shows the human: exactly what each agent will build, in what order,
+    with dependency relationships and risk items. Injected into the
+    design approval Slack notification so humans approve with full context.
+    """
+    from config.electronhub import complete_json as _cj
+    from pydantic import BaseModel as _BM
+
+    class BuildTask(_BM):
+        agent: str
+        description: str
+        depends_on: list[str]
+        estimated_hours: float
+        risk: str  # "low" | "medium" | "high"
+
+    class BuildPlan(_BM):
+        tasks: list[BuildTask]
+        critical_path: list[str]   # agent IDs on the critical path
+        total_estimated_hours: float
+        biggest_risk: str
+        demo_path_components: list[str]  # components judges will see in 90s
+
+    try:
+        plan = await _cj(
+            task="create-sprint-plan",
+            response_model=BuildPlan,
+            messages=[{
+                "role": "user",
+                "content": f"""Generate the build plan for this hackathon project.
+
+Project: {state['project_plan'].get('project_name')}
+Core features: {json.dumps(state['project_plan'].get('core_features', [])[:2], indent=2)}
+API endpoints: {len(state.get('api_contract', {}).get('endpoints', []))}
+DB tables: {len(state.get('db_schema', {}).get('tables', []))}
+Screens designed: {state.get('design_spec', {}).get('screen_count', '?')}
+Demo-critical components: {state.get('design_spec', {}).get('demo_critical_components', '?')}
+
+Build agents available:
+- frontend_engineer: Next.js 14, React, Tailwind, shadcn/ui
+- backend_engineer: FastAPI, SQLAlchemy, PostgreSQL
+- integration_engineer: Sponsor API modules
+- test_engineer: Playwright e2e + pytest
+- devops: GitHub Actions CI/CD
+- security: Secret scan + npm audit
+
+Output a realistic plan. Critical path = the sequence that determines total build time.
+demo_path_components = the 3-5 UI components judges will see in the demo.""",
+            }],
+            temperature=0.2,
+        )
+        plan_dict = plan.model_dump()
+        # Store for forge plan command to display
+        redis = get_redis()
+        await redis.set(
+            f"hackathon:{state['hackathon_id']}:build_plan",
+            json.dumps(plan_dict),
+            ex=604800,
+        )
+        await redis.aclose()
+        logger.info(
+            f"[forge:commander] Build plan generated: {len(plan.tasks)} tasks, "
+            f"{plan.total_estimated_hours:.1f}h estimated, risk: {plan.biggest_risk[:50]}"
+        )
+        return {"build_plan": plan_dict}
+    except Exception as e:
+        logger.warning(f"[forge:commander] Build plan generation failed (non-blocking): {e}")
+        return {}
+
+
     """Wait for human design approval."""
     redis = get_redis()
     cfg = HUMAN_CHECKPOINTS["design_approval"]
@@ -279,64 +352,95 @@ async def wait_design_approval(state: HackathonState) -> dict:
 
 
 async def run_build(state: HackathonState) -> dict:
-    """Trigger all 6 build agents, manage parallel execution."""
+    """
+    Trigger all build agents in dependency-correct order.
+    Uses forge_tools.get_runnable_now() — adapted from Claude Code's
+    isConcurrencySafe() concurrency scheduling pattern.
+    """
     logger.info(f"[forge:commander] Phase: Build")
     redis = get_redis()
 
     design = state.get("design_spec", {})
 
-    # Frontend + Backend + Integration + Tests + DevOps + Security — all parallel
-    build_triggers = [
-        ("frontend_engineer", {
+    # Full input data per agent
+    agent_inputs: dict[str, dict] = {
+        "frontend_engineer": {
             "project_plan": state["project_plan"],
             "design_spec": design,
             "design_tokens_content": design.get("tokens", {}).get("typescript_content", ""),
             "component_specs": design.get("design_spec", {}).get("components", []),
-            "design_md_content": "",  # loaded from file
+            "design_md_content": "",
             "api_contract": state.get("api_contract"),
-        }),
-        ("backend_engineer", {
+        },
+        "backend_engineer": {
             "project_plan": state["project_plan"],
             "db_schema": state.get("db_schema", {}),
-        }),
-        ("integration_engineer", {
+        },
+        "integration_engineer": {
             "project_plan": state["project_plan"],
             "sponsor_map": state["intel"].get("sponsor_map", {}),
             "api_contract": state.get("api_contract"),
-        }),
-        ("test_engineer", {
+        },
+        "test_engineer": {
             "project_plan": state["project_plan"],
             "api_contract": state.get("api_contract"),
-        }),
-        ("devops", {
+        },
+        "devops": {
             "project_plan": state["project_plan"],
             "api_contract": state.get("api_contract"),
-        }),
-        ("security", {}),
-    ]
+        },
+        "security": {},
+    }
 
-    for agent_id, input_data in build_triggers:
-        await trigger_agent(redis, state["hackathon_id"], agent_id, input_data)
-        logger.info(f"[forge:commander] Triggered: {agent_id}")
+    build_agents = list(agent_inputs.keys())
+    completed: set[str] = set()
+    in_progress: set[str] = set()
+    frontend_data: dict | None = None
 
-    # Wait for frontend (critical path) and backend
-    frontend_data, backend_data = await asyncio.gather(
-        wait_for_agent(redis, state["hackathon_id"], "frontend_engineer", timeout_sec=28800),
-        wait_for_agent(redis, state["hackathon_id"], "backend_engineer", timeout_sec=28800),
-    )
+    from config.forge_tools import get_runnable_now
+
+    # Dependency-aware scheduling loop
+    while len(completed) < len(build_agents):
+        runnable = get_runnable_now(completed, in_progress, build_agents)
+        if not runnable and not in_progress:
+            logger.error("[forge:commander] Build deadlock — agents stuck")
+            break
+
+        # Trigger all newly runnable agents
+        for agent_id in runnable:
+            in_progress.add(agent_id)
+            await trigger_agent(redis, state["hackathon_id"], agent_id, agent_inputs[agent_id])
+            logger.info(f"[forge:commander] Triggered (dependency-ordered): {agent_id}")
+
+        # Wait for any in-progress agent to complete (poll)
+        await asyncio.sleep(30)
+        newly_done: set[str] = set()
+        for agent_id in list(in_progress):
+            raw = await redis.get(f"task:{state['hackathon_id']}:{agent_id}")
+            if raw:
+                task = json.loads(raw)
+                if task["status"] in ("done", "failed"):
+                    newly_done.add(agent_id)
+                    if task["status"] == "done" and agent_id == "frontend_engineer":
+                        frontend_data = task.get("data")
+
+        in_progress -= newly_done
+        completed   |= newly_done
 
     if not frontend_data:
-        # Try once with simplify=True
+        # Retry frontend with simplify=True
         await trigger_agent(redis, state["hackathon_id"], "frontend_engineer", {
-            **build_triggers[0][1], "simplify": True,
+            **agent_inputs["frontend_engineer"], "simplify": True,
         })
-        frontend_data = await wait_for_agent(redis, state["hackathon_id"], "frontend_engineer", timeout_sec=14400)
+        frontend_data = await wait_for_agent(
+            redis, state["hackathon_id"], "frontend_engineer", timeout_sec=14400
+        )
         if not frontend_data:
             await redis.aclose()
             return {"errors": [*state["errors"], "Frontend build failed after simplify attempt"]}
 
     preview_url = frontend_data.get("preview_url", "")
-    repo_url = frontend_data.get("repo_url", "")
+    repo_url    = frontend_data.get("repo_url", "")
 
     await redis.aclose()
     return {"preview_url": preview_url, "repo_url": repo_url, "phase": "verifying"}
@@ -561,7 +665,7 @@ def route_after_planning(state: HackathonState) -> str:
     return "run_design"
 
 def route_after_design(state: HackathonState) -> str:
-    return "wait_design_approval"
+    return "generate_build_plan"
 
 def route_after_build(state: HackathonState) -> str:
     if state["errors"]:
@@ -585,6 +689,7 @@ def build_graph() -> StateGraph:
     g.add_node("wait_concept_approval",   wait_concept_approval)
     g.add_node("run_planning",            run_planning)
     g.add_node("run_design",              run_design)
+    g.add_node("generate_build_plan",     generate_build_plan)
     g.add_node("wait_design_approval",    wait_design_approval)
     g.add_node("run_build",               run_build)
     g.add_node("run_verification",        run_verification)
@@ -599,6 +704,7 @@ def build_graph() -> StateGraph:
     g.add_conditional_edges("wait_concept_approval", route_after_concept_approval)
     g.add_conditional_edges("run_planning",          route_after_planning)
     g.add_conditional_edges("run_design",            route_after_design)
+    g.add_edge("generate_build_plan",   "wait_design_approval")
     g.add_edge("wait_design_approval",  "run_build")
     g.add_conditional_edges("run_build",             route_after_build)
     g.add_conditional_edges("run_verification",      route_after_quality)

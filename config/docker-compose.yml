@@ -112,6 +112,32 @@ services:
     depends_on:
       - temporal
 
+
+  # ── ForgeSearch: SearXNG self-hosted metasearch ──────────────────────────────
+  # Queries 70+ search engines simultaneously (Google, Bing, DDG, Startpage...)
+  # Completely free. Set SEARXNG_URL=http://searxng:8080 in forge.secrets.
+  # Disable by removing this service and unsetting SEARXNG_URL.
+  searxng:
+    image: searxng/searxng:latest
+    container_name: forge-searxng
+    restart: unless-stopped
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080
+      - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-forge-searxng-secret-change-this}
+    volumes:
+      - ./infra/searxng:/etc/searxng:rw
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/search?q=test&format=json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      - redis
+    networks:
+      - forge-net
+
 networks:
   default:
     name: forge-network

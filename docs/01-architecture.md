@@ -216,4 +216,11 @@ PostgreSQL checkpointing via LangGraph means the Commander survives crashes. Tem
 | UX Auditor has veto power | Prevents AI slop from reaching judges. Score < 7.0 or any anti-slop violation = blocked. |
 | Knowledge Updater modifies `design_constitution.py` | Living knowledge (stacks, trends) updates automatically. Static laws never change. |
 | Outcome Tracker closes the memory loop | `store_outcome()` is called after every judging day. Cross-hackathon learning actually accumulates. |
+| Claude Code-inspired concurrency graph | `forge_tools.get_runnable_now()` replaces hardcoded `asyncio.gather` — agents start only when their declared dependencies finish. Security and Code Reviewer wait for frontend+backend. Test Engineer waits for both. |
+| Per-agent cost tracking | `forge_tools.track_agent_cost()` records tokens and USD per agent call. Monitor alerts at $10 total. `forge status` shows running cost. Adapted from Claude Code's `cost-tracker.ts`. |
+| PATCH protocol standardized | `forge_tools.parse_patches()` and `apply_patches()` centralize the FIND/REPLACE file-edit protocol. All agents that produce file modifications use this — eliminates ad-hoc string manipulation. Adapted from Claude Code's `FileEditTool`. |
+| Memdir persistent agent notes | `forge_tools.write_agent_note()` gives agents a cross-session file-based memory. Notes are injected into system prompts on next run. Complements Mem0/Qdrant. Adapted from Claude Code's `src/memdir/`. |
+| Cron trigger system | `forge_tools.schedule_cron_trigger()` + Monitor polling replaces manual `asyncio.sleep()` scheduling. Outcome Tracker, Calendar Agent, and Monitor all use it. Adapted from Claude Code's `ScheduleCronTool`. |
+| Permission rule wildcards | `forge_tools.DEFAULT_PERMISSION_RULES` maps each agent to pre-approved tool patterns (`Bash(git *)`, `FileWrite(src/*)`). Adapted from Claude Code's permission rule system. |
+| Sub-agent spawning | `forge_tools.spawn_sub_agent()` lets any agent dynamically create a child agent for a specific research or analysis task. Adapted from Claude Code's `AgentTool`. |
 | Single ElectronHub gateway | One entry point for all LLM calls. Routing, fallback, cost tracking in one place. |

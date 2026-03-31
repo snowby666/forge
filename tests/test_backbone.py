@@ -44,11 +44,17 @@ class TestElectronHub:
             assert tier in (Tier.BULK, Tier.FAST), f"Task '{task}' should use BULK or FAST tier"
 
     def test_fallback_chain_is_complete(self):
-        """Every model should have a fallback."""
-        from config.electronhub import FALLBACK, MODELS
-        for model in MODELS.values():
-            if model != "claude-haiku-4-5":  # haiku is the final fallback
+        """Every non-terminal model should have a fallback. No self-loops."""
+        from config.electronhub import FALLBACK, get_models
+        active_models = set(get_models().values())
+        # gpt-4.1-nano and gpt-5-nano:free are terminals — no fallback required
+        terminals = {"gpt-4.1-nano", "gpt-5-nano:free"}
+        for model in active_models:
+            if model not in terminals:
                 assert model in FALLBACK, f"No fallback for model '{model}'"
+        # No self-loops allowed
+        for model, fb in FALLBACK.items():
+            assert model != fb, f"Self-loop in fallback chain: {model} -> {fb}"
 
     @pytest.mark.asyncio
     async def test_complete_json_cleans_markdown(self):

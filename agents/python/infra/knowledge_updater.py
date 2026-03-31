@@ -116,44 +116,44 @@ class LivingKnowledge(BaseModel):
 
 # ── Web research ───────────────────────────────────────────────────────────────
 
-async def _call_with_web_search(prompt: str, model: str = "claude-sonnet-4-5") -> str:
-    """Call ElectronHub with web_search tool enabled for live research."""
-    import json as _json
-    import aiohttp as _aio
+async def _call_with_web_search(query: str, **_kwargs) -> str:
+    """
+    Search the web and return formatted results for LLM context injection.
 
-    api_key  = os.environ["ELECTRONHUB_API_KEY"]
-    base_url = os.environ.get("ELECTRONHUB_BASE_URL", "https://api.electronhub.ai/v1")
+    Replaces the broken ElectronHub web_search_20250305 approach.
+    ElectronHub is an OpenAI-compatible proxy — Anthropic tool types
+    are not forwarded. This function uses the ddgs/Brave waterfall instead.
 
-    payload = {
-        "model": model,
-        "max_tokens": 2000,
-        "tools": [{"type": "web_search_20250305", "name": "web_search"}],
-        "messages": [{"role": "user", "content": prompt}],
-    }
+    The search happens here. Synthesis happens in the caller via complete_json().
+    """
+    from config.web_search import search_and_synthesize
+    # Deep search: query expansion + all providers + BM25/RRF + neural reranking
+    return await search_and_synthesize(query, max_results=10, include_news=True, deep=True)
 
-    async with _aio.ClientSession() as session:
-        async with session.post(
-            f"{base_url.rstrip('/')}/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json=payload,
-            timeout=_aio.ClientTimeout(total=90),
-        ) as resp:
-            if resp.status != 200:
-                # Fallback to plain complete() without web search
-                return ""
-            data = await resp.json()
 
-    # Extract text from response (may include tool_use blocks)
-    texts = [
-        block["text"]
-        for block in data.get("content", [])
-        if block.get("type") == "text"
+async def _adaptive_crawl_docs(start_url: str, query: str, max_pages: int = 15) -> str:
+    """
+    Adaptive doc crawl using Crawl4AI AdaptiveCrawler.
+    Crawls a documentation site until it has enough information to answer `query`.
+    Stops automatically using information foraging theory — no wasted requests.
+    Used by Knowledge Updater for sponsor API doc research.
+    """
+    from config.web_search import adaptive_crawl, format_results_for_llm, SearchResult
+    pages = await adaptive_crawl(start_url, query, max_pages=max_pages, confidence_threshold=0.72)
+    if not pages:
+        return ""
+    # Convert pages to SearchResult format for consistent formatting
+    results = [
+        SearchResult(
+            title=p.get("url", "").split("/")[-1] or "page",
+            url=p.get("url", ""),
+            snippet=str(p.get("content", ""))[:400],
+            source="crawl4ai_adaptive",
+            score=float(p.get("score", 0)),
+        )
+        for p in pages if p.get("url")
     ]
-    return " ".join(texts)
+    return format_results_for_llm(results, max_chars_per_snippet=600)
 
 
 async def research_trending_libraries() -> TrendingLibraries:

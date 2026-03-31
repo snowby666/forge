@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from redis.asyncio import Redis
 
 from config.electronhub import complete_json, complete
+from config.web_search import search_and_synthesize, research_people, research_companies
 from config.agents_config import ALL_AGENTS
 
 logger = logging.getLogger(__name__)

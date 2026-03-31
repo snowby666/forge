@@ -410,6 +410,22 @@ async def health() -> dict:
                     code = "\n".join(lines[1:])
                     await workspace.fs.upload_file(f"{repo_path}/{fp}", code.encode())
 
+        # Feature 5: Publish contract delta so Frontend can re-generate affected API clients.
+        # If router generation added or modified endpoints vs the initial contract, notify frontend.
+        try:
+            if endpoints:
+                await redis.publish("agent:api_contract_delta", json.dumps({
+                    "hackathon_id": hackathon_id,
+                    "message": "Backend implementation complete — API contract finalised",
+                    "endpoints_implemented": [
+                        {"method": e.get("method"), "path": e.get("path")}
+                        for e in endpoints[:20]
+                    ],
+                }))
+                logger.info(f"[forge:backend] Published contract delta — {len(endpoints)} endpoints finalised")
+        except Exception as e:
+            logger.debug(f"[forge:backend] Contract delta publish failed (non-critical): {e}")
+
         # Deploy
         await workspace.process.exec(
             f"cd {repo_path} && git init "
@@ -437,10 +453,11 @@ async def health() -> dict:
 async def run_frontend_worker() -> None:
     redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
     pubsub = redis.pubsub()
-    await pubsub.subscribe("agent:trigger", "agent:api_contract_ready")
+    await pubsub.subscribe("agent:trigger", "agent:api_contract_ready", "agent:api_contract_delta")
     logger.info("[forge:frontend] Worker ready — waiting for API contract to start")
 
     pending: dict[str, dict] = {}
+    active_workspaces: dict[str, str] = {}  # hackathon_id → repo_path
 
     async for message in pubsub.listen():
         if message["type"] != "message":
@@ -453,7 +470,7 @@ async def run_frontend_worker() -> None:
             pending[hackathon_id] = payload
 
         # Unblock when API contract arrives
-        elif "api_contract" in payload:
+        elif "api_contract" in payload and payload.get("hackathon_id") in pending:
             hackathon_id = payload.get("hackathon_id")
             if hackathon_id and hackathon_id in pending:
                 inp = pending.pop(hackathon_id)["input"]
@@ -464,10 +481,60 @@ async def run_frontend_worker() -> None:
                         "project_plan", "design_spec", "design_tokens_content",
                         "component_specs", "design_md_content", "api_contract",
                     ] if k in inp})
+                    active_workspaces[hackathon_id] = result.get("repo_path", "")
                     await redis.set(f"task:{hackathon_id}:frontend_engineer", json.dumps({"status": "done", "data": result}), ex=604800)
                 except Exception as e:
                     logger.error(f"[forge:frontend] Failed: {e}")
                     await redis.set(f"task:{hackathon_id}:frontend_engineer", json.dumps({"status": "failed", "error": str(e)}), ex=604800)
+
+        # Feature 5: Backend finalised contract — regenerate only the API client layer
+        elif message["channel"] == "agent:api_contract_delta":
+            hackathon_id = payload.get("hackathon_id", "")
+            endpoints = payload.get("endpoints_implemented", [])
+            if not hackathon_id or not endpoints:
+                continue
+            logger.info(
+                f"[forge:frontend] Received contract delta for {hackathon_id} "
+                f"({len(endpoints)} endpoints) — regenerating API client"
+            )
+            try:
+                # Re-fetch the final contract from Redis and regenerate just the API client
+                api_contract_raw = await redis.get(f"hackathon:{hackathon_id}:api_contract")
+                if not api_contract_raw:
+                    continue
+
+                api_contract = json.loads(api_contract_raw)
+                from config.electronhub import complete as llm_complete
+                client_code = await llm_complete(
+                    task="generate-component",
+                    messages=[{
+                        "role": "user",
+                        "content": f"""Regenerate the TypeScript API client (src/lib/api.ts) 
+based on the finalised backend contract.
+
+Endpoints:
+{json.dumps(api_contract.get('endpoints', [])[:15], indent=2)}
+
+Requirements:
+- Async functions per endpoint, typed request/response
+- Base URL from NEXT_PUBLIC_API_URL env var
+- Demo mode: if NEXT_PUBLIC_DEMO_MODE='true', return mock data
+- All functions return {{data, error}} not throw
+
+Output only the complete src/lib/api.ts file.""",
+                    }],
+                    temperature=0.0,
+                )
+
+                # Store for Polish Agent to pick up if needed
+                await redis.set(
+                    f"hackathon:{hackathon_id}:api_client_v2",
+                    client_code,
+                    ex=604800,
+                )
+                logger.info(f"[forge:frontend] API client regenerated from delta for {hackathon_id}")
+            except Exception as e:
+                logger.warning(f"[forge:frontend] Delta regeneration failed (non-critical): {e}")
 
     await redis.aclose()
 
