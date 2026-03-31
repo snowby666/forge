@@ -62,15 +62,38 @@ def section(title: str): print(f"\n{BOLD}{title}{RESET}")
 
 async def cmd_scout(args):
     """Discover and score hackathons."""
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
     section("Scouting hackathons...")
     from agents.python.intelligence.hackathon_scout import run_scout
-    results = await run_scout(dry_run=args.dry_run)
-    if not results:
-        warn("No qualifying hackathons found this cycle.")
+    qualified, all_briefs = await run_scout(dry_run=args.dry_run, return_all=True)
+
+    # Show all scored hackathons for visibility
+    if all_briefs:
+        section(f"Scored {len(all_briefs)} hackathons:")
+        for h in all_briefs:
+            prize_total = sum(p.amount or 0 for p in h.prizes)
+            bd = h.score_breakdown or {}
+            qualifies = h.score >= 65
+            marker = f"{GREEN}✓ qualifies{RESET}" if qualifies else f"{DIM}below threshold{RESET}"
+            print(f"\n  {BOLD}{h.score:3d}/100{RESET}  {h.name}")
+            print(f"         {DIM}prize={bd.get('prize_pool', 0)} "
+                  f"sponsor={bd.get('sponsor_prizes', 0)} "
+                  f"deadline={bd.get('deadline_buffer', 0)} "
+                  f"theme={bd.get('theme_match', 0)} "
+                  f"comp={bd.get('competition_size', 0)}{RESET}")
+            print(f"         {DIM}${prize_total:,.0f} · {h.days_until_deadline}d left · {h.platform} · {marker}{RESET}")
+
+    if not qualified:
+        warn("No qualifying hackathons found this cycle (need score ≥ 65).")
+        if all_briefs:
+            top = all_briefs[0]
+            info(f"Closest: {top.name} at {top.score}/100")
         return
 
-    section(f"Found {len(results)} qualifying hackathons:")
-    for h in results[:5]:
+    section(f"\n{len(qualified)} qualifying hackathons (score ≥ 65):")
+    for h in qualified[:5]:
         prize_total = sum(p.amount or 0 for p in h.prizes)
         sponsor_count = sum(1 for p in h.prizes if p.sponsor)
         status = f"{GREEN}REGISTERED{RESET}" if not args.dry_run and h.registration_open else f"{YELLOW}DRY RUN{RESET}"

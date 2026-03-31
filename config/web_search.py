@@ -1243,30 +1243,39 @@ async def scrape_hackathon_listings(
                     if result.success and result.extracted_content:
                         listings = _json.loads(result.extracted_content)
                         if isinstance(listings, list):
+                            accepted = 0
                             for item in listings[:limit_per_platform]:
                                 item["platform"] = platform
-                                # Ensure absolute URLs
                                 url = item.get("url", "")
                                 if url and not url.startswith("http"):
                                     base = cfg["url"].split("/hackathon")[0]
                                     item["url"] = base + url
                                 all_listings.append(item)
+                                accepted += 1
                             logger.info(
-                                f"[forge:search] scrape_hackathon_listings: "
-                                f"{len(listings)} {platform} listings via CSS extraction"
+                                f"[forge:search] {platform}: {accepted}/{len(listings)} listings via CSS extraction"
                             )
+                            for item in listings[:3]:
+                                logger.info(
+                                    f"[forge:search]   → {item.get('title', '?')[:55]} "
+                                    f"| prize={item.get('prize_amount', item.get('prize', ''))[:20]} "
+                                    f"| deadline={item.get('deadline', '')[:25]}"
+                                )
                         else:
-                            logger.debug(f"[forge:search] {platform}: unexpected extraction type {type(listings)}")
-                    else:
-                        # CSS schema didn't match — extract markdown and let LLM parse it
+                            logger.info(f"[forge:search] {platform}: unexpected extraction type {type(listings)}")
+                    elif result.success:
+                        logger.info(f"[forge:search] {platform}: page loaded OK but CSS selectors matched nothing")
                         if result.markdown:
+                            raw_md = (result.markdown.raw_markdown or "")[:3000]
                             all_listings.append({
                                 "platform": platform,
-                                "raw_markdown": (result.markdown.raw_markdown or "")[:3000],
+                                "raw_markdown": raw_md,
                                 "url": cfg["url"],
                                 "title": f"{platform.title()} hackathon listings (raw)",
                             })
-                            logger.debug(f"[forge:search] {platform}: CSS extraction failed, returned raw markdown")
+                            logger.info(f"[forge:search] {platform}: fell back to raw markdown ({len(raw_md)} chars)")
+                    else:
+                        logger.info(f"[forge:search] {platform}: crawl failed (success=False, status={getattr(result, 'status_code', '?')})")
 
                 except Exception as e:
                     logger.warning(f"[forge:search] {platform} scrape skipped: {type(e).__name__}: {str(e)[:80]}")
