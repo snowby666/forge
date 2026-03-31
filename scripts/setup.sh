@@ -175,32 +175,54 @@ fi
 # --- Virtual environment -----------------------------------------------------
 # Ubuntu 24.04+ (PEP 668) blocks system-wide pip installs.
 # All other Linux distros benefit too. Always use a venv.
+# --- Virtual environment location -------------------------------------------
+# CRITICAL: On WSL2, the project may live on a mounted Windows drive (/mnt/c/...).
+# NTFS mounts don't support Unix permissions or symlinks that Python venv needs.
+# Solution: always create the venv in the WSL2 native filesystem (~/.forge-venv),
+# then symlink .venv back to it so relative paths still work.
+
+FORGE_DIR="$(pwd)"
 VENV_DIR=".venv"
 
-# On Ubuntu/Debian, python3-venv is a separate package that must be installed
-# BEFORE attempting venv creation — the venv module may exist but ensurepip fails
-# without python3-full / python3-venv. Install proactively, not just as a fallback.
+# Detect if we're on a Windows NTFS mount (WSL2 running forge from /mnt/...)
+ON_NTFS=false
+if [[ "$OS_TYPE" == "wsl" ]] && [[ "$FORGE_DIR" == /mnt/* ]]; then
+  ON_NTFS=true
+fi
+
+# On Ubuntu/Debian ensure python3-venv is installed before attempting creation
 if [[ "$OS_TYPE" == "linux" || "$OS_TYPE" == "wsl" ]]; then
   if command -v apt-get &>/dev/null; then
-    # Check if venv can actually bootstrap pip (not just if the module exists)
-    if ! $PYTHON_CMD -m venv --without-pip /tmp/forge-venv-test &>/dev/null 2>&1 ||        [ ! -f /tmp/forge-venv-test/bin/python ]; then
-      log "Installing python3-venv and python3-full..."
-      sudo apt-get install -y python3-venv python3-full 2>/dev/null         || warn "apt-get failed -- will try anyway"
-    fi
-    rm -rf /tmp/forge-venv-test 2>/dev/null || true
-    # Always ensure python3-venv is present on Debian/Ubuntu to avoid ensurepip failures
-    sudo apt-get install -y python3-venv python3-full --no-upgrade -qq 2>/dev/null || true
+    sudo apt-get install -y python3-venv python3-full -qq 2>/dev/null || true
   fi
 fi
 
-if [ ! -d "$VENV_DIR" ]; then
-  log "Creating virtual environment (.venv)..."
-  $PYTHON_CMD -m venv "$VENV_DIR"     || $PYTHON_CMD -m venv --without-pip "$VENV_DIR"     || err "Failed to create venv.
-  Run manually: sudo apt install python3.12-venv python3-full
-  Then re-run: bash scripts/setup.sh"
-  log "Virtual environment created at .venv/"
+if [[ "$ON_NTFS" == "true" ]]; then
+  # Use native WSL2 filesystem for the venv to avoid NTFS permission errors
+  NATIVE_VENV_DIR="$HOME/.forge-venv"
+  if [ ! -d "$NATIVE_VENV_DIR" ]; then
+    log "Creating virtual environment in WSL2 native filesystem (~/.forge-venv)..."
+    log "(Project is on NTFS /mnt/c/ -- venv must be on native ext4 filesystem)"
+    $PYTHON_CMD -m venv "$NATIVE_VENV_DIR"       || err "Failed to create venv at $NATIVE_VENV_DIR.
+  Run: sudo apt install python3.12-venv python3-full && bash scripts/setup.sh"
+    log "Virtual environment created at ~/.forge-venv"
+  else
+    log "Virtual environment already exists (~/.forge-venv)"
+  fi
+  # Create/update .venv symlink in project dir pointing to native venv
+  rm -f "$VENV_DIR" 2>/dev/null || true
+  ln -sfn "$NATIVE_VENV_DIR" "$VENV_DIR" 2>/dev/null     || { rm -rf "$VENV_DIR"; ln -s "$NATIVE_VENV_DIR" "$VENV_DIR"; }
+  log "Symlinked .venv -> ~/.forge-venv"
 else
-  log "Virtual environment already exists (.venv/)"
+  # Normal filesystem (Linux, macOS, native WSL2 path): create venv in place
+  if [ ! -d "$VENV_DIR" ]; then
+    log "Creating virtual environment (.venv)..."
+    $PYTHON_CMD -m venv "$VENV_DIR"       || err "Failed to create venv.
+  Run: sudo apt install python3.12-venv python3-full && bash scripts/setup.sh"
+    log "Virtual environment created at .venv/"
+  else
+    log "Virtual environment already exists (.venv/)"
+  fi
 fi
 
 # Activate venv and update PYTHON_CMD / PIP_CMD to point inside it
@@ -317,6 +339,9 @@ info "IMPORTANT: Activate the virtual environment before running Forge:"
 if [[ "$OS_TYPE" == "windows" ]]; then
   info "  source .venv/Scripts/activate   (Git Bash)"
   info "  .venv\\Scripts\\activate          (cmd / PowerShell)"
+elif [[ "$ON_NTFS" == "true" ]]; then
+  info "  source ~/.forge-venv/bin/activate"
+  info "  (venv lives in WSL2 native filesystem due to NTFS /mnt/c/ limitations)"
 else
   info "  source .venv/bin/activate"
 fi

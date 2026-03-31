@@ -8,7 +8,7 @@ err()  { echo -e "${RED}[error]${NC} $1"; exit 1; }
 info() { echo -e "${CYAN}[info]${NC} $1"; }
 
 # --- Activate venv if not already active ------------------------------------
-# Detect Windows vs Unix path for venv
+# .venv may be a symlink to ~/.forge-venv when project lives on NTFS (/mnt/c/)
 if [[ "${OSTYPE:-}" == "msys" || "${MSYSTEM:-}" == "MINGW64" || -n "${WINDIR:-}" ]]; then
   VENV_ACTIVATE=".venv/Scripts/activate"
   VENV_PYTHON=".venv/Scripts/python"
@@ -17,10 +17,16 @@ else
   VENV_PYTHON=".venv/bin/python"
 fi
 
+# Fallback: check native WSL2 location directly (in case .venv symlink is missing)
+if [ ! -f "$VENV_ACTIVATE" ] && [ -f "$HOME/.forge-venv/bin/activate" ]; then
+  VENV_ACTIVATE="$HOME/.forge-venv/bin/activate"
+  VENV_PYTHON="$HOME/.forge-venv/bin/python"
+fi
+
 if [ -f "$VENV_ACTIVATE" ]; then
   # shellcheck disable=SC1090
   source "$VENV_ACTIVATE"
-  log "Virtual environment activated (.venv)"
+  log "Virtual environment activated"
 elif [[ -n "${VIRTUAL_ENV:-}" ]]; then
   log "Using active virtual environment: ${VIRTUAL_ENV}"
 else
