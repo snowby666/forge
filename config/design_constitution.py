@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Design Constitution v3
 ======================

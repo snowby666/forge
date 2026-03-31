@@ -10,6 +10,10 @@ info() { echo -e "${CYAN}[info]${NC} $1"; }
 
 log "Forge -- 30-agent autonomous hackathon swarm"
 
+# Force UTF-8 everywhere — prevents UnicodeDecodeError on Windows with non-ASCII files
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
+
 # --- Detect OS / shell environment -------------------------------------------
 OS_TYPE="linux"
 
@@ -201,6 +205,9 @@ PIP_CMD="$VENV_PYTHON -m pip"
 # Upgrade pip inside venv (no PEP 668 restriction inside a venv)
 $PIP_CMD install --upgrade pip --quiet 2>/dev/null || true
 log "pip: $($PIP_CMD --version | cut -d' ' -f2)"
+# Persist UTF-8 setting for all python calls in this session
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
 
 # --- Python core dependencies ------------------------------------------------
 log "Installing Python core dependencies..."

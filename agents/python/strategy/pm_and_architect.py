@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 PM Agent + Tech Architect — Layer 2: Strategy
 Both run after concept approval checkpoint.

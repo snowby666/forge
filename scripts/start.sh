@@ -20,13 +20,32 @@ fi
 if [ -f "$VENV_ACTIVATE" ]; then
   # shellcheck disable=SC1090
   source "$VENV_ACTIVATE"
-  log "Virtual environment activated"
-elif [[ -z "${VIRTUAL_ENV:-}" ]]; then
-  warn "No .venv found and no venv active. Run scripts/setup.sh first."
-  warn "Or activate manually: source .venv/bin/activate"
-  # Try to find python anyway
-  VENV_PYTHON=$(command -v python3 || command -v python || echo "")
-  [[ -z "$VENV_PYTHON" ]] && err "Python not found."
+  log "Virtual environment activated (.venv)"
+elif [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  log "Using active virtual environment: ${VIRTUAL_ENV}"
+else
+  # No .venv yet -- try to find a working python (common on fresh Git Bash installs)
+  FOUND_PYTHON=""
+  for cmd in python python3 python3.12 python3.11; do
+    if command -v "$cmd" &>/dev/null; then
+      VER=$("$cmd" -c "import sys; v=sys.version_info; print(f'{v.major}.{v.minor}')" 2>/dev/null || echo "0.0")
+      MAJOR=$(echo "$VER" | cut -d. -f1)
+      MINOR=$(echo "$VER" | cut -d. -f2)
+      if [[ "$MAJOR" -eq 3 && "$MINOR" -ge 11 ]]; then
+        FOUND_PYTHON="$cmd"
+        break
+      fi
+    fi
+  done
+  if [[ -n "$FOUND_PYTHON" ]]; then
+    warn "No .venv found -- using system Python ($FOUND_PYTHON). Run scripts/setup.sh for a proper venv."
+    VENV_PYTHON="$FOUND_PYTHON"
+  else
+    warn "No .venv found. Run scripts/setup.sh first."
+    warn "Or: source .venv/bin/activate  (Linux/macOS)"
+    warn "Or: source .venv/Scripts/activate  (Windows Git Bash)"
+    VENV_PYTHON="python"
+  fi
 fi
 
 PYTHON_CMD="${VENV_PYTHON:-python}"
@@ -45,6 +64,9 @@ for var in POSTGRES_PASSWORD REDIS_PASSWORD QDRANT_API_KEY; do
   fi
 done
 [[ "$ENV_OK" == "true" ]] || err "Fix the above .env values, then re-run start.sh."
+
+# Force UTF-8 on Windows to prevent UnicodeDecodeError with non-ASCII chars
+export PYTHONUTF8=1
 
 log "Starting Docker services..."
 docker compose -f config/docker-compose.yml up -d

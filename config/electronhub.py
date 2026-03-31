@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 ElectronHub API client — single source of truth for all LLM calls.
 Base URL: https://api.electronhub.ai/v1 (OpenAI-compatible)
@@ -58,7 +59,7 @@ def _load_secrets() -> None:
     if not secrets_file.exists():
         return
     try:
-        for line in secrets_file.read_text().splitlines():
+        for line in secrets_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue

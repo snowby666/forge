@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 config/web_search.py — ForgeSearch: Sophisticated Hybrid Search Engine
 ========================================================================
@@ -636,8 +637,9 @@ def _bm25_score(query: str, results: list[SearchResult]) -> list[tuple[SearchRes
         query_tokens = bm25s.tokenize([query])
         scores, _ = retriever.retrieve(query_tokens, k=len(corpus))
         scored = list(zip(results, scores[0].tolist()))
-    except (ImportError, Exception):
-        # Fallback: simple TF scoring
+    except (ImportError, ModuleNotFoundError, Exception):
+        # Fallback: simple TF scoring (also handles Windows where bm25s
+        # may fail due to missing 'resource' module in some versions)
         query_terms = set(query.lower().split())
         scored = []
         for r in results:

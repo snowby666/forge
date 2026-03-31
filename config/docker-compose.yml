@@ -89,7 +89,7 @@ services:
     container_name: forge-temporal
     restart: unless-stopped
     environment:
-      DB: postgresql
+      DB: postgres12
       DB_PORT: 5432
       POSTGRES_USER: ${POSTGRES_USER:-backbone}
       POSTGRES_PWD: ${POSTGRES_PASSWORD:-change_me}

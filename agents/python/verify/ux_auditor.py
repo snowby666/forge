@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 UX Auditor Agent
 ================
@@ -232,7 +233,7 @@ async def run_ux_audit(
 
     # Load DESIGN.md
     try:
-        with open(design_md_path) as f:
+        with open(design_md_path, encoding="utf-8") as f:
             design_md_content = f.read()
     except FileNotFoundError:
         design_md_content = "DESIGN.md not found"

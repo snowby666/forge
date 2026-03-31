@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Polish Layer Agents — Layer 5
 Runs in parallel after UX Auditor approves the build.
@@ -115,7 +116,7 @@ Focus on:
             continue
 
         try:
-            content = target.read_text()
+            content = target.read_text(encoding="utf-8")
             if find_str in content:
                 target.write_text(content.replace(find_str, replace_str, 1))
                 tasks_completed.append(PolishTask(
@@ -133,7 +134,7 @@ Focus on:
     layout_candidates = list(output_root.rglob("layout.tsx")) + list(output_root.rglob("layout.ts"))
     for layout_file in layout_candidates[:1]:
         try:
-            layout_content = layout_file.read_text()
+            layout_content = layout_file.read_text(encoding="utf-8")
             if "og:title" not in layout_content and "openGraph" not in layout_content:
                 # Inject basic OG meta after <head> or metadata export
                 og_block = """

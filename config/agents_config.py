@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Agent Configuration Registry
 All 30 agent definitions, system prompts, tool lists, and constraints.

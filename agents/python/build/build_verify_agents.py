@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Build & Verify Agent Workers
 ============================

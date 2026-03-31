@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Knowledge Updater Agent
 =======================
@@ -161,24 +162,12 @@ async def research_trending_libraries() -> TrendingLibraries:
     year  = datetime.now().year
     month = datetime.now().strftime("%B %Y")
 
-    prompt = f"""Search the web and answer: what are the best React UI libraries for developer tools in {month}?
-
-Research specifically:
-1. Best component library for Next.js + shadcn/ui projects (primary recommendation + backup)
-2. Best data table library (TanStack Table still best? anything newer?)
-3. Best chart library for dense data tools (Observable Plot? Recharts? D3?)
-4. Best icon library in {year} (Lucide? Radix Icons? Phosphor?)
-5. Best form validation library (React Hook Form + Zod still standard?)
-6. Best animation (Framer Motion? CSS-only? anything new?)
-7. Standard for streaming AI output in React (Vercel AI SDK useChat?)
-8. What libraries to avoid — which became dated or deprecated in {year}?
-
-Focus on: composio.dev / linear.app / hex.tech aesthetic. Dense, developer-native.
-NOT consumer SaaS libraries. Be specific about versions and trade-offs."""
+    # Short keyword query for ddgs — the full research prompt is in the LLM call below
+    search_query = f"best React UI component libraries developer tools {year}"
 
     raw = ""
     try:
-        raw = await _call_with_web_search(prompt)
+        raw = await _call_with_web_search(search_query)
     except Exception as e:
         logger.warning(f"[forge:knowledge] Web search failed: {e} — using training knowledge")
 
@@ -206,12 +195,11 @@ async def research_winning_concepts() -> WinningConcepts:
     year  = datetime.now().year
     month = datetime.now().strftime("%B %Y")
 
-    prompt = f"""Search for: what AI agent project types are winning hackathons in {month}?
-Look for recent hackathon results on Devpost, Lablab.ai, MLH, and Microsoft AI hackathons.
-Find: what won, what lost, what judges rewarded, what concepts were overused."""
+    # Short keyword query for ddgs
+    search_query = f"winning AI hackathon projects {month} Devpost MLH"
     raw = ""
     try:
-        raw = await _call_with_web_search(prompt)
+        raw = await _call_with_web_search(search_query)
     except Exception as e:
         logger.warning(f"[forge:knowledge] Web search failed for concepts: {e}")
 
@@ -370,7 +358,7 @@ def update_constitution(new_knowledge: LivingKnowledge) -> str:
     Only replaces the section between KNOWLEDGE_UPDATER_SECTION_START and _END.
     Everything outside that section is untouched.
     """
-    content = CONSTITUTION_PATH.read_text()
+    content = CONSTITUTION_PATH.read_text(encoding="utf-8")
 
     start_idx = content.find(SECTION_START)
     end_idx = content.find(SECTION_END)
@@ -515,7 +503,7 @@ async def run_knowledge_update(dry_run: bool = False) -> dict:
         be_stack = None
 
     # Read current knowledge to use as fallback for failed sections
-    current_content = CONSTITUTION_PATH.read_text()
+    current_content = CONSTITUTION_PATH.read_text(encoding="utf-8")
     current_start = current_content.find(SECTION_START)
     current_end = current_content.find(SECTION_END)
     current_section = current_content[current_start:current_end]
@@ -545,10 +533,10 @@ async def run_knowledge_update(dry_run: bool = False) -> dict:
 
     # Backup original
     backup_path = CONSTITUTION_PATH.with_suffix(".py.bak")
-    backup_path.write_text(current_content)
+    backup_path.write_text(current_content, encoding="utf-8")
     logger.info(f"[forge:knowledge] Backed up to {backup_path}")
 
-    CONSTITUTION_PATH.write_text(updated_content)
+    CONSTITUTION_PATH.write_text(updated_content, encoding="utf-8")
     logger.info(f"[forge:knowledge] Knowledge updated successfully. Version: {now}")
 
     return {
@@ -591,6 +579,10 @@ def _extract_current(key: str, section_text: str) -> dict:
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Ensure UTF-8 on Windows (prevents UnicodeDecodeError with box-drawing chars)
+    import os as _os
+    _os.environ.setdefault("PYTHONUTF8", "1")
+    _os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     import argparse
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     parser = argparse.ArgumentParser(description="Update design constitution living knowledge")
@@ -599,7 +591,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.show_current:
-        content = CONSTITUTION_PATH.read_text()
+        content = CONSTITUTION_PATH.read_text(encoding="utf-8")
         start = content.find(SECTION_START)
         end = content.find(SECTION_END)
         print(content[start:end + len(SECTION_END)])

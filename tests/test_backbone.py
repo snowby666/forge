@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Test suite for forge.
 Tests: ElectronHub routing, design constitution enforcement, agent coordination, Redis patterns.

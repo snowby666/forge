@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Submission Pipeline — Layer 6
 Demo Producer: records screen, ElevenLabs narration, ffmpeg composite.

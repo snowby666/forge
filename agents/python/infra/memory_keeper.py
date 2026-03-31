@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Memory Keeper — Layer 7: Infrastructure
 Persistent memory across all hackathons.

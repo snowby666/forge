@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 test_run.py — End-to-end dry run of the full agent pipeline.
 

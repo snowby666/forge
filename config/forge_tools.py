@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 forge_tools.py — Claude Code-inspired tool protocol for Forge agents
 =====================================================================
@@ -325,7 +326,7 @@ def write_agent_note(agent_id: str, note_name: str, content: str) -> Path:
                         "Supply chain agents win on Devpost. Chatbots lose.")
     """
     path = get_agent_memdir(agent_id) / f"{note_name}.md"
-    path.write_text(content)
+    path.write_text(content, encoding="utf-8")
     logger.info(f"[forge:memdir] {agent_id} wrote note: {note_name}")
     return path
 
@@ -335,7 +336,7 @@ def read_agent_notes(agent_id: str) -> dict[str, str]:
     memdir = get_agent_memdir(agent_id)
     notes = {}
     for f in sorted(memdir.glob("*.md")):
-        notes[f.stem] = f.read_text()
+        notes[f.stem] = f.read_text(encoding="utf-8")
     return notes
 
 
@@ -405,7 +406,7 @@ def apply_patches(patches: list[dict], root_dir: Path) -> tuple[list[str], list[
             continue
 
         try:
-            content = target.read_text()
+            content = target.read_text(encoding="utf-8")
             if patch["find"] not in content:
                 failed.append(f"{patch['file']}: FIND string not found")
                 continue

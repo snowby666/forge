@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Commander — Layer 0: Orchestrator
 ===================================

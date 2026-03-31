@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Intelligence Agents — Competitor Analyst, Judge Profiler, Sponsor Researcher
 All run in parallel with Hackathon Scout after a hackathon is registered.

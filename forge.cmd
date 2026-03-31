@@ -1,4 +1,6 @@
 @echo off
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
 rem forge.cmd -- Windows batch wrapper for the Forge CLI
 rem Usage: forge <command> [options]
 rem This is equivalent to: python forge <command>

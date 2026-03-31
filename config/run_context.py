@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 config/run_context.py — Runtime context injection for Forge agents
 ===================================================================

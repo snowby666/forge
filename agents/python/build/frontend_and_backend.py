@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Frontend Engineer + Backend Engineer — Layer 3: Build
 Both run in parallel after design approval checkpoint.

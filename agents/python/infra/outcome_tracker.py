@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Outcome Tracker — Agent 30, Layer 7: Infrastructure
 =====================================================

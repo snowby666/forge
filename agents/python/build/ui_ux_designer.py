@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 UI/UX Designer Agent
 ====================

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Monitor Agent + Calendar Agent — Layer 7: Infrastructure
 Monitor: tracks cost, latency, errors, circuit breakers, Slack alerts.
@@ -48,7 +49,7 @@ class AgentMetrics:
         idx = int(len(lats) * 0.95)
         return lats[min(idx, len(lats) - 1)]
 
-    def is_circuit_open(self, agent_id: str, threshold: int = 3) -> bool:
+    def is_circuit_open(self, agent_id: str, threshold: int = 3, encoding="utf-8") -> bool:
         return self.consecutive_failures.get(agent_id, 0) >= threshold
 
 
@@ -86,7 +87,7 @@ async def check_agent_health(hackathon_id: str, redis: Redis) -> dict:
             health[agent_id] = task.get("status", "unknown")
             if task.get("status") == "failed":
                 _metrics.record_error(agent_id)
-                if _metrics.is_circuit_open(agent_id):
+                if _metrics.is_circuit_open(agent_id, encoding="utf-8"):
                     await send_slack_alert(
                         f"⚠️ *Circuit breaker open* for `{agent_id}` on hackathon `{hackathon_id}`\n"
                         f"Failed {_metrics.consecutive_failures[agent_id]} times in a row.\n"
