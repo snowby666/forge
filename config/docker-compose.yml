@@ -1,5 +1,9 @@
 # NOTE: Copy .env.example to .env and fill in passwords before running `docker compose up`
 # version: field is obsolete in Compose v2 -- removed to suppress the warning
+#
+# Data volumes use Docker named volumes (not bind mounts) so that services like
+# PostgreSQL can chmod/chown freely. This is required on WSL2/NTFS where bind
+# mounts to /mnt/c/ don't support Unix permissions.
 
 services:
   postgres:
@@ -11,8 +15,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
       POSTGRES_DB: backbone
     volumes:
-      - ./infra/postgres/data:/var/lib/postgresql/data
-      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - forge-postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     ports:
       - "5432:5432"
     healthcheck:
@@ -31,7 +35,7 @@ services:
       --maxmemory 512mb
       --maxmemory-policy allkeys-lru
     volumes:
-      - ./infra/redis/data:/data
+      - forge-redis-data:/data
     ports:
       - "6379:6379"
     healthcheck:
@@ -47,7 +51,7 @@ services:
     environment:
       QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-change_me}
     volumes:
-      - ./infra/qdrant/data:/qdrant/storage
+      - forge-qdrant-data:/qdrant/storage
     ports:
       - "6333:6333"
       - "6334:6334"
@@ -77,7 +81,7 @@ services:
       N8N_AI_OPENAI_API_KEY: ${ELECTRONHUB_API_KEY:-not_set}
       N8N_AI_OPENAI_BASE_URL: ${ELECTRONHUB_BASE_URL:-https://api.electronhub.ai/v1}
     volumes:
-      - ./infra/n8n/data:/home/node/.n8n
+      - forge-n8n-data:/home/node/.n8n
     ports:
       - "5678:5678"
     depends_on:
@@ -136,6 +140,12 @@ services:
     depends_on:
       - redis
     # Uses the default network -- no custom network needed
+
+volumes:
+  forge-postgres-data:
+  forge-redis-data:
+  forge-qdrant-data:
+  forge-n8n-data:
 
 networks:
   default:
