@@ -60,39 +60,112 @@ def section(title: str): print(f"\n{BOLD}{title}{RESET}")
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
+def _print_hackathon_detail(h, verbose: bool = True):
+    """Print detailed hackathon intel."""
+    prize_total = sum(p.amount or 0 for p in h.prizes)
+    bd = h.score_breakdown or {}
+    qualifies = h.score >= 65
+    marker = f"{GREEN}✓ qualifies{RESET}" if qualifies else f"{DIM}below threshold{RESET}"
+    deep_marker = f" {CYAN}[deep]{RESET}" if h.deep_scraped else ""
+
+    print(f"\n  {BOLD}{h.score:3d}/100{RESET}  {h.name}{deep_marker}")
+    print(f"         {DIM}prize={bd.get('prize_pool', 0)} "
+          f"sponsor={bd.get('sponsor_prizes', 0)} "
+          f"deadline={bd.get('deadline_buffer', 0)} "
+          f"theme={bd.get('theme_match', 0)} "
+          f"comp={bd.get('competition_size', 0)}{RESET}")
+    print(f"         {DIM}${prize_total:,.0f} · {h.days_until_deadline}d left · {h.platform} · {marker}{RESET}")
+    print(f"         {DIM}{h.url}{RESET}")
+
+    if not verbose:
+        return
+
+    # Theme & description
+    if h.theme:
+        print(f"         {CYAN}Theme:{RESET} {h.theme[:120]}")
+    if h.description and len(h.description) > 10:
+        print(f"         {CYAN}About:{RESET} {h.description[:200]}...")
+
+    # Prizes breakdown
+    if len(h.prizes) > 1:
+        print(f"         {CYAN}Prizes ({len(h.prizes)}):{RESET}")
+        for p in h.prizes[:8]:
+            amt = f"${p.amount:,.0f}" if p.amount else "TBD"
+            sponsor = f" ({p.sponsor})" if p.sponsor else ""
+            print(f"           · {p.name}: {amt}{sponsor}")
+
+    # Tracks
+    if h.tracks:
+        print(f"         {CYAN}Tracks ({len(h.tracks)}):{RESET}")
+        for t in h.tracks[:6]:
+            sponsor = f" [{t.sponsor}]" if t.sponsor else ""
+            print(f"           · {t.name}{sponsor}")
+
+    # Judges
+    if h.judges:
+        print(f"         {CYAN}Judges ({len(h.judges)}):{RESET}")
+        for j in h.judges[:6]:
+            role = f" — {j.title}, {j.company}" if j.title else ""
+            print(f"           · {j.name}{role}")
+
+    # Judging criteria
+    if h.judging_criteria:
+        print(f"         {CYAN}Judging:{RESET} {', '.join(h.judging_criteria[:6])}")
+
+    # Sponsor APIs
+    if h.sponsor_techs:
+        print(f"         {CYAN}Sponsor APIs:{RESET}")
+        for s in h.sponsor_techs[:6]:
+            docs = f" → {s.docs_url}" if s.docs_url else ""
+            print(f"           · {s.sponsor}: {s.api_name}{docs}")
+
+    # Community links
+    if h.community_links:
+        print(f"         {CYAN}Community:{RESET}")
+        for cl in h.community_links[:8]:
+            print(f"           · [{cl.platform}] {cl.url}")
+
+    # Research
+    if h.research:
+        papers = [r for r in h.research if r.source == "arxiv"]
+        repos = [r for r in h.research if r.source == "github"]
+        others = [r for r in h.research if r.source not in ("arxiv", "github")]
+        print(f"         {CYAN}Research ({len(h.research)} items):{RESET}")
+        for r in (papers + repos + others)[:8]:
+            print(f"           · [{r.source}] {r.title[:80]}")
+            print(f"             {DIM}{r.url}{RESET}")
+
+    # Rules snippet
+    if h.rules:
+        print(f"         {CYAN}Rules:{RESET} {h.rules[:200]}...")
+
+
 async def cmd_scout(args):
     """Discover and score hackathons."""
     import logging
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    section("Scouting hackathons...")
-    from agents.python.intelligence.hackathon_scout import run_scout
-    qualified, all_briefs = await run_scout(dry_run=args.dry_run, return_all=True)
+    deep = not getattr(args, 'shallow', False)
+    mode = "deep" if deep else "shallow"
+    section(f"Scouting hackathons ({mode} mode)...")
 
-    # Show all scored hackathons for visibility
+    from agents.python.intelligence.hackathon_scout import run_scout
+    qualified, all_briefs = await run_scout(dry_run=args.dry_run, return_all=True, deep=deep)
+
+    # Show all scored hackathons with full intel
     if all_briefs:
         section(f"Scored {len(all_briefs)} hackathons:")
         for h in all_briefs:
-            prize_total = sum(p.amount or 0 for p in h.prizes)
-            bd = h.score_breakdown or {}
-            qualifies = h.score >= 65
-            marker = f"{GREEN}✓ qualifies{RESET}" if qualifies else f"{DIM}below threshold{RESET}"
-            print(f"\n  {BOLD}{h.score:3d}/100{RESET}  {h.name}")
-            print(f"         {DIM}prize={bd.get('prize_pool', 0)} "
-                  f"sponsor={bd.get('sponsor_prizes', 0)} "
-                  f"deadline={bd.get('deadline_buffer', 0)} "
-                  f"theme={bd.get('theme_match', 0)} "
-                  f"comp={bd.get('competition_size', 0)}{RESET}")
-            print(f"         {DIM}${prize_total:,.0f} · {h.days_until_deadline}d left · {h.platform} · {marker}{RESET}")
+            _print_hackathon_detail(h, verbose=deep)
 
     if not qualified:
-        warn("No qualifying hackathons found this cycle (need score ≥ 65).")
+        warn("No qualifying hackathons found this cycle (need score >= 65).")
         if all_briefs:
             top = all_briefs[0]
             info(f"Closest: {top.name} at {top.score}/100")
         return
 
-    section(f"\n{len(qualified)} qualifying hackathons (score ≥ 65):")
+    section(f"\n{len(qualified)} qualifying hackathons (score >= 65):")
     for h in qualified[:5]:
         prize_total = sum(p.amount or 0 for p in h.prizes)
         sponsor_count = sum(1 for p in h.prizes if p.sponsor)
@@ -482,6 +555,7 @@ def main():
     # scout
     p_scout = sub.add_parser("scout", help="Discover and score this week's hackathons")
     p_scout.add_argument("--dry-run", action="store_true", help="Don't register, just score")
+    p_scout.add_argument("--shallow", action="store_true", help="Skip deep scrape / community / research phases")
 
     # run
     p_run = sub.add_parser("run", help="Full autonomous build cycle")
