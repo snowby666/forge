@@ -11,22 +11,22 @@ info() { echo -e "${CYAN}[info]${NC} $1"; }
 log "Forge -- 30-agent autonomous hackathon swarm"
 
 # --- Detect OS / shell environment -------------------------------------------
-IS_WINDOWS=false
-IS_WSL=false
-IS_MACOS=false
+# Use string variables and [[ == ]] comparisons throughout -- avoids the
+# "if $BOOL" pitfall where false/true are interpreted as command names in bash.
+OS_TYPE="linux"
 
-if [[ "${OSTYPE:-}" == "msys" || "${OSTYPE:-}" == "cygwin" || \
-      "${MSYSTEM:-}" == "MINGW64" || "${MSYSTEM:-}" == "MINGW32" || \
+if [[ "${OSTYPE:-}" == "msys" || "${OSTYPE:-}" == "cygwin" ||
+      "${MSYSTEM:-}" == "MINGW64" || "${MSYSTEM:-}" == "MINGW32" ||
       -n "${WINDIR:-}" ]]; then
-  IS_WINDOWS=true
+  OS_TYPE="windows"
   warn "Detected: Windows (Git Bash / MINGW)"
   info "For best experience, use WSL2: https://docs.microsoft.com/windows/wsl/install"
   echo ""
 elif grep -qEi "(microsoft|wsl)" /proc/version 2>/dev/null; then
-  IS_WSL=true
+  OS_TYPE="wsl"
   log "Detected: WSL2"
 elif [[ "$(uname)" == "Darwin" ]]; then
-  IS_MACOS=true
+  OS_TYPE="macos"
   log "Detected: macOS"
 else
   log "Detected: Linux"
@@ -48,11 +48,11 @@ done
 
 if [[ -z "$PYTHON_CMD" ]]; then
   echo ""
-  if $IS_WINDOWS; then
+  if [[ "$OS_TYPE" == "windows" ]]; then
     err "Python 3.11+ not found.
   Download from https://www.python.org/downloads/windows/
   Check 'Add Python to PATH' during install, then restart Git Bash."
-  elif $IS_MACOS; then
+  elif [[ "$OS_TYPE" == "macos" ]]; then
     err "Python 3.11+ not found. Run: brew install python@3.12"
   else
     err "Python 3.11+ not found. Run: sudo apt install python3.12 python3.12-venv"
@@ -64,11 +64,11 @@ PIP_CMD="$PYTHON_CMD -m pip"
 
 # --- Docker ------------------------------------------------------------------
 if ! command -v docker &>/dev/null; then
-  if $IS_WINDOWS; then
+  if [[ "$OS_TYPE" == "windows" ]]; then
     err "Docker not installed.
   Install Docker Desktop: https://www.docker.com/products/docker-desktop/
   Enable WSL2 backend in Docker Desktop settings."
-  elif $IS_MACOS; then
+  elif [[ "$OS_TYPE" == "macos" ]]; then
     err "Docker not installed. Run: brew install --cask docker"
   else
     err "Docker not installed. See: https://docs.docker.com/engine/install/"
@@ -78,11 +78,11 @@ log "Docker: $(docker --version | cut -d' ' -f3 | tr -d ',')"
 
 # --- Node.js -----------------------------------------------------------------
 if ! command -v node &>/dev/null; then
-  if $IS_WINDOWS; then
+  if [[ "$OS_TYPE" == "windows" ]]; then
     err "Node.js not installed.
   Download LTS from https://nodejs.org/
   Or: winget install OpenJS.NodeJS.LTS"
-  elif $IS_MACOS; then
+  elif [[ "$OS_TYPE" == "macos" ]]; then
     err "Node.js not installed. Run: brew install node@20"
   else
     err "Node.js not installed. Run:
@@ -94,12 +94,11 @@ log "Node.js: $(node --version)"
 
 # --- ffmpeg (optional) -------------------------------------------------------
 if ! command -v ffmpeg &>/dev/null; then
-  if $IS_WINDOWS; then
-    warn "ffmpeg not found.
+  if [[ "$OS_TYPE" == "windows" ]]; then
+    warn "ffmpeg not found (optional -- only needed for demo video generation).
   Install: winget install Gyan.FFmpeg
-  Or download: https://ffmpeg.org/download.html#build-windows
-  (Only needed for demo video generation)"
-  elif $IS_MACOS; then
+  Or: https://ffmpeg.org/download.html#build-windows"
+  elif [[ "$OS_TYPE" == "macos" ]]; then
     warn "ffmpeg not found -- run: brew install ffmpeg"
   else
     warn "ffmpeg not found -- run: sudo apt install ffmpeg"
@@ -118,7 +117,8 @@ fi
 
 # --- Infrastructure directories ----------------------------------------------
 log "Creating infra directories..."
-mkdir -p infra/postgres/data infra/redis/data infra/qdrant/data infra/temporal infra/n8n/data infra/searxng
+mkdir -p infra/postgres/data infra/redis/data infra/qdrant/data \
+         infra/temporal infra/n8n/data infra/searxng
 
 cat > infra/qdrant/config.yaml << 'EOCONF'
 service:
@@ -140,88 +140,75 @@ GRANT ALL PRIVILEGES ON DATABASE n8n TO backbone;
 \c backbone;
 
 CREATE TABLE IF NOT EXISTS hackathons (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  url TEXT NOT NULL,
-  platform TEXT,
-  theme TEXT,
-  deadline TIMESTAMPTZ,
-  score INTEGER,
-  status TEXT DEFAULT 'discovered',
-  concept_json JSONB,
-  project_url TEXT,
-  submission_url TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL,
+  platform TEXT, theme TEXT, deadline TIMESTAMPTZ, score INTEGER,
+  status TEXT DEFAULT 'discovered', concept_json JSONB,
+  project_url TEXT, submission_url TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS agent_tasks (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   hackathon_id TEXT REFERENCES hackathons(id),
-  agent_id TEXT NOT NULL,
-  status TEXT DEFAULT 'pending',
-  input_json JSONB,
-  output_json JSONB,
-  error TEXT,
-  iterations INTEGER DEFAULT 0,
-  started_at TIMESTAMPTZ,
-  completed_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  agent_id TEXT NOT NULL, status TEXT DEFAULT 'pending',
+  input_json JSONB, output_json JSONB, error TEXT,
+  iterations INTEGER DEFAULT 0, started_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS ux_audit_reports (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   hackathon_id TEXT REFERENCES hackathons(id),
-  preview_url TEXT,
-  overall_score FLOAT,
-  approved BOOLEAN,
-  report_json JSONB,
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  preview_url TEXT, overall_score FLOAT, approved BOOLEAN,
+  report_json JSONB, created_at TIMESTAMPTZ DEFAULT NOW()
 );
 EOSQL
 
-# --- Python version warning for 3.13+ ---------------------------------------
+# --- Python version warning for 3.13+ ----------------------------------------
 PY_MINOR=$($PYTHON_CMD -c "import sys; print(sys.version_info.minor)")
 PY_MAJOR=$($PYTHON_CMD -c "import sys; print(sys.version_info.major)")
 if [[ "$PY_MAJOR" -eq 3 && "$PY_MINOR" -ge 13 ]]; then
   warn "Python 3.${PY_MINOR} detected. Some wheels (torch, temporalio, daytona-sdk)
-  may not have pre-built binaries for 3.${PY_MINOR} yet.
-  Forge core will work; optional GPU/Temporal/Daytona features install separately.
-  Recommended: Python 3.11 or 3.12 for maximum compatibility."
+  may not have pre-built binaries for Python 3.${PY_MINOR} yet.
+  Forge core will work. For maximum compatibility use Python 3.11 or 3.12."
 fi
 
-# --- Python dependencies (staged) --------------------------------------------
+# --- Python core dependencies ------------------------------------------------
 log "Installing Python core dependencies..."
 if command -v uv &>/dev/null; then
-  uv pip install -e ".[dev]" || uv pip install -e "." && uv pip install pytest pytest-asyncio
+  uv pip install -e ".[dev]" || { uv pip install -e "."; uv pip install pytest pytest-asyncio; }
 else
-  $PIP_CMD install -e ".[dev]" --quiet || {
+  $PIP_CMD install -e ".[dev]" --quiet 2>&1 | grep -v "^WARNING\|^NOTICE\|^notice" || {
     warn "Full install failed -- trying core only (common on Python 3.13+)"
-    $PIP_CMD install -e "." --quiet
+    $PIP_CMD install -e "." --quiet 2>&1 | grep -v "^WARNING\|^NOTICE\|^notice"
     $PIP_CMD install pytest pytest-asyncio --quiet
   }
 fi
 
-# Optional heavy deps -- install separately, failures are non-fatal
-log "Installing optional deps (crawl4ai, sentence-transformers)..."
-$PIP_CMD install crawl4ai>=0.4.0 --quiet 2>/dev/null ||   warn "crawl4ai install failed -- web crawling will use fallback HTTP extractor"
-$PIP_CMD install sentence-transformers>=3.0.0 --quiet 2>/dev/null ||   warn "sentence-transformers install failed -- semantic reranking will be skipped"
+# --- Optional: crawl4ai (JS rendering, adaptive crawl) ----------------------
+log "Installing crawl4ai (JS crawling)..."
+$PIP_CMD install "crawl4ai>=0.4.0" --quiet 2>/dev/null \
+  || warn "crawl4ai install failed -- web crawling will use the lightweight HTTP fallback"
 
-# PyTorch: install CPU-only version by default (GPU users should install manually)
+# --- Optional: sentence-transformers (semantic reranking) -------------------
+log "Installing sentence-transformers (semantic reranking)..."
+$PIP_CMD install "sentence-transformers>=3.0.0" --quiet 2>/dev/null \
+  || warn "sentence-transformers install failed -- BM25 keyword ranking will be used instead"
+
+# --- Optional: PyTorch (CPU build, for reranker on CPU) ---------------------
 if ! $PYTHON_CMD -c "import torch" &>/dev/null 2>&1; then
-  log "Installing PyTorch (CPU build)..."
-  $PIP_CMD install torch --index-url https://download.pytorch.org/whl/cpu --quiet 2>/dev/null ||     warn "PyTorch CPU install failed.
-  GPU server: pip install torch --index-url https://download.pytorch.org/whl/cu121
-  CPU-only:   pip install torch --index-url https://download.pytorch.org/whl/cpu"
+  log "Installing PyTorch (CPU build -- GPU users see docs/gpu-setup.md)..."
+  $PIP_CMD install torch --index-url https://download.pytorch.org/whl/cpu --quiet 2>/dev/null \
+    || warn "PyTorch CPU install failed.
+  GPU server (CUDA 12.x): pip install torch --index-url https://download.pytorch.org/whl/cu121
+  CPU only:                pip install torch --index-url https://download.pytorch.org/whl/cpu"
 fi
 
 # --- Playwright browsers -----------------------------------------------------
 log "Installing Playwright (Chromium)..."
-if $IS_WINDOWS; then
-  # --with-deps requires apt/winget and may need elevation; install browser only
-  $PYTHON_CMD -m playwright install chromium || \
-    warn "Playwright browser install failed.
-  Try in an elevated terminal: python -m playwright install chromium --with-deps"
+if [[ "$OS_TYPE" == "windows" ]]; then
+  $PYTHON_CMD -m playwright install chromium \
+    || warn "Playwright install had errors. Try: python -m playwright install chromium --with-deps"
 else
   $PYTHON_CMD -m playwright install chromium --with-deps
 fi
@@ -232,11 +219,16 @@ cd agents/browser && npm install --silent && cd ../..
 
 # --- Docker images -----------------------------------------------------------
 log "Pulling Docker images..."
-docker compose -f config/docker-compose.yml pull 2>&1 | grep -E "Pull|pulled|up to date|error" || true
+# Load .env so docker-compose variable substitution works
+set -a; source .env 2>/dev/null || true; set +a
+docker compose -f config/docker-compose.yml pull 2>&1 \
+  | grep -Ev "^(Warning|error while interpolating|required variable)" \
+  | grep -E "(Pull|pulled|up to date|error)" \
+  || true
 
 # --- Daytona CLI -------------------------------------------------------------
 if ! command -v daytona &>/dev/null; then
-  if $IS_WINDOWS && ! $IS_WSL; then
+  if [[ "$OS_TYPE" == "windows" ]]; then
     warn "Daytona CLI: not available for native Windows Git Bash.
   Options:
     a) Use WSL2 -- run setup.sh inside WSL2 (recommended)
@@ -245,28 +237,30 @@ if ! command -v daytona &>/dev/null; then
     log "Installing Daytona CLI..."
     curl -sf -L https://download.daytona.io/daytona/install.sh | sudo bash
   else
-    warn "Daytona CLI not installed and sudo unavailable.
-  Manual install: https://www.daytona.io/docs/installation/installation/"
+    warn "Daytona CLI: sudo not available. Manual install: https://www.daytona.io/docs/installation/installation/"
   fi
 fi
 
 # --- Lighthouse CLI ----------------------------------------------------------
 log "Installing Lighthouse CLI..."
-npm install -g lighthouse 2>/dev/null || warn "Lighthouse install failed (non-critical -- performance audit will use fallback)"
+npm install -g lighthouse 2>/dev/null \
+  || warn "Lighthouse install failed (non-critical -- performance audit will use fallback)"
 
-# --- Crawl4AI first-run setup ------------------------------------------------
-log "Setting up Crawl4AI..."
+# --- Crawl4AI first-run ------------------------------------------------------
+log "Verifying Crawl4AI..."
 $PYTHON_CMD -c "
 import asyncio, sys
-async def setup():
+async def s():
     try:
         from crawl4ai import AsyncWebCrawler
         async with AsyncWebCrawler() as _: pass
         print('[setup] Crawl4AI: OK')
+    except ImportError:
+        print('[warn] Crawl4AI not installed -- using lightweight HTTP fallback', file=sys.stderr)
     except Exception as e:
-        print(f'[warn] Crawl4AI first-run: {e}', file=sys.stderr)
-asyncio.run(setup())
-" || warn "Crawl4AI first-run setup had errors (non-critical -- will retry on first use)"
+        print(f'[warn] Crawl4AI: {e}', file=sys.stderr)
+asyncio.run(s())
+" 2>&1 || true
 
 # --- Done --------------------------------------------------------------------
 echo ""
@@ -274,13 +268,14 @@ log "Setup complete!"
 echo ""
 info "Next steps:"
 info "  1. Edit forge.secrets -- add your ELECTRONHUB_API_KEY"
-if $IS_WINDOWS && ! $IS_WSL; then
+if [[ "$OS_TYPE" == "windows" ]]; then
   info "  2. Ensure Docker Desktop is running"
+  info "  3. Start services:  bash scripts/start.sh"
+  info "  4. Test:            $PYTHON_CMD scripts/test_run.py --dry-run"
+  echo ""
+  warn "Windows: For GPU access, Daytona, and full Linux tooling, use WSL2."
+else
+  info "  2. Start services:  bash scripts/start.sh"
+  info "  3. Test:            $PYTHON_CMD scripts/test_run.py --dry-run"
 fi
-info "  2. Start services: bash scripts/start.sh"
-info "  3. Test: $PYTHON_CMD scripts/test_run.py --dry-run"
 echo ""
-if $IS_WINDOWS && ! $IS_WSL; then
-  warn "Windows note: For GPU access, Daytona, and full Linux tooling,"
-  warn "run Forge inside WSL2. Core pipeline works in Git Bash."
-fi

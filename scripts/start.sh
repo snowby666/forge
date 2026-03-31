@@ -26,6 +26,18 @@ done
 [[ -f .env ]] || err ".env not found -- run scripts/setup.sh first"
 set -a; source .env; set +a
 
+# --- Validate .env has real passwords (not placeholders) --------------------
+ENV_OK=true
+for var in POSTGRES_PASSWORD REDIS_PASSWORD QDRANT_API_KEY; do
+  val="${!var:-}"
+  if [[ -z "$val" || "$val" == "change_me" || "$val" == "change_this_strong_password" || "$val" == "change_this_strong_key" ]]; then
+    warn "$var is not set or still uses the placeholder value."
+    warn "  Edit .env or forge.secrets and set a real password, then re-run start.sh"
+    ENV_OK=false
+  fi
+done
+[[ "$ENV_OK" == "true" ]] || err "Fix the above .env values before starting services."
+
 log "Starting Docker services..."
 docker compose -f config/docker-compose.yml up -d
 
