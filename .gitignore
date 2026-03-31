@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Secrets
+.env
+forge.secrets
+
+# Infra data
+infra/postgres/data/
+infra/redis/data/
+infra/qdrant/data/
+infra/n8n/data/
+
+# Node
+node_modules/

@@ -78,18 +78,20 @@ Layer 7 — Infrastructure (always running)
 ### Linux / macOS / WSL2
 
 ```bash
-# 1. Bootstrap
+# 1. Bootstrap (creates .venv automatically)
 bash scripts/setup.sh
 
-# 2. Add API keys
-cp forge.secrets.example forge.secrets && nano forge.secrets
-# Required: ELECTRONHUB_API_KEY
+# 2. Activate the virtual environment (required every new terminal)
+source .venv/bin/activate
 
-# 3. Start all services
+# 3. Add API keys
+nano forge.secrets        # Required: ELECTRONHUB_API_KEY
+
+# 4. Start all services
 bash scripts/start.sh
 
-# 4. Verify everything works
-python3 scripts/test_run.py --dry-run
+# 5. Verify everything works
+python scripts/test_run.py --dry-run
 
 # 5. Update knowledge before first run
 python3 agents/python/infra/knowledge_updater.py

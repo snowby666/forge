@@ -11,8 +11,6 @@ info() { echo -e "${CYAN}[info]${NC} $1"; }
 log "Forge -- 30-agent autonomous hackathon swarm"
 
 # --- Detect OS / shell environment -------------------------------------------
-# Use string variables and [[ == ]] comparisons throughout -- avoids the
-# "if $BOOL" pitfall where false/true are interpreted as command names in bash.
 OS_TYPE="linux"
 
 if [[ "${OSTYPE:-}" == "msys" || "${OSTYPE:-}" == "cygwin" ||
@@ -47,7 +45,6 @@ for cmd in python3 python3.12 python3.11 python; do
 done
 
 if [[ -z "$PYTHON_CMD" ]]; then
-  echo ""
   if [[ "$OS_TYPE" == "windows" ]]; then
     err "Python 3.11+ not found.
   Download from https://www.python.org/downloads/windows/
@@ -60,7 +57,6 @@ if [[ -z "$PYTHON_CMD" ]]; then
 fi
 
 log "Python: $($PYTHON_CMD --version)"
-PIP_CMD="$PYTHON_CMD -m pip"
 
 # --- Docker ------------------------------------------------------------------
 if ! command -v docker &>/dev/null; then
@@ -80,8 +76,7 @@ log "Docker: ${DOCKER_VER}"
 # --- Node.js -----------------------------------------------------------------
 if ! command -v node &>/dev/null; then
   if [[ "$OS_TYPE" == "windows" ]]; then
-    err "Node.js not installed.
-  Download LTS from https://nodejs.org/
+    err "Node.js not installed. Download LTS from https://nodejs.org/
   Or: winget install OpenJS.NodeJS.LTS"
   elif [[ "$OS_TYPE" == "macos" ]]; then
     err "Node.js not installed. Run: brew install node@20"
@@ -97,8 +92,7 @@ log "Node.js: $(node --version)"
 if ! command -v ffmpeg &>/dev/null; then
   if [[ "$OS_TYPE" == "windows" ]]; then
     warn "ffmpeg not found (optional -- only needed for demo video generation).
-  Install: winget install Gyan.FFmpeg
-  Or: https://ffmpeg.org/download.html#build-windows"
+  Install: winget install Gyan.FFmpeg"
   elif [[ "$OS_TYPE" == "macos" ]]; then
     warn "ffmpeg not found -- run: brew install ffmpeg"
   else
@@ -174,62 +168,78 @@ if [[ "$PY_MAJOR" -eq 3 && "$PY_MINOR" -ge 13 ]]; then
   Forge core will work. For maximum compatibility use Python 3.11 or 3.12."
 fi
 
-# --- Ensure pip is available -------------------------------------------------
-# WSL2 Ubuntu and some Linux distros ship python3 without pip.
-if ! $PYTHON_CMD -m pip --version &>/dev/null 2>&1; then
-  log "pip not found -- attempting to install..."
-  if [[ "$OS_TYPE" == "linux" || "$OS_TYPE" == "wsl" ]]; then
+# --- Virtual environment -----------------------------------------------------
+# Ubuntu 24.04+ (PEP 668) blocks system-wide pip installs.
+# All other Linux distros benefit too. Always use a venv.
+VENV_DIR=".venv"
+if [ ! -d "$VENV_DIR" ]; then
+  log "Creating virtual environment (.venv)..."
+  # Ensure venv module is available (Ubuntu may need python3-venv)
+  if ! $PYTHON_CMD -m venv --help &>/dev/null 2>&1; then
     if command -v apt-get &>/dev/null; then
-      sudo apt-get install -y python3-pip python3-venv 2>/dev/null         || $PYTHON_CMD -m ensurepip --upgrade 2>/dev/null         || err "Cannot install pip. Run: sudo apt install python3-pip"
-    elif command -v dnf &>/dev/null; then
-      sudo dnf install -y python3-pip 2>/dev/null         || err "Cannot install pip. Run: sudo dnf install python3-pip"
-    else
-      $PYTHON_CMD -m ensurepip --upgrade 2>/dev/null         || err "pip not found. Install manually: https://pip.pypa.io/en/stable/installation/"
+      log "Installing python3-venv..."
+      sudo apt-get install -y python3-venv python3-full 2>/dev/null || true
     fi
-  else
-    $PYTHON_CMD -m ensurepip --upgrade 2>/dev/null       || err "pip not found. Install manually: https://pip.pypa.io/en/stable/installation/"
   fi
-  # Upgrade pip to latest
-  $PYTHON_CMD -m pip install --upgrade pip --quiet 2>/dev/null || true
-  log "pip installed: $($PYTHON_CMD -m pip --version)"
+  $PYTHON_CMD -m venv "$VENV_DIR" || err "Failed to create venv. Run: sudo apt install python3.12-venv"
+  log "Virtual environment created at .venv/"
+else
+  log "Virtual environment already exists (.venv/)"
 fi
+
+# Activate venv and update PYTHON_CMD / PIP_CMD to point inside it
+if [[ "$OS_TYPE" == "windows" ]]; then
+  VENV_PYTHON="$VENV_DIR/Scripts/python"
+  VENV_PIP="$VENV_DIR/Scripts/pip"
+else
+  VENV_PYTHON="$VENV_DIR/bin/python"
+  VENV_PIP="$VENV_DIR/bin/pip"
+fi
+PYTHON_CMD="$VENV_PYTHON"
+PIP_CMD="$VENV_PYTHON -m pip"
+
+# Upgrade pip inside venv (no PEP 668 restriction inside a venv)
+$PIP_CMD install --upgrade pip --quiet 2>/dev/null || true
+log "pip: $($PIP_CMD --version | cut -d' ' -f2)"
 
 # --- Python core dependencies ------------------------------------------------
 log "Installing Python core dependencies..."
 if command -v uv &>/dev/null; then
-  uv pip install -e ".[dev]" || { uv pip install -e "."; uv pip install pytest pytest-asyncio; }
+  uv pip install --python "$VENV_PYTHON" -e ".[dev]" \
+    || { uv pip install --python "$VENV_PYTHON" -e "."; uv pip install --python "$VENV_PYTHON" pytest pytest-asyncio; }
 else
-  $PYTHON_CMD -m pip install -e ".[dev]" --quiet 2>&1 | grep -v "^WARNING\|^NOTICE\|^notice" || {
+  $PIP_CMD install -e ".[dev]" --quiet 2>&1 | grep -v "^WARNING\|^NOTICE\|^notice" || {
     warn "Full install failed -- trying core only"
-    $PYTHON_CMD -m pip install -e "." --quiet 2>&1 | grep -v "^WARNING\|^NOTICE\|^notice"
-    $PYTHON_CMD -m pip install pytest pytest-asyncio --quiet
+    $PIP_CMD install -e "." --quiet 2>&1 | grep -v "^WARNING\|^NOTICE\|^notice"
+    $PIP_CMD install pytest pytest-asyncio --quiet
   }
 fi
+log "Core dependencies installed"
 
 # --- Optional: crawl4ai (JS rendering, adaptive crawl) ----------------------
-log "Installing crawl4ai (JS crawling)..."
+log "Installing crawl4ai..."
 $PIP_CMD install "crawl4ai>=0.4.0" --quiet 2>/dev/null \
   || warn "crawl4ai install failed -- web crawling will use the lightweight HTTP fallback"
 
 # --- Optional: sentence-transformers (semantic reranking) -------------------
-log "Installing sentence-transformers (semantic reranking)..."
+log "Installing sentence-transformers..."
 $PIP_CMD install "sentence-transformers>=3.0.0" --quiet 2>/dev/null \
   || warn "sentence-transformers install failed -- BM25 keyword ranking will be used instead"
 
-# --- Optional: PyTorch (CPU build, for reranker on CPU) ---------------------
+# --- Optional: PyTorch (CPU build) ------------------------------------------
 if ! $PYTHON_CMD -c "import torch" &>/dev/null 2>&1; then
-  log "Installing PyTorch (CPU build -- GPU users see docs/gpu-setup.md)..."
+  log "Installing PyTorch (CPU build)..."
   $PIP_CMD install torch --index-url https://download.pytorch.org/whl/cpu --quiet 2>/dev/null \
     || warn "PyTorch CPU install failed.
-  GPU server (CUDA 12.x): pip install torch --index-url https://download.pytorch.org/whl/cu121
-  CPU only:                pip install torch --index-url https://download.pytorch.org/whl/cpu"
+  GPU (CUDA 12.x): .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cu121
+  CPU only:        .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu"
 fi
 
 # --- Playwright browsers -----------------------------------------------------
 log "Installing Playwright (Chromium)..."
 if [[ "$OS_TYPE" == "windows" ]]; then
   $PYTHON_CMD -m playwright install chromium \
-    || warn "Playwright install had errors. Try: python -m playwright install chromium --with-deps"
+    || warn "Playwright install had errors. Try: .venv/Scripts/python -m playwright install chromium --with-deps"
 else
   $PYTHON_CMD -m playwright install chromium --with-deps
 fi
@@ -243,17 +253,14 @@ log "Pulling Docker images..."
 # Load .env so docker-compose variable substitution works
 set -a; source .env 2>/dev/null || true; set +a
 docker compose -f config/docker-compose.yml pull 2>&1 \
-  | grep -Ev "^(Warning|error while interpolating|required variable)" \
-  | grep -E "(Pull|pulled|up to date|error)" \
+  | grep -E "^(Pulling|pulled|up to date|Error)" \
   || true
 
 # --- Daytona CLI -------------------------------------------------------------
 if ! command -v daytona &>/dev/null; then
   if [[ "$OS_TYPE" == "windows" ]]; then
     warn "Daytona CLI: not available for native Windows Git Bash.
-  Options:
-    a) Use WSL2 -- run setup.sh inside WSL2 (recommended)
-    b) Manual install: https://www.daytona.io/docs/installation/installation/"
+  Use WSL2 or install manually: https://www.daytona.io/docs/installation/installation/"
   elif command -v sudo &>/dev/null; then
     log "Installing Daytona CLI..."
     curl -sf -L https://download.daytona.io/daytona/install.sh | sudo bash
@@ -283,20 +290,31 @@ async def s():
 asyncio.run(s())
 " 2>&1 || true
 
-# --- Done --------------------------------------------------------------------
+# --- Activate hint -----------------------------------------------------------
 echo ""
 log "Setup complete!"
 echo ""
-info "Next steps:"
-info "  1. Edit forge.secrets -- add your ELECTRONHUB_API_KEY"
+info "IMPORTANT: Activate the virtual environment before running Forge:"
 if [[ "$OS_TYPE" == "windows" ]]; then
-  info "  2. Ensure Docker Desktop is running"
-  info "  3. Start services:  bash scripts/start.sh"
-  info "  4. Test:            $PYTHON_CMD scripts/test_run.py --dry-run"
+  info "  source .venv/Scripts/activate   (Git Bash)"
+  info "  .venv\\Scripts\\activate          (cmd / PowerShell)"
+else
+  info "  source .venv/bin/activate"
+fi
+echo ""
+info "Next steps:"
+if [[ "$OS_TYPE" == "windows" ]]; then
+  info "  1. source .venv/Scripts/activate"
+  info "  2. Edit forge.secrets -- add your ELECTRONHUB_API_KEY"
+  info "  3. Ensure Docker Desktop is running"
+  info "  4. bash scripts/start.sh"
+  info "  5. python scripts/test_run.py --dry-run"
   echo ""
   warn "Windows: For GPU access, Daytona, and full Linux tooling, use WSL2."
 else
-  info "  2. Start services:  bash scripts/start.sh"
-  info "  3. Test:            $PYTHON_CMD scripts/test_run.py --dry-run"
+  info "  1. source .venv/bin/activate"
+  info "  2. Edit forge.secrets -- add your ELECTRONHUB_API_KEY"
+  info "  3. bash scripts/start.sh"
+  info "  4. python scripts/test_run.py --dry-run"
 fi
 echo ""

@@ -9,4 +9,8 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-python "%~dp0forge" %*
+@if exist "%~dp0.venv\Scripts\python.exe" (
+    "%~dp0.venv\Scripts\python.exe" "%~dp0forge" %*
+) else (
+    python "%~dp0forge" %*
+)
