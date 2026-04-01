@@ -144,7 +144,8 @@ def _print_hackathon_detail(h, verbose: bool = True):
 
     # Judging criteria
     if h.judging_criteria:
-        print(f"         {CYAN}Judging:{RESET} {', '.join(h.judging_criteria[:6])}")
+        criteria = [c if isinstance(c, str) else c.get("name", str(c)) for c in h.judging_criteria[:6]]
+        print(f"         {CYAN}Judging:{RESET} {', '.join(criteria)}")
 
     # Sponsor APIs
     if h.sponsor_techs:

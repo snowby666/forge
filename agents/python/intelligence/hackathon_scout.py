@@ -720,7 +720,8 @@ async def score_hackathon(brief: HackathonBrief) -> HackathonBrief:
     if brief.description:
         context_parts.append(f"Description: {brief.description[:600]}")
     if brief.judging_criteria:
-        context_parts.append(f"Judging: {', '.join(brief.judging_criteria[:6])}")
+        criteria = [c if isinstance(c, str) else c.get("name", str(c)) for c in brief.judging_criteria[:6]]
+        context_parts.append(f"Judging: {', '.join(criteria)}")
     if brief.tracks:
         track_names = [t.name for t in brief.tracks[:5]]
         context_parts.append(f"Tracks: {', '.join(track_names)}")

@@ -88,7 +88,7 @@ async def analyze_competitors(
 Hackathon: {brief.get('name')}
 Theme: {brief.get('theme')}
 Description: {brief.get('description', '')[:500]}
-Judging criteria: {', '.join(brief.get('judging_criteria', []))}
+Judging criteria: {', '.join(c if isinstance(c, str) else c.get('name', str(c)) for c in brief.get('judging_criteria', []))}
 
 Past winners/projects found on platform:
 {json.dumps(past_winners_data[:5], indent=2)}
