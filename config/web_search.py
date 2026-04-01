@@ -91,6 +91,14 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+# Ensure Playwright can find its browsers in the default cache location.
+# On WSL2/Linux, browsers live in ~/.cache/ms-playwright/.
+# Crawl4AI sometimes fails to resolve this path automatically.
+if not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+    _pw_default = os.path.expanduser("~/.cache/ms-playwright")
+    if os.path.isdir(_pw_default):
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _pw_default
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # DATA MODELS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1301,12 +1309,16 @@ async def scrape_hackathon_listings(
     except ImportError:
         logger.warning("[forge:search] Crawl4AI not installed — hackathon listing scrape unavailable")
     except (FileNotFoundError, OSError) as e:
+        import traceback
         logger.warning(
             f"[forge:search] scrape_hackathon_listings: browser binary not found ({e}). "
-            f"Run 'playwright install chromium' or 'crawl4ai-setup' to fix."
+            f"Run 'playwright install chromium' or 'crawl4ai-setup' to fix.\n"
+            f"PLAYWRIGHT_BROWSERS_PATH={os.environ.get('PLAYWRIGHT_BROWSERS_PATH', 'NOT SET')}\n"
+            f"Traceback:\n{traceback.format_exc()}"
         )
     except Exception as e:
-        logger.warning(f"[forge:search] scrape_hackathon_listings failed: {e}")
+        import traceback
+        logger.warning(f"[forge:search] scrape_hackathon_listings failed: {e}\n{traceback.format_exc()}")
 
     logger.info(f"[forge:search] scrape_hackathon_listings: {len(all_listings)} total listings from {platforms}")
     return all_listings
