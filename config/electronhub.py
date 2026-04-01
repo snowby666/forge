@@ -350,13 +350,20 @@ async def complete(
 
     for attempt in range(max_retries):
         try:
-            resp = await client.chat.completions.create(
+            # Stream to avoid Cloudflare 504 timeouts on long generations
+            chunks: list[str] = []
+            stream = await client.chat.completions.create(
                 model=current_model,
                 messages=full_messages,  # type: ignore[arg-type]
                 max_tokens=max_tok,
                 temperature=temp,
+                stream=True,
             )
-            return resp.choices[0].message.content or ""
+            async for chunk in stream:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta and delta.content:
+                    chunks.append(delta.content)
+            return "".join(chunks)
 
         except APIStatusError as e:
             # Context length exceeded — compress and retry once
