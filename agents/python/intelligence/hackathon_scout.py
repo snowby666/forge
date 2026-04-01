@@ -505,17 +505,9 @@ async def discover_community(brief: HackathonBrief) -> HackathonBrief:
     # Fast path: SearXNG (local, ~1-2s)
     results = await _fast_searxng(query, max_results=15)
     if results:
-        logger.info(f"[forge:scout:community]   SearXNG: {len(results)} results in <2s")
+        logger.info(f"[forge:scout:community]   SearXNG: {len(results)} results")
     else:
-        # Fallback: ddgs (slow, but works without Docker)
-        logger.info(f"[forge:scout:community]   SearXNG unavailable, trying ddgs...")
-        try:
-            from config.web_search import web_search
-            batch = await asyncio.wait_for(web_search(query, max_results=10), timeout=15.0)
-            results = [{"title": r.title, "url": r.url} for r in batch]
-            logger.info(f"[forge:scout:community]   ddgs: {len(results)} results")
-        except Exception as e:
-            logger.warning(f"[forge:scout:community]   ddgs failed: {e}")
+        logger.info(f"[forge:scout:community]   SearXNG unavailable, skipping community search")
 
     new_links = 0
     for r in results:
