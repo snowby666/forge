@@ -27,6 +27,10 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dotenv import load_dotenv
 load_dotenv()
+# Also load forge.secrets (env vars take precedence)
+_secrets = os.path.join(os.path.dirname(os.path.abspath(__file__)), "forge.secrets")
+if os.path.exists(_secrets):
+    load_dotenv(_secrets, override=False)
 
 # ── ANSI colors ───────────────────────────────────────────────────────────────
 
