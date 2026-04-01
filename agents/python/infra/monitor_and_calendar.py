@@ -174,66 +174,51 @@ async def run_monitor_worker() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GOOGLE CALENDAR — direct API integration (no n8n needed)
+# GOOGLE CALENDAR — service account (fully automated, no browser needed)
+# ─────────────────────────────────────────────────────────────────────────────
+# Setup (one-time, ~2 min):
+#   1. Google Cloud Console → IAM → Service Accounts → Create
+#   2. Download the JSON key file → save as ~/forge/google-service-account.json
+#   3. Copy the service account email (xxx@yyy.iam.gserviceaccount.com)
+#   4. Open Google Calendar → Settings → Share with → paste that email
+#      → set permission to "Make changes to events"
+#   5. Set GOOGLE_CALENDAR_ID in .env (your email, or "primary")
 # ─────────────────────────────────────────────────────────────────────────────
 
-_TOKEN_PATH = Path(os.path.dirname(__file__)).parent.parent.parent / "forge-google-token.json"
+_SA_KEY_PATH = Path(os.path.dirname(__file__)).parent.parent.parent / "config" / "forge-492003-649e33ef9b72.json"
+_CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
 
-def _get_google_creds():
-    """Load or refresh Google OAuth2 credentials."""
+def _get_calendar_service():
+    """Build a Google Calendar service using a service account."""
     try:
-        from google.oauth2.credentials import Credentials
-        from google.auth.transport.requests import Request
+        from google.oauth2.service_account import Credentials
+        from googleapiclient.discovery import build as build_service
     except ImportError:
-        logger.warning("[forge:calendar] google-auth not installed — run: pip install google-auth google-auth-oauthlib google-api-python-client")
+        logger.warning("[forge:calendar] google libs not installed — run: pip install google-auth google-api-python-client")
         return None
 
-    client_id = os.environ.get("GOOGLE_CLIENT_ID")
-    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
+    key_path = os.environ.get("GOOGLE_SA_KEY_PATH", str(_SA_KEY_PATH))
 
-    if not client_id or not client_secret:
-        logger.warning("[forge:calendar] GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set — skipping calendar")
+    if not Path(key_path).exists():
+        logger.warning(f"[forge:calendar] Service account key not found at {key_path} — skipping calendar")
         return None
 
-    creds = None
-    if _TOKEN_PATH.exists():
-        try:
-            creds = Credentials.from_authorized_user_file(str(_TOKEN_PATH))
-        except Exception:
-            pass
-
-    if creds and creds.expired and creds.refresh_token:
-        try:
-            creds.refresh(Request())
-            _TOKEN_PATH.write_text(creds.to_json())
-        except Exception as e:
-            logger.warning(f"[forge:calendar] Token refresh failed: {e}")
-            creds = None
-
-    if not creds or not creds.valid:
-        logger.warning(
-            "[forge:calendar] No valid token. Run 'forge calendar-auth' to authorize."
-        )
+    try:
+        creds = Credentials.from_service_account_file(key_path, scopes=_CALENDAR_SCOPES)
+        return build_service("calendar", "v3", credentials=creds)
+    except Exception as e:
+        logger.error(f"[forge:calendar] Failed to build service: {e}")
         return None
 
-    return creds
 
-
-async def _create_calendar_event(service, event_body: dict) -> str | None:
+async def _create_calendar_event(service, calendar_id: str, event_body: dict) -> str | None:
     """Create a single Google Calendar event (runs in executor to avoid blocking)."""
     import functools
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(
-            None,
-            functools.partial(
-                service.events().insert,
-                calendarId="primary",
-                body=event_body,
-            ),
-        )
-        created = await loop.run_in_executor(None, result.execute)
+        req = service.events().insert(calendarId=calendar_id, body=event_body)
+        created = await loop.run_in_executor(None, req.execute)
         return created.get("htmlLink", "")
     except Exception as e:
         logger.error(f"[forge:calendar] Failed to create event: {e}")
@@ -310,16 +295,11 @@ async def schedule_hackathon_events(
         },
     ]
 
-    creds = _get_google_creds()
-    if not creds:
-        logger.info(f"[forge:calendar] Scheduled {len(events)} events (local only — no Google token)")
-        return events
+    service = _get_calendar_service()
+    calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
 
-    try:
-        from googleapiclient.discovery import build as build_service
-        service = build_service("calendar", "v3", credentials=creds)
-    except Exception as e:
-        logger.error(f"[forge:calendar] Could not build Calendar service: {e}")
+    if not service:
+        logger.info(f"[forge:calendar] Scheduled {len(events)} events (local only — no service account)")
         return events
 
     created_count = 0
@@ -335,7 +315,7 @@ async def schedule_hackathon_events(
                 {"method": "popup", "minutes": 10},
             ]},
         }
-        link = await _create_calendar_event(service, body)
+        link = await _create_calendar_event(service, calendar_id, body)
         if link:
             created_count += 1
             logger.info(f"[forge:calendar] Created: {ev['title']}")
@@ -345,118 +325,54 @@ async def schedule_hackathon_events(
 
 
 def run_calendar_auth() -> None:
-    """One-time OAuth flow — run 'forge calendar-auth' to authorize."""
+    """Verify service account setup — no browser needed."""
+    key_path = os.environ.get("GOOGLE_SA_KEY_PATH", str(_SA_KEY_PATH))
+
+    print(f"\n  Google Calendar — Service Account Setup")
+    print(f"  {'='*45}\n")
+
+    if not Path(key_path).exists():
+        print(f"  Service account key NOT FOUND at:\n    {key_path}\n")
+        print(f"  Setup steps:")
+        print(f"  1. Go to https://console.cloud.google.com/iam-admin/serviceaccounts")
+        print(f"  2. Create a service account (any name, e.g. 'forge-calendar')")
+        print(f"  3. Click the account → Keys → Add Key → JSON → Download")
+        print(f"  4. Copy the file to: {_SA_KEY_PATH}")
+        print(f"     Or set GOOGLE_SA_KEY_PATH in .env to a custom path\n")
+        print(f"  5. Open Google Calendar → Settings → your calendar → Share")
+        print(f"     → Add the service account email → 'Make changes to events'\n")
+        print(f"  6. Enable Calendar API at:")
+        print(f"     https://console.cloud.google.com/apis/library/calendar-json.googleapis.com")
+        return
+
+    service = _get_calendar_service()
+    if not service:
+        print(f"  Key file found but failed to load. Check the JSON file is valid.")
+        return
+
+    # Read service account email from the key file
     try:
-        from google.oauth2.credentials import Credentials  # noqa: F401
-    except ImportError:
-        print("Missing dependency. Run:\n  pip install google-auth google-auth-oauthlib google-api-python-client")
-        return
+        sa_data = json.loads(Path(key_path).read_text())
+        sa_email = sa_data.get("client_email", "?")
+    except Exception:
+        sa_email = "?"
 
-    client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
-    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-
-    if not client_id or not client_secret or "your_" in client_id:
-        print("\n  ┌─────────────────────────────────────────────────────────┐")
-        print("  │  GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set        │")
-        print("  │                                                         │")
-        print("  │  Create credentials (takes 2 minutes):                  │")
-        print("  │  1. Go to console.cloud.google.com/apis/credentials     │")
-        print("  │  2. Click '+ CREATE CREDENTIALS' → 'OAuth client ID'    │")
-        print("  │  3. Application type: 'Desktop app', name: 'Forge'      │")
-        print("  │  4. Copy the Client ID and Client Secret                │")
-        print("  │  5. Also enable 'Google Calendar API' under APIs        │")
-        print("  │  6. Add them to ~/forge/.env:                           │")
-        print("  │     GOOGLE_CLIENT_ID=xxxxx.apps.googleusercontent.com   │")
-        print("  │     GOOGLE_CLIENT_SECRET=GOCSPX-xxxxx                   │")
-        print("  └─────────────────────────────────────────────────────────┘")
-        return
-
-    SCOPES = "https://www.googleapis.com/auth/calendar.events"
-    REDIRECT_URI = "http://localhost"
-
-    auth_url = (
-        f"https://accounts.google.com/o/oauth2/v2/auth"
-        f"?client_id={client_id}"
-        f"&redirect_uri={REDIRECT_URI}"
-        f"&response_type=code"
-        f"&scope={SCOPES}"
-        f"&access_type=offline"
-        f"&prompt=consent"
-    )
-
-    print(f"\n  1. Open this URL in ANY browser:\n")
-    print(f"     {auth_url}\n")
-    print(f"  2. Sign in and click 'Allow'")
-    print(f"  3. You'll be redirected to a page that WON'T LOAD (that's normal)")
-    print(f"  4. Copy the FULL URL from your browser's address bar")
-    print(f"     (it looks like: http://localhost/?code=4/0Axx...&scope=...)\n")
-
-    redirect_url = input("  Paste the full redirect URL here: ").strip()
-    if not redirect_url:
-        print("  No URL entered. Aborting.")
-        return
-
-    # Extract code from redirect URL
-    import urllib.parse
-    parsed = urllib.parse.urlparse(redirect_url)
-    params = urllib.parse.parse_qs(parsed.query)
-    code = params.get("code", [None])[0]
-
-    if not code:
-        if redirect_url.startswith("4/") or len(redirect_url) > 20 and "." not in redirect_url[:10]:
-            code = redirect_url
-        else:
-            print("  Could not find authorization code in that URL. Try again.")
-            return
-
-    # Exchange code for tokens
-    try:
-        import urllib.request
-        data = urllib.parse.urlencode({
-            "code": code,
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "redirect_uri": REDIRECT_URI,
-            "grant_type": "authorization_code",
-        }).encode()
-        req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data, method="POST")
-        req.add_header("Content-Type", "application/x-www-form-urlencoded")
-        with urllib.request.urlopen(req) as resp:
-            tokens = json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"\n  Token exchange failed: {e}")
-        return
-
-    if "error" in tokens:
-        print(f"\n  Google error: {tokens['error']} — {tokens.get('error_description', '')}")
-        return
-
-    token_data = {
-        "token": tokens["access_token"],
-        "refresh_token": tokens.get("refresh_token"),
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "scopes": [SCOPES],
-    }
-    _TOKEN_PATH.write_text(json.dumps(token_data, indent=2))
-    print(f"\n  Token saved to {_TOKEN_PATH}")
-    print("  Google Calendar connected! Test with: forge calendar-test")
+    print(f"  Key file:  {key_path}")
+    print(f"  SA email:  {sa_email}")
+    print(f"  Calendar:  {os.environ.get('GOOGLE_CALENDAR_ID', 'primary')}\n")
+    print(f"  Make sure you've shared your calendar with: {sa_email}")
+    print(f"  (Google Calendar → Settings → Share → 'Make changes to events')\n")
+    print(f"  Run 'forge calendar-test' to create a test event.")
 
 
 async def calendar_test() -> bool:
     """Create a test event to verify Google Calendar works."""
-    creds = _get_google_creds()
-    if not creds:
+    service = _get_calendar_service()
+    if not service:
+        print("  No service account configured. Run 'forge calendar-auth' for setup instructions.")
         return False
 
-    try:
-        from googleapiclient.discovery import build as build_service
-        service = build_service("calendar", "v3", credentials=creds)
-    except Exception as e:
-        logger.error(f"[forge:calendar] Service build failed: {e}")
-        return False
-
+    calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
     now = datetime.now(timezone.utc)
     body = {
         "summary": "[Forge] Calendar Test — delete me",
@@ -464,10 +380,11 @@ async def calendar_test() -> bool:
         "start": {"dateTime": (now + timedelta(minutes=5)).isoformat(), "timeZone": "UTC"},
         "end": {"dateTime": (now + timedelta(minutes=15)).isoformat(), "timeZone": "UTC"},
     }
-    link = await _create_calendar_event(service, body)
+    link = await _create_calendar_event(service, calendar_id, body)
     if link:
         print(f"  Test event created: {link}")
         return True
+    print("  Failed to create event. Check 'forge calendar-auth' for setup instructions.")
     return False
 
 

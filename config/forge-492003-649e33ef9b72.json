@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "forge-492003",
+  "private_key_id": "649e33ef9b72f17a596111dbe18ff855c771dede",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC6X5VDxwVSAFYC\n5Jp9k7Ut4VSGkQfnGp26fELnnDDOCczsRUJhSsDmQAuSNV+lh0XTE4ob/NONn+6K\nEh89OKdmpMVF+YDdaxZK+m3+THgqiGviJwbqiReh8oCMHQSqXcmqhpbbenHk4BW8\nNjroI5Xm6S90kbduLjtjwZIAU01gLJNYThSn4fPFGUBpcZmjmz/ACMlM0iix3SY0\na8sl9bPwjT6H6IrP6BrZWmZVsuD22u0DSedxl9SaOwtwxemN3ucudlOsnzzKxZ3t\nlOwLJZEZQfZU3ta4nvDnqNXnNIZjYRqcTPj3BywbS1d+XLCH+McJF194wg5TQkyk\nwkKa6x35AgMBAAECggEACZusH6mC1xSEmqNTqhnrbx003Pec3U+QVlj534QcOYEE\nlyEmcArZKT2fwxa8krVntn8lQXZeJyjZtLVEtkSlj6t6rpXzbGbNCEpDEac6UjIE\ngs0RhJWS+fK9KQwFba2GXCPSYuf792lMgY6XqJhODfCTVVp+RwA76FOGPf1NacHn\n2LCr15D9FNmBO0FWaHNNml7pJ1ZZtjgBR7Rd15p7ckJfBkE3cLxDFlKZovbycuzS\nQY+qoDIfjHQXkdlB+GI+p7WhslhTBdKFbQ4njVNG5H2C7JYoxNt4fyS3+2unjyPE\nMOuyZUg11zfxJ/xsdjyIiRiN3Asx+Vlhq/eYYHu04QKBgQD3HsTlnGC3Ho6UoWQm\nN3YnbViB9sX04C9P9vBd/fGQJn6Rh9/AZzgxuVEPTombaS4Mh2jd47hsivG2KyeL\nazKn6gd0ZhUD63c4rbu0/FyrAkoU2ZJ+yPVPo6is/AGs10sSYxAtQKyrV5xFdprD\nqBZd4OVb34/0QoreiMSsUOZA2QKBgQDBEgLBStfD2zSBHzY2ZVte/BdkFOnFPuoG\n8de2FnD2HByTvXYQt9VAIbLet+/Vso4XQ/AZ+niFI+ntRaG3IGlu/yg7mBrxvbok\nKCK9/zyCDW2xAANqeGQmZ5ZC1zQtZLLaF/a7QLY7l2JTDmjojY9nDdbibpSET6LK\nYX1gVamSIQKBgQDmup3QXI+Yqjkp4P5nCEWTTm7i+YuetWq3WLLYr2/JzYdDTf/F\n3xoCoypiBkxJBI1wOUXaVvIsthY0plpHvBER4lqPfXiFrmYkT2IA+9dx+7M7gGFd\nazhP4VhuGuVdga6gPkouVkJhwG0yFikuIVSw1niPrU71GuQaHsyyrt4tEQKBgBZy\nxac70IKRRjWNL3x7pHgSz5VvaQ7qFcPg8rfVPCUhd6El8khXV5AxWt7SfCxYqnTC\nDXS3zrOMTXKtGfR07E1flYn4UYmyCaaSlBeLSbnFXe+qlLsYbGyatrnm08ZDYxhA\nmQuEpqufGmuVzVTcwMO2tDl3qgUITWFCnJVK4ICBAoGAfnMflQbSYdRTwhyA60gr\ns77xHgJySjhovxd7siPrMyCvCGCM/vBQkw8tTenk6AsLdSFO0m6hSC06IUucjxdF\nyB8juYBAp/q/N1g9KFbGX5JipGGQCmClX88lftal/66gVhHNw5iSo5YO0R/lSGNF\n8seiIHirh0NAGhRw618PoEU=\n-----END PRIVATE KEY-----\n",
+  "client_email": "forge-calendar@forge-492003.iam.gserviceaccount.com",
+  "client_id": "112113743803161116144",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/forge-calendar%40forge-492003.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
