@@ -750,7 +750,7 @@ async def run(hackathon_id: str) -> HackathonState:
         "messages": [],
     }
 
-    async with await AsyncPostgresSaver.from_conn_string(os.environ["DATABASE_URL"]) as checkpointer:
+    async with AsyncPostgresSaver.from_conn_string(os.environ["DATABASE_URL"]) as checkpointer:
         await checkpointer.setup()
         compiled = build_graph().compile(checkpointer=checkpointer)
         logger.info(f"[forge:commander] Starting hackathon: {brief.get('name')} ({hackathon_id})")
