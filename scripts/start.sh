@@ -116,10 +116,8 @@ asyncio.run(main())
 " || warn "Qdrant collection init failed (may already exist)"
 
 # Ensure Playwright Chromium is installed (Crawl4AI needs it)
-if ! $PYTHON_CMD -c "from playwright.sync_api import sync_playwright; b=sync_playwright().start(); b.chromium.launch(headless=True).close(); b.stop()" &>/dev/null 2>&1; then
-  log "Installing Playwright Chromium..."
-  $PYTHON_CMD -m playwright install chromium --with-deps 2>&1 | tail -3 || warn "Playwright install had issues"
-fi
+log "Ensuring Playwright Chromium is installed..."
+$PYTHON_CMD -m playwright install chromium --with-deps 2>&1 | tail -5 || warn "Playwright install had issues"
 
 log "Starting browser layer..."
 cd agents/browser && npm start &

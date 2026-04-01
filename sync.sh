@@ -53,10 +53,8 @@ source .venv/bin/activate
 pip install -e ".[dev,calendar]" --quiet 2>&1 | tail -1
 
 # Ensure Playwright Chromium is installed (Crawl4AI needs it)
-if ! python -c "from playwright.sync_api import sync_playwright; b=sync_playwright().start(); b.chromium.launch(headless=True).close(); b.stop()" &>/dev/null 2>&1; then
-  log "Installing Playwright Chromium..."
-  playwright install chromium --with-deps 2>&1 | tail -3 || true
-fi
+log "Ensuring Playwright Chromium is installed..."
+playwright install chromium --with-deps 2>&1 | tail -5 || true
 
 log "Done. $(date +%H:%M:%S)"
 
