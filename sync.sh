@@ -57,8 +57,8 @@ log "Done. $(date +%H:%M:%S)"
 # --- Start/restart Forge web dashboard (sentinelhive.dev) --------------------
 cd "$DST"
 # Source env so the web server gets REDIS_URL, FORGE_WEB_TOKEN, etc.
-[[ -f "$DST/.env" ]] && { set -a; source "$DST/.env"; set +a; }
-[[ -f "$DST/forge.secrets" ]] && { set -a; source "$DST/forge.secrets"; set +a; }
+[[ -f "$DST/.env" ]] && { sed -i 's/\r$//' "$DST/.env" 2>/dev/null || true; set -a; source "$DST/.env"; set +a; }
+[[ -f "$DST/forge.secrets" ]] && { sed -i 's/\r$//' "$DST/forge.secrets" 2>/dev/null || true; set -a; source "$DST/forge.secrets"; set +a; }
 
 FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
 WEB_PID=$(lsof -ti tcp:"$FORGE_WEB_PORT" 2>/dev/null || true)
