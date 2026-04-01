@@ -74,6 +74,7 @@ class MemoryKeeper:
     def __init__(self) -> None:
         self._qdrant: AsyncQdrantClient | None = None
         self._mem0: Memory | None = None
+        self._collections_ready = False
 
     @property
     def qdrant(self) -> AsyncQdrantClient:
@@ -88,18 +89,29 @@ class MemoryKeeper:
         return self._mem0
 
     async def ensure_collections(self) -> None:
-        existing = {c.name for c in (await self.qdrant.get_collections()).collections}
-        for name in COLLECTIONS.values():
-            if name not in existing:
-                await self.qdrant.create_collection(
-                    collection_name=name,
-                    vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
-                )
-                logger.info(f"[forge:memory] Created collection: {name}")
+        if self._collections_ready:
+            return
+        try:
+            existing = {c.name for c in (await self.qdrant.get_collections()).collections}
+            created = []
+            for name in COLLECTIONS.values():
+                if name not in existing:
+                    await self.qdrant.create_collection(
+                        collection_name=name,
+                        vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+                    )
+                    created.append(name)
+            if created:
+                logger.info(f"[forge:memory] Created {len(created)} collections: {', '.join(created)}")
+            self._collections_ready = True
+        except Exception as e:
+            logger.error(f"[forge:memory] Failed to ensure collections (Qdrant may be down): {e}")
+            raise
 
     # ── Hackathon briefs ───────────────────────────────────────────────────────
 
     async def store_hackathon_brief(self, hackathon_id: str, brief: dict) -> None:
+        await self.ensure_collections()
         text = f"{brief.get('name', '')} {brief.get('theme', '')} {brief.get('description', '')[:200]}"
         vector = await embed(text)
         point_id = int(hashlib.md5(hackathon_id.encode()).hexdigest()[:8], 16)
@@ -120,6 +132,7 @@ class MemoryKeeper:
         )
 
     async def find_similar_hackathons(self, theme: str, limit: int = 3) -> list[dict]:
+        await self.ensure_collections()
         vector = await embed(theme)
         results = await self.qdrant.search(
             collection_name=COLLECTIONS["briefs"],
@@ -158,6 +171,7 @@ class MemoryKeeper:
     async def store_code_artifact(
         self, hackathon_id: str, artifact_type: str, name: str, code: str, description: str,
     ) -> None:
+        await self.ensure_collections()
         text = f"{name} {description} {code[:300]}"
         vector = await embed(text)
         point_id = int(hashlib.md5(f"{name}{code[:100]}".encode()).hexdigest()[:8], 16)
@@ -180,6 +194,7 @@ class MemoryKeeper:
     async def find_similar_component(
         self, spec: str, artifact_type: str, threshold: float = 0.85,
     ) -> dict | None:
+        await self.ensure_collections()
         vector = await embed(spec)
         results = await self.qdrant.search(
             collection_name=COLLECTIONS["code"],
@@ -193,6 +208,7 @@ class MemoryKeeper:
     # ── Judge profiles ─────────────────────────────────────────────────────────
 
     async def store_judge_profile(self, hackathon_id: str, profile: dict) -> None:
+        await self.ensure_collections()
         panel_desc = profile.get("panel_character", "")
         vector = await embed(panel_desc)
         point_id = int(hashlib.md5(hackathon_id.encode()).hexdigest()[:8], 16) + 1
@@ -206,6 +222,7 @@ class MemoryKeeper:
         )
 
     async def find_similar_judge_profile(self, panel_description: str) -> dict | None:
+        await self.ensure_collections()
         vector = await embed(panel_description)
         results = await self.qdrant.search(
             collection_name=COLLECTIONS["judges"],

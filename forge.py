@@ -413,7 +413,7 @@ async def cmd_status(args):
                 top_str = ", ".join(f"{a}: ${v['cost_usd']:.3f}" for a, v in top)
                 print(f"\n  {DIM}Cost: ${cost['total_usd']:.3f} · {cost['total_tokens']:,} tokens · {top_str}{RESET}")
         except Exception:
-            pass
+            pass  # cost tracking is optional — don't block the dashboard
 
     print()
     await redis.aclose()
