@@ -19,7 +19,7 @@ If not, it's not good enough.
   (STATIC_DESIGN_LAWS, ANTI_SLOP_RULES, DESIGN_PERSONALITIES, DESIGN_CRITIQUE_RUBRIC,
    COMPONENT_QUALITY_CHECKLIST, REFERENCE_SITES, agent system prompts, DesignTokens class)
 - config/electronhub.py → LLM client + routing
-- config/docker-compose.yml → infrastructure
+- docker-compose.yml → infrastructure (project root, reads .env automatically)
 - pyproject.toml → Python deps
 - All Python infra (Redis patterns, PostgreSQL, Temporal)
 

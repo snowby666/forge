@@ -101,7 +101,7 @@ graph TD
     end
 ```
 
-### Redis server settings (`config/docker-compose.yml`)
+### Redis server settings (`docker-compose.yml`)
 
 Forge runs Redis 7 with:
 
@@ -236,7 +236,7 @@ graph LR
 
 ```bash
 # Full startup sequence (automated by scripts/start.sh)
-docker compose -f config/docker-compose.yml up -d
+docker compose up -d
 
 # Wait for health
 until docker exec forge-postgres pg_isready -U ${POSTGRES_USER:-backbone}; do sleep 1; done

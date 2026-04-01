@@ -199,8 +199,8 @@ fi
 # ── Step 12: Start Docker services ────────────────────────────────────────────
 log "Starting Docker services..."
 set -a; source .env 2>/dev/null || true; set +a
-docker compose -f config/docker-compose.yml down -v 2>/dev/null || true
-docker compose -f config/docker-compose.yml up -d
+docker compose down -v 2>/dev/null || true
+docker compose up -d
 
 log "Waiting for PostgreSQL..."
 for i in $(seq 1 60); do

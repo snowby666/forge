@@ -312,7 +312,7 @@ cd agents/browser && npm install --silent && cd ../..
 log "Pulling Docker images..."
 # Load .env so docker-compose variable substitution works
 set -a; source .env 2>/dev/null || true; set +a
-docker compose -f config/docker-compose.yml pull 2>&1 \
+docker compose pull 2>&1 \
   | grep -E "^(Pulling|pulled|up to date|Error)" \
   || true
 

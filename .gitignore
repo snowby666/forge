@@ -8,8 +8,10 @@ __pycache__/
 # Secrets
 .env
 forge.secrets
+config/*-service-account*.json
+config/forge-*.json
 
-# Infra data
+# Infra data (legacy paths + Docker volumes)
 infra/postgres/data/
 infra/redis/data/
 infra/qdrant/data/

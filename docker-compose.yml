@@ -1,5 +1,6 @@
-# NOTE: Copy .env.example to .env and fill in passwords before running `docker compose up`
-# version: field is obsolete in Compose v2 -- removed to suppress the warning
+# Forge — Docker Compose stack
+# Reads .env from this directory automatically (no more config/ vs root mismatch).
+# Run: docker compose up -d
 #
 # Data volumes use Docker named volumes (not bind mounts) so that services like
 # PostgreSQL can chmod/chown freely. This is required on WSL2/NTFS where bind
@@ -16,7 +17,7 @@ services:
       POSTGRES_DB: backbone
     volumes:
       - forge-postgres-data:/var/lib/postgresql/data
-      - ./postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./config/postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     ports:
       - "5432:5432"
     healthcheck:
@@ -105,7 +106,7 @@ services:
       POSTGRES_SEEDS: postgres
       DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/dynamicconfig.yaml
     volumes:
-      - ./temporal-dynamicconfig.yaml:/etc/temporal/dynamicconfig.yaml:ro
+      - ./config/temporal-dynamicconfig.yaml:/etc/temporal/dynamicconfig.yaml:ro
     ports:
       - "7233:7233"
     depends_on:
@@ -123,9 +124,6 @@ services:
       - temporal
 
   # ── SearXNG self-hosted metasearch (ForgeSearch) ──────────────────────────
-  # Queries 70+ engines simultaneously (Google, Bing, DDG, Startpage...). Free.
-  # Set SEARXNG_URL=http://searxng:8081 in forge.secrets to enable.
-  # Uses port 8081 to avoid conflict with temporal-ui on 8080.
   searxng:
     image: searxng/searxng:latest
     container_name: forge-searxng
@@ -135,7 +133,7 @@ services:
       - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-forge-searxng-secret-change-this}
     volumes:
       - forge-searxng-data:/etc/searxng
-      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - ./config/searxng/settings.yml:/etc/searxng/settings.yml:ro
     ports:
       - "8081:8080"
     healthcheck:
@@ -145,7 +143,6 @@ services:
       retries: 3
     depends_on:
       - redis
-    # Uses the default network -- no custom network needed
 
 volumes:
   forge-postgres-data:

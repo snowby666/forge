@@ -249,7 +249,7 @@ if (-not $SkipDocker) {
     Write-Green "Pulling Docker images (this may take a minute)..."
     if (-not $DryRun) {
         try {
-            docker compose -f config/docker-compose.yml pull
+            docker compose pull
         } catch {
             Write-Yellow "Docker pull had errors -- ensure Docker Desktop is running"
         }
@@ -294,7 +294,7 @@ Write-Cyan "Next steps:"
 Write-Cyan "  1. Edit forge.secrets -- add your ELECTRONHUB_API_KEY"
 Write-Cyan "  2. Ensure Docker Desktop is running"
 Write-Cyan "  3. Start services: bash scripts/start.sh"
-Write-Cyan "     (or in PowerShell: docker compose -f config/docker-compose.yml up -d)"
+Write-Cyan "     (or in PowerShell: docker compose up -d)"
 Write-Cyan "  4. Test: $PYTHON_CMD scripts/test_run.py --dry-run"
 Write-Host ""
 Write-Yellow "Daytona CLI is not available on native Windows."

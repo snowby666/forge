@@ -78,7 +78,7 @@ done
 export PYTHONUTF8=1
 
 log "Starting Docker services..."
-docker compose -f config/docker-compose.yml up -d
+docker compose up -d
 
 log "Waiting for services..."
 MAX_WAIT=60

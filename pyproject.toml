@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 packages = ["agents", "config"]
 
 [tool.hatch.build.targets.sdist]
-include = ["agents", "config", "scripts", "tests", "forge", "*.md", "*.toml", "*.example"]
+include = ["agents", "config", "scripts", "tests", "forge.py", "*.md", "*.toml", "*.example"]
 
 [project]
 name = "forge"
