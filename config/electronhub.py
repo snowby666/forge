@@ -381,7 +381,10 @@ async def complete(
                         chunk_count += 1
                         last_chunk_at = _t.monotonic()
 
+            stream_was_killed = False
+
             async def _read_with_stall_detection():
+                nonlocal stream_was_killed
                 read_task = asyncio.create_task(_read_stream())
                 while not read_task.done():
                     await asyncio.sleep(5)
@@ -394,6 +397,7 @@ async def complete(
                             f"[forge:llm] ⏰ Stream stalled {stall:.0f}s (no new chunks) "
                             f"on {current_model} for task={task}"
                         )
+                        stream_was_killed = True
                         read_task.cancel()
                         return
                     if total > STREAM_TIMEOUT:
@@ -401,6 +405,7 @@ async def complete(
                             f"[forge:llm] ⏰ Stream hit {STREAM_TIMEOUT}s ceiling "
                             f"on {current_model} for task={task}"
                         )
+                        stream_was_killed = True
                         read_task.cancel()
                         return
                 await read_task
@@ -408,14 +413,13 @@ async def complete(
             try:
                 await asyncio.wait_for(_read_with_stall_detection(), timeout=STREAM_TIMEOUT + 30)
             except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
+                stream_was_killed = True
 
-            elapsed = _t.monotonic() - t0
-            partial = "".join(chunks)
-
-            if chunk_count > 0 and elapsed >= STALL_TIMEOUT:
+            if stream_was_killed and chunks:
+                elapsed = _t.monotonic() - t0
+                partial = "".join(chunks)
                 logger.warning(
-                    f"[forge:llm] ⏰ Stream ended after {elapsed:.0f}s on {current_model} "
+                    f"[forge:llm] ⏰ Stream killed after {elapsed:.0f}s on {current_model} "
                     f"for task={task} | {chunk_count} chunks, {len(partial)} chars received"
                 )
                 if len(partial) > 200:
