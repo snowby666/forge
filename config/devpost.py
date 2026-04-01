@@ -145,7 +145,7 @@ class WinnerAnalysis:
 # ── Async HTTP Layer ──────────────────────────────────────────────────────────
 
 class _AsyncHTTP:
-    """Async HTTP with retry, rate limiting, and response caching."""
+    """Async HTTP with retry, rate limiting, proxy rotation, and response caching."""
 
     def __init__(self, github_token: str | None = None):
         self._session: aiohttp.ClientSession | None = None
@@ -155,6 +155,7 @@ class _AsyncHTTP:
         self._cache_ttl = 180.0
         self._cache_max = 512
         self._github_token = github_token or os.environ.get("GITHUB_TOKEN", "")
+        self._use_proxy = True
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -200,8 +201,17 @@ class _AsyncHTTP:
                     await asyncio.sleep(wait)
                 self._last_request = time.monotonic()
 
+            # Proxy rotation — different proxy per retry
+            proxy = None
+            if self._use_proxy and not github:
+                try:
+                    from config.proxy_manager import get_next_proxy
+                    proxy = get_next_proxy()
+                except ImportError:
+                    pass
+
             try:
-                async with session.get(url, headers=headers) as resp:
+                async with session.get(url, headers=headers, proxy=proxy) as resp:
                     if resp.status in RETRY_STATUSES and attempt < MAX_RETRIES:
                         retry_after = float(resp.headers.get("Retry-After", BACKOFF_BASE * (2 ** attempt)))
                         logger.debug(f"[devpost] {resp.status} on {url[:80]}, retry in {retry_after:.1f}s")
@@ -472,6 +482,11 @@ class ForgeDevpostClient:
         self._http = _AsyncHTTP(github_token=github_token)
 
     async def __aenter__(self):
+        try:
+            from config.proxy_manager import ensure_loaded
+            await ensure_loaded()
+        except ImportError:
+            pass
         return self
 
     async def __aexit__(self, *args):
@@ -597,6 +612,7 @@ class ForgeDevpostClient:
             "main": base,
             "rules": f"{base}/rules",
             "faq": f"{base}/details/faq",
+            "judges": f"{base}/details/judges",
         }
 
         # Fetch all pages in parallel
@@ -637,25 +653,62 @@ class ForgeDevpostClient:
                 h.resources.append({"url": url, "type": "resource"})
                 seen_urls.add(url)
 
-        # Clean page text for LLM
-        page_texts = {}
-        for name, html in pages.items():
-            text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.S)
-            text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.S)
-            text = re.sub(r'<[^>]+>', ' ', text)
+        # Smart HTML → text: extract key sections instead of blind truncation
+        def _html_to_focused_text(html: str, max_chars: int = 8000) -> str:
+            """Strip scripts/styles, but prioritize sections with judges/prizes/sponsors."""
+            cleaned = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.S)
+            cleaned = re.sub(r'<style[^>]*>.*?</style>', '', cleaned, flags=re.S)
+            cleaned = re.sub(r'<!--.*?-->', '', cleaned, flags=re.S)
+            cleaned = re.sub(r'<nav[^>]*>.*?</nav>', '', cleaned, flags=re.S)
+            cleaned = re.sub(r'<footer[^>]*>.*?</footer>', '', cleaned, flags=re.S)
+            text = re.sub(r'<[^>]+>', ' ', cleaned)
             text = re.sub(r'\s+', ' ', text).strip()
-            page_texts[name] = text[:5000]
+            return text[:max_chars]
 
-        # LLM extraction
+        def _extract_section(html: str, markers: list[str], max_chars: int = 3000) -> str:
+            """Extract text around HTML sections containing specific keywords."""
+            lower = html.lower()
+            chunks = []
+            for marker in markers:
+                idx = lower.find(marker)
+                while idx != -1 and len(chunks) < 5:
+                    start = max(0, idx - 200)
+                    end = min(len(html), idx + max_chars)
+                    chunk = html[start:end]
+                    chunk = re.sub(r'<[^>]+>', ' ', chunk)
+                    chunk = re.sub(r'\s+', ' ', chunk).strip()
+                    if len(chunk) > 20:
+                        chunks.append(chunk)
+                    idx = lower.find(marker, idx + len(marker))
+            return "\n".join(chunks)
+
+        # Build focused text for LLM — main page sections + subpages
         try:
             from config.electronhub import complete
+
             combined_text = ""
-            if "main" in page_texts:
-                combined_text += f"=== MAIN PAGE ===\n{page_texts['main']}\n\n"
-            if "rules" in page_texts:
-                combined_text += f"=== RULES PAGE ===\n{page_texts['rules']}\n\n"
-            if "faq" in page_texts:
-                combined_text += f"=== FAQ PAGE ===\n{page_texts['faq']}\n\n"
+
+            if "main" in pages:
+                main_general = _html_to_focused_text(pages["main"], max_chars=4000)
+                main_judges = _extract_section(pages["main"], ["judge", "mentor", "evaluator", "jury"], max_chars=2000)
+                main_prizes = _extract_section(pages["main"], ["prize", "reward", "bounty", "award", "track"], max_chars=2000)
+                main_sponsors = _extract_section(pages["main"], ["sponsor", "partner", "powered by", "built with"], max_chars=1500)
+                combined_text += f"=== MAIN PAGE ===\n{main_general}\n\n"
+                if main_judges:
+                    combined_text += f"=== JUDGES SECTION (from main) ===\n{main_judges}\n\n"
+                if main_prizes:
+                    combined_text += f"=== PRIZES SECTION (from main) ===\n{main_prizes}\n\n"
+                if main_sponsors:
+                    combined_text += f"=== SPONSORS (from main) ===\n{main_sponsors}\n\n"
+
+            if "judges" in pages:
+                combined_text += f"=== JUDGES PAGE ===\n{_html_to_focused_text(pages['judges'], max_chars=4000)}\n\n"
+
+            if "rules" in pages:
+                combined_text += f"=== RULES PAGE ===\n{_html_to_focused_text(pages['rules'], max_chars=3000)}\n\n"
+
+            if "faq" in pages:
+                combined_text += f"=== FAQ PAGE ===\n{_html_to_focused_text(pages['faq'], max_chars=2000)}\n\n"
 
             prompt = (
                 f"Extract ALL hackathon details. Return ONLY valid JSON.\n\n"

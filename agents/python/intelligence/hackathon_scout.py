@@ -462,13 +462,15 @@ async def discover_community(brief: HackathonBrief) -> HackathonBrief:
     try:
         from config.web_search import web_search, SearchResult
 
-        tasks = [web_search(q, max_results=5) for q in search_queries]
+        tasks = [asyncio.wait_for(web_search(q, max_results=5), timeout=30.0) for q in search_queries]
         results_batches = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_results: list[SearchResult] = []
         for batch in results_batches:
             if isinstance(batch, list):
                 all_results.extend(batch)
+            elif isinstance(batch, (asyncio.TimeoutError, TimeoutError)):
+                logger.debug(f"[forge:scout:community] Search timed out for {brief.name}")
 
         platform_patterns = {
             "discord": r"discord\.(gg|com)",
@@ -524,18 +526,23 @@ async def research_hackathon(brief: HackathonBrief) -> HackathonBrief:
     for sponsor in brief.sponsor_techs[:3]:
         queries.append(f"{sponsor.sponsor} {sponsor.api_name} API tutorial hackathon")
 
-    # Devpost: use real API for past winner analysis
-    if brief.platform == "devpost" and brief.url:
+    # Devpost: analyze past winners — but only if gallery likely has submissions
+    # (open hackathons usually have empty galleries, skip to save time)
+    raw = brief._raw_listing if hasattr(brief, '_raw_listing') else {}  # type: ignore[attr-defined]
+    has_submissions = raw.get("open_state") == "ended" or raw.get("winners_announced")
+    if brief.platform == "devpost" and brief.url and has_submissions:
         try:
             from config.devpost import ForgeDevpostClient
             async with ForgeDevpostClient() as client:
-                # Extract slug from URL
                 from urllib.parse import urlparse
                 parsed = urlparse(brief.url)
                 slug = parsed.netloc.replace(".devpost.com", "") if "devpost.com" in parsed.netloc else ""
                 if slug:
                     logger.info(f"[forge:scout:research] Analyzing past winners from {slug}.devpost.com")
-                    analysis = await client.get_past_winners(slug, pages=1, include_github=True)
+                    analysis = await asyncio.wait_for(
+                        client.get_past_winners(slug, pages=1, include_github=True),
+                        timeout=45.0,
+                    )
                     if analysis.projects:
                         for proj in analysis.projects[:5]:
                             brief.research.append(ResearchItem(
@@ -557,8 +564,12 @@ async def research_hackathon(brief: HackathonBrief) -> HackathonBrief:
                             f"[forge:scout:research] Past winners: {len(analysis.projects)} projects, "
                             f"top tech: {', '.join(list(analysis.tech_stack_frequency.keys())[:5])}"
                         )
+        except asyncio.TimeoutError:
+            logger.warning(f"[forge:scout:research] Past winner analysis timed out for {brief.name}")
         except Exception as e:
             logger.debug(f"[forge:scout:research] Past winner analysis failed: {e}")
+    elif brief.platform == "devpost":
+        logger.debug(f"[forge:scout:research] Skipping past winners for open hackathon {brief.name}")
 
     if brief.platform == "devfolio":
         queries.append(f"site:devfolio.co {brief.theme or brief.name} project")
@@ -577,7 +588,10 @@ async def research_hackathon(brief: HackathonBrief) -> HackathonBrief:
     try:
         from config.web_search import deep_search, SearchResult
 
-        search_tasks = [deep_search(q, max_results=5, expand_queries=False, rerank=False) for q in queries[:6]]
+        search_tasks = [
+            asyncio.wait_for(deep_search(q, max_results=5, expand_queries=False, rerank=False), timeout=30.0)
+            for q in queries[:4]
+        ]
         results_batches = await asyncio.gather(*search_tasks, return_exceptions=True)
 
         known_urls = {r.url for r in brief.research}
@@ -869,6 +883,14 @@ async def run_scout(
     redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
     memory = MemoryKeeper()
 
+    # Load proxies for all network operations
+    try:
+        from config.proxy_manager import ensure_loaded, proxy_count
+        await ensure_loaded()
+        logger.info(f"[forge:scout] Proxy pool: {proxy_count()} proxies loaded")
+    except Exception as e:
+        logger.debug(f"[forge:scout] Proxies not available: {e}")
+
     # ── Phase 1: Discover ────────────────────────────────────────────────────
     logger.info(f"[forge:scout] ═══ Phase 1: DISCOVER — scraping {platforms} ═══")
     raw_listings = await call_browser_scrape(platforms, limit=20)
@@ -936,13 +958,26 @@ async def run_scout(
             return [], []
         return []
 
-    # ── Phase 2: Deep Scrape (parallel) ──────────────────────────────────────
+    # ── Phase 2: Deep Scrape (parallel, batched to avoid flooding LLM) ──────
     if deep:
         logger.info(f"[forge:scout] ═══ Phase 2: DEEP SCRAPE — extracting detail pages ═══")
-        deep_tasks = [deep_scrape_hackathon(b) for b in briefs]
-        briefs = list(await asyncio.gather(*deep_tasks, return_exceptions=False))
-        # Filter out any that returned as exceptions
-        briefs = [b for b in briefs if isinstance(b, HackathonBrief)]
+        BATCH_SIZE = 5
+        all_deep: list[HackathonBrief] = []
+        for batch_start in range(0, len(briefs), BATCH_SIZE):
+            batch = briefs[batch_start:batch_start + BATCH_SIZE]
+            logger.info(f"[forge:scout] Deep scrape batch {batch_start // BATCH_SIZE + 1} ({len(batch)} hackathons)")
+            try:
+                deep_tasks = [asyncio.wait_for(deep_scrape_hackathon(b), timeout=60.0) for b in batch]
+                results = await asyncio.gather(*deep_tasks, return_exceptions=True)
+                for r in results:
+                    if isinstance(r, HackathonBrief):
+                        all_deep.append(r)
+                    elif isinstance(r, Exception):
+                        logger.debug(f"[forge:scout] Deep scrape error: {r}")
+            except Exception as e:
+                logger.warning(f"[forge:scout] Deep scrape batch failed: {e}")
+                all_deep.extend(batch)
+        briefs = all_deep if all_deep else briefs
         logger.info(f"[forge:scout] Phase 2 complete: {sum(1 for b in briefs if b.deep_scraped)}/{len(briefs)} deep-scraped")
 
     # ── Phase 5: Score (before community/research so we can prioritize) ─────
@@ -985,16 +1020,31 @@ async def run_scout(
 
     # ── Phase 3 & 4: Community + Research (only for top candidates) ──────────
     if deep:
-        top_for_deep = briefs[:5]  # research top 5 regardless of qualification
-        logger.info(f"[forge:scout] ═══ Phase 3: COMMUNITY INTEL — searching {len(top_for_deep)} hackathons ═══")
-        community_tasks = [discover_community(b) for b in top_for_deep]
-        top_for_deep = list(await asyncio.gather(*community_tasks, return_exceptions=False))
-        top_for_deep = [b for b in top_for_deep if isinstance(b, HackathonBrief)]
+        top_for_deep = briefs[:5]
 
+        # Phase 3: Community — 90s hard timeout for the entire phase
+        logger.info(f"[forge:scout] ═══ Phase 3: COMMUNITY INTEL — searching {len(top_for_deep)} hackathons ═══")
+        try:
+            community_tasks = [discover_community(b) for b in top_for_deep]
+            results = await asyncio.wait_for(
+                asyncio.gather(*community_tasks, return_exceptions=True), timeout=90.0,
+            )
+            top_for_deep = [r for r in results if isinstance(r, HackathonBrief)]
+            logger.info(f"[forge:scout] Phase 3 complete: {len(top_for_deep)} enriched")
+        except asyncio.TimeoutError:
+            logger.warning("[forge:scout] Phase 3 TIMED OUT (90s) — continuing with what we have")
+
+        # Phase 4: Research — 120s hard timeout
         logger.info(f"[forge:scout] ═══ Phase 4: RESEARCH — finding papers/repos/tutorials ═══")
-        research_tasks = [research_hackathon(b) for b in top_for_deep]
-        top_for_deep = list(await asyncio.gather(*research_tasks, return_exceptions=False))
-        top_for_deep = [b for b in top_for_deep if isinstance(b, HackathonBrief)]
+        try:
+            research_tasks = [research_hackathon(b) for b in top_for_deep]
+            results = await asyncio.wait_for(
+                asyncio.gather(*research_tasks, return_exceptions=True), timeout=120.0,
+            )
+            top_for_deep = [r for r in results if isinstance(r, HackathonBrief)]
+            logger.info(f"[forge:scout] Phase 4 complete: {len(top_for_deep)} researched")
+        except asyncio.TimeoutError:
+            logger.warning("[forge:scout] Phase 4 TIMED OUT (120s) — continuing with what we have")
 
         # Merge enriched data back into briefs
         enriched_ids = {b.hackathon_id for b in top_for_deep}
