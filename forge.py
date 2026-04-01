@@ -175,7 +175,8 @@ def _print_hackathon_detail(h, verbose: bool = True):
     if h.faqs:
         print(f"         {CYAN}FAQs ({len(h.faqs)}):{RESET}")
         for faq in h.faqs[:5]:
-            print(f"           · {faq[:120]}")
+            text = str(faq) if not isinstance(faq, str) else faq
+            print(f"           · {text[:120]}")
 
     # Allowed technologies
     if h.allowed_techs:

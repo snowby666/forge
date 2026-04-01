@@ -461,30 +461,41 @@ COMMUNITY_PATTERNS = {
 async def _fast_searxng(query: str, max_results: int = 10) -> list[dict]:
     """Direct SearXNG query — local Docker, ~1-2s, no rate limits."""
     base_url = os.environ.get("SEARXNG_URL", "http://localhost:8081").rstrip("/")
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{base_url}/search",
-                params={"q": query, "format": "json", "language": "en", "safesearch": "0"},
-                headers={
-                    "Accept": "application/json",
-                    "X-Forwarded-For": "127.0.0.1",
-                    "X-Real-IP": "127.0.0.1",
-                },
-                timeout=aiohttp.ClientTimeout(total=8),
-            ) as resp:
-                if resp.status != 200:
-                    logger.debug(f"[forge:scout] SearXNG returned {resp.status}")
-                    return []
-                data = await resp.json()
-                return [
-                    {"title": r.get("title", ""), "url": r.get("url", "")}
-                    for r in data.get("results", [])[:max_results]
-                    if r.get("url")
-                ]
-    except Exception as e:
-        logger.debug(f"[forge:scout:community] SearXNG error: {e}")
-        return []
+
+    # Try multiple possible URLs in case of Docker networking differences
+    urls_to_try = [base_url]
+    if "localhost:8081" in base_url:
+        urls_to_try.append("http://127.0.0.1:8081")
+        urls_to_try.append("http://host.docker.internal:8081")
+
+    for url in urls_to_try:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{url}/search",
+                    params={"q": query, "format": "json", "language": "en", "safesearch": "0"},
+                    headers={
+                        "Accept": "application/json",
+                        "X-Forwarded-For": "127.0.0.1",
+                        "X-Real-IP": "127.0.0.1",
+                    },
+                    timeout=aiohttp.ClientTimeout(total=6),
+                ) as resp:
+                    if resp.status != 200:
+                        logger.debug(f"[forge:scout] SearXNG {url} returned {resp.status}")
+                        continue
+                    data = await resp.json()
+                    results = [
+                        {"title": r.get("title", ""), "url": r.get("url", "")}
+                        for r in data.get("results", [])[:max_results]
+                        if r.get("url")
+                    ]
+                    if results:
+                        return results
+        except Exception as e:
+            logger.debug(f"[forge:scout] SearXNG {url} error: {e}")
+            continue
+    return []
 
 
 async def discover_community(brief: HackathonBrief) -> HackathonBrief:
