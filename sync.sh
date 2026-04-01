@@ -54,6 +54,23 @@ pip install -e ".[dev,calendar]" --quiet 2>&1 | tail -1
 
 log "Done. $(date +%H:%M:%S)"
 
+# --- Start/restart Forge web dashboard (sentinelhive.dev) --------------------
+FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
+WEB_PID=$(lsof -ti tcp:"$FORGE_WEB_PORT" 2>/dev/null || true)
+if [[ -n "$WEB_PID" ]]; then
+  kill "$WEB_PID" 2>/dev/null || true
+  sleep 1
+  log "Restarted web dashboard (killed old PID $WEB_PID)"
+fi
+cd "$DST"
+nohup "$DST/.venv/bin/python" -m uvicorn forge_web:app --host 0.0.0.0 --port "$FORGE_WEB_PORT" --log-level warning > /tmp/forge-web.log 2>&1 &
+sleep 2
+if curl -sf "http://localhost:${FORGE_WEB_PORT}/health" &>/dev/null 2>&1; then
+  log "Web dashboard running on port ${FORGE_WEB_PORT}"
+else
+  log "${DIM}Web dashboard may still be starting (check /tmp/forge-web.log)${NC}"
+fi
+
 # Auto-run forge if arguments were passed (e.g. bash sync.sh scout --shallow)
 if [[ $# -gt 0 ]]; then
   log "Running: forge $*"

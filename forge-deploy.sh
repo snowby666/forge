@@ -244,6 +244,18 @@ echo ""
 info "Project:  $(pwd)"
 info "Activate: source $(pwd)/.venv/bin/activate"
 echo ""
+# ── Step 14: Start Forge web dashboard ────────────────────────────────────────
+FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
+log "Starting Forge web dashboard on port ${FORGE_WEB_PORT}..."
+set -a; source .env 2>/dev/null || true; [[ -f forge.secrets ]] && source forge.secrets 2>/dev/null || true; set +a
+nohup python -m uvicorn forge_web:app --host 0.0.0.0 --port "$FORGE_WEB_PORT" --log-level warning > /tmp/forge-web.log 2>&1 &
+sleep 2
+if curl -sf "http://localhost:${FORGE_WEB_PORT}/health" &>/dev/null 2>&1; then
+  log "Web dashboard ready (port ${FORGE_WEB_PORT})"
+else
+  warn "Web dashboard may still be starting (check /tmp/forge-web.log)"
+fi
+
 info "Next:"
 info "  1. Edit forge.secrets — add ELECTRONHUB_API_KEY"
 info "  2. source .venv/bin/activate"
