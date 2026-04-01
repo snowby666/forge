@@ -170,13 +170,13 @@ class _AsyncHTTP:
             await self._session.close()
 
     async def get_json(self, url: str, params: dict | None = None, github: bool = False) -> dict:
-        text = await self._request(url, params, github=github)
+        text = await self._request(url, params, github=github, use_proxy=False)
         return json.loads(text)
 
     async def get_text(self, url: str, params: dict | None = None) -> str:
-        return await self._request(url, params)
+        return await self._request(url, params, use_proxy=self._use_proxy)
 
-    async def _request(self, url: str, params: dict | None = None, github: bool = False) -> str:
+    async def _request(self, url: str, params: dict | None = None, github: bool = False, use_proxy: bool = False) -> str:
         if params:
             qs = urlencode(params, doseq=True)
             sep = "&" if "?" in url else "?"
@@ -201,9 +201,9 @@ class _AsyncHTTP:
                     await asyncio.sleep(wait)
                 self._last_request = time.monotonic()
 
-            # Proxy rotation — different proxy per retry
+            # Proxy rotation — different proxy per retry (only for HTML scraping)
             proxy = None
-            if self._use_proxy and not github:
+            if use_proxy and not github:
                 try:
                     from config.proxy_manager import get_next_proxy
                     proxy = get_next_proxy()
@@ -730,8 +730,17 @@ class ForgeDevpostClient:
 
             raw = await complete(task="scout-hackathons", messages=[{"role": "user", "content": prompt}], temperature=0.1)
             cleaned = raw.strip()
+            # Strip markdown fences: ```json ... ```, ``` ... ```, etc.
             if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+                first_newline = cleaned.find("\n")
+                if first_newline != -1:
+                    cleaned = cleaned[first_newline + 1:]
+                cleaned = cleaned.rsplit("```", 1)[0].strip()
+            # Also handle case where LLM wraps in { } with extra text
+            brace_start = cleaned.find("{")
+            brace_end = cleaned.rfind("}")
+            if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
+                cleaned = cleaned[brace_start:brace_end + 1]
             extracted = json.loads(cleaned)
 
             if extracted.get("description"):

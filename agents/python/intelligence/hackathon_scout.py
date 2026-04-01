@@ -199,18 +199,21 @@ async def deep_scrape_hackathon(brief: HackathonBrief) -> HackathonBrief:
                 brief.team_size_min = dh.team_size_min
                 brief.team_size_max = dh.team_size_max
 
-                for p in dh.prizes:
-                    try:
-                        amt = p.get("amount", 0)
-                        if isinstance(amt, str):
-                            amt = _parse_prize_amount(amt)
-                        brief.prizes.append(Prize(
-                            name=p.get("name", "Prize"),
-                            amount=float(amt) if amt else None,
-                            sponsor=p.get("sponsor"),
-                        ))
-                    except Exception:
-                        continue
+                # Replace Phase 1 placeholder prizes with detailed LLM-extracted ones
+                if dh.prizes:
+                    brief.prizes = []
+                    for p in dh.prizes:
+                        try:
+                            amt = p.get("amount", 0)
+                            if isinstance(amt, str):
+                                amt = _parse_prize_amount(amt)
+                            brief.prizes.append(Prize(
+                                name=p.get("name", "Prize"),
+                                amount=float(amt) if amt else None,
+                                sponsor=p.get("sponsor"),
+                            ))
+                        except Exception:
+                            continue
 
                 for j in dh.judges:
                     try:
@@ -462,15 +465,22 @@ async def discover_community(brief: HackathonBrief) -> HackathonBrief:
     try:
         from config.web_search import web_search, SearchResult
 
+        for i, q in enumerate(search_queries, 1):
+            logger.info(f"[forge:scout:community]   query {i}/{len(search_queries)}: {q[:80]}")
+
         tasks = [asyncio.wait_for(web_search(q, max_results=5), timeout=30.0) for q in search_queries]
         results_batches = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_results: list[SearchResult] = []
-        for batch in results_batches:
+        for i, batch in enumerate(results_batches):
+            query_short = search_queries[i][:50]
             if isinstance(batch, list):
                 all_results.extend(batch)
+                logger.info(f"[forge:scout:community]   ✓ query {i+1}: {len(batch)} results — {query_short}")
             elif isinstance(batch, (asyncio.TimeoutError, TimeoutError)):
-                logger.debug(f"[forge:scout:community] Search timed out for {brief.name}")
+                logger.warning(f"[forge:scout:community]   ✗ query {i+1}: TIMEOUT (30s) — {query_short}")
+            elif isinstance(batch, Exception):
+                logger.warning(f"[forge:scout:community]   ✗ query {i+1}: {type(batch).__name__}: {batch} — {query_short}")
 
         platform_patterns = {
             "discord": r"discord\.(gg|com)",
@@ -483,6 +493,7 @@ async def discover_community(brief: HackathonBrief) -> HackathonBrief:
             "blog": r"medium\.com|dev\.to|hashnode|substack",
         }
 
+        new_links = 0
         for result in all_results:
             if result.url in known_urls:
                 continue
@@ -494,11 +505,13 @@ async def discover_community(brief: HackathonBrief) -> HackathonBrief:
                         description=result.title[:120],
                     ))
                     known_urls.add(result.url)
+                    new_links += 1
+                    logger.info(f"[forge:scout:community]   + [{platform}] {result.url[:80]}")
                     break
 
         logger.info(
-            f"[forge:scout:community] {brief.name}: "
-            f"found {len(brief.community_links)} community links total"
+            f"[forge:scout:community] {brief.name[:40]}: "
+            f"+{new_links} new links ({len(brief.community_links)} total)"
         )
 
     except Exception as e:
@@ -641,11 +654,30 @@ async def research_hackathon(brief: HackathonBrief) -> HackathonBrief:
 async def score_hackathon(brief: HackathonBrief) -> HackathonBrief:
     """Score a hackathon 0–100 using rule-based scoring + LLM theme analysis."""
     now = datetime.now(timezone.utc)
-    try:
-        deadline = datetime.fromisoformat(brief.deadline.replace("Z", "+00:00"))
-        days_left = max(0, (deadline - now).days)
-    except Exception:
-        days_left = 7
+    days_left = 7  # fallback
+
+    # Priority 1: use pre-parsed days_left from Devpost API
+    raw = brief._raw_listing if hasattr(brief, '_raw_listing') else {}  # type: ignore[attr-defined]
+    if raw.get("days_left") and isinstance(raw["days_left"], int) and raw["days_left"] > 0:
+        days_left = raw["days_left"]
+    else:
+        # Priority 2: try ISO deadline from LLM extraction
+        try:
+            deadline = datetime.fromisoformat(brief.deadline.replace("Z", "+00:00"))
+            days_left = max(0, (deadline - now).days)
+        except Exception:
+            # Priority 3: try parsing human-readable deadline like "Mar 31 - Apr 02, 2026"
+            try:
+                from dateutil.parser import parse as dateparse  # type: ignore[import-untyped]
+                parts = brief.deadline.split(" - ")
+                if len(parts) == 2:
+                    end_date = dateparse(parts[1].strip())
+                    days_left = max(0, (end_date - now.replace(tzinfo=None)).days)
+                elif brief.deadline:
+                    end_date = dateparse(brief.deadline)
+                    days_left = max(0, (end_date - now.replace(tzinfo=None)).days)
+            except Exception:
+                pass
 
     brief.days_until_deadline = days_left
     total_prize = sum(p.amount or 0 for p in brief.prizes)
@@ -969,11 +1001,13 @@ async def run_scout(
             try:
                 deep_tasks = [asyncio.wait_for(deep_scrape_hackathon(b), timeout=60.0) for b in batch]
                 results = await asyncio.gather(*deep_tasks, return_exceptions=True)
-                for r in results:
+                for idx, r in enumerate(results):
                     if isinstance(r, HackathonBrief):
                         all_deep.append(r)
-                    elif isinstance(r, Exception):
-                        logger.debug(f"[forge:scout] Deep scrape error: {r}")
+                    else:
+                        # Keep the original brief even if deep scrape failed
+                        logger.warning(f"[forge:scout] Deep scrape failed for {batch[idx].name[:40]}: {r}")
+                        all_deep.append(batch[idx])
             except Exception as e:
                 logger.warning(f"[forge:scout] Deep scrape batch failed: {e}")
                 all_deep.extend(batch)
