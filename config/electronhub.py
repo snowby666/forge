@@ -16,13 +16,13 @@ Model overrides — set any of these in .env or forge.secrets:
   FORGE_MODEL_VISION   default: claude-sonnet-4-6  (vision-capable)
 
 Max token overrides per tier:
-  FORGE_MAX_TOKENS_HEAVY    default: 64000
-  FORGE_MAX_TOKENS_STANDARD default: 32000
-  FORGE_MAX_TOKENS_DESIGN   default: 32000
-  FORGE_MAX_TOKENS_WRITING  default: 16000
-  FORGE_MAX_TOKENS_BULK     default: 8000
-  FORGE_MAX_TOKENS_FAST     default: 4000
-  FORGE_MAX_TOKENS_VISION   default: 16000
+  FORGE_MAX_TOKENS_HEAVY    default: 96000
+  FORGE_MAX_TOKENS_STANDARD default: 64000
+  FORGE_MAX_TOKENS_DESIGN   default: 64000
+  FORGE_MAX_TOKENS_WRITING  default: 32000
+  FORGE_MAX_TOKENS_BULK     default: 16000
+  FORGE_MAX_TOKENS_FAST     default: 8000
+  FORGE_MAX_TOKENS_VISION   default: 32000
 
 Models as of 2026-03-31 (from https://api.electronhub.ai/v1/models):
   claude-opus-4-6    Anthropic flagship; 80.8% SWE-bench; 128k output; $5/$25 /MTok
@@ -134,13 +134,13 @@ MODELS = get_models()
 # Sonnet 4.6 → 64k output; Opus 4.6 → 128k output; GPT-4.1 → 32k output.
 
 _DEFAULT_MAX_TOKENS: dict[Tier, int] = {
-    Tier.HEAVY:    64_000,  # Opus 4.6 supports 128k; 64k is generous for any task
-    Tier.STANDARD: 32_000,  # Sonnet 4.6 supports 64k; 32k avoids truncation on large JSON
-    Tier.DESIGN:   32_000,  # Component specs + design tokens can be large
-    Tier.WRITING:  16_000,  # READMEs, pitch decks, demo scripts
-    Tier.BULK:     8_000,   # Tests + boilerplate rarely exceed 8k
-    Tier.FAST:     4_000,   # Short classification/scoring outputs
-    Tier.VISION:   16_000,  # Screenshot audit reports
+    Tier.HEAVY:    96_000,  # Opus 4.6 supports 128k output — leave some headroom
+    Tier.STANDARD: 64_000,  # Sonnet 4.6 supports 64k output — no artificial cap
+    Tier.DESIGN:   64_000,  # Component specs + design tokens can be large
+    Tier.WRITING:  32_000,  # READMEs, pitch decks, demo scripts
+    Tier.BULK:     16_000,  # Tests + boilerplate
+    Tier.FAST:     8_000,   # Classification/scoring outputs
+    Tier.VISION:   32_000,  # Screenshot audit reports
 }
 
 def _get_max_tokens(tier: Tier) -> int:
@@ -552,6 +552,10 @@ async def complete_json(
             start = min(p for p in (brace, bracket) if p >= 0) if max(brace, bracket) >= 0 else -1
             if start > 0:
                 cleaned = cleaned[start:]
+        # Strip control characters that break json.loads (LLMs sometimes emit
+        # raw \x00-\x1f inside JSON strings — keep \n, \r, \t which are valid)
+        import re
+        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', cleaned)
         try:
             return response_model.model_validate(json.loads(cleaned))
         except (json.JSONDecodeError, Exception) as e:
