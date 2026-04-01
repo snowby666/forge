@@ -69,14 +69,20 @@ _INLINE_TASKS: set[asyncio.Task] = set()
 
 async def _dispatch_agent(agent_id: str, hackathon_id: str, inp: dict, redis: Redis) -> Any:
     """Route an agent trigger to its actual implementation function."""
+    logger.info(f"[forge:dispatch] → dispatching {agent_id} (hackathon={hackathon_id})")
     if agent_id == "strategy_director":
         from agents.python.strategy.strategy_director import generate_concepts
+        logger.info(f"[forge:dispatch] strategy_director: calling generate_concepts()")
         brief = await generate_concepts(
             hackathon_brief=inp.get("brief", {}),
             comp_report=inp.get("comp_report", {}),
             judge_profile=inp.get("judge_profile", {}),
             sponsor_map=inp.get("sponsor_map", {}),
             hackathon_id=hackathon_id,
+        )
+        logger.info(
+            f"[forge:dispatch] strategy_director: got {len(brief.concepts)} concepts, "
+            f"recommended=#{brief.recommended_concept}"
         )
         await redis.set(f"hackathon:{hackathon_id}:concepts", brief.model_dump_json(), ex=604800)
         return brief
@@ -253,7 +259,10 @@ async def _dispatch_agent(agent_id: str, hackathon_id: str, inp: dict, redis: Re
 
 async def _run_agent_inline(hackathon_id: str, agent_id: str, input_data: dict) -> None:
     """Execute an agent function in-process and store result in Redis."""
+    import time as _t
     redis = get_redis()
+    t0 = _t.monotonic()
+    logger.info(f"[forge:worker] ▶ {agent_id} starting inline (hackathon={hackathon_id})")
     try:
         await redis.set(
             f"task:{hackathon_id}:{agent_id}",
@@ -261,15 +270,21 @@ async def _run_agent_inline(hackathon_id: str, agent_id: str, input_data: dict) 
             ex=604800,
         )
         result = await _dispatch_agent(agent_id, hackathon_id, input_data, redis)
+        elapsed = _t.monotonic() - t0
         output = result.model_dump() if hasattr(result, "model_dump") else (result or {})
         await redis.set(
             f"task:{hackathon_id}:{agent_id}",
             json.dumps({"status": "done", "data": output}),
             ex=604800,
         )
-        logger.info(f"[forge:worker] ✓ {agent_id} completed inline")
+        logger.info(f"[forge:worker] ✓ {agent_id} completed inline ({elapsed:.1f}s)")
     except Exception as e:
-        logger.error(f"[forge:worker] ✗ {agent_id} failed: {e}", exc_info=True)
+        elapsed = _t.monotonic() - t0
+        logger.error(
+            f"[forge:worker] ✗ {agent_id} failed after {elapsed:.1f}s: "
+            f"{type(e).__name__}: {e}",
+            exc_info=True,
+        )
         await redis.set(
             f"task:{hackathon_id}:{agent_id}",
             json.dumps({"status": "failed", "error": str(e)}),
@@ -307,7 +322,11 @@ async def wait_for_agent(redis: Redis, hackathon_id: str, agent_id: str, timeout
         elapsed = datetime.now(timezone.utc).timestamp() - start
         now = datetime.now(timezone.utc).timestamp()
         if now - last_log > 30:
-            logger.info(f"[forge:commander]   ⟳ Still waiting for {agent_id}... ({elapsed:.0f}s elapsed)")
+            status = task["status"] if raw else "no-key"
+            logger.info(
+                f"[forge:commander]   ⟳ Still waiting for {agent_id}... "
+                f"({elapsed:.0f}s elapsed, redis_status={status})"
+            )
             last_log = now
         if elapsed > timeout_sec:
             logger.warning(f"[forge:commander]   ⏰ {agent_id} TIMED OUT after {timeout_sec}s")

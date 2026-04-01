@@ -350,8 +350,16 @@ async def complete(
 
     for attempt in range(max_retries):
         try:
+            logger.info(
+                f"[forge:llm] → {current_model} | task={task} | attempt={attempt+1}/{max_retries} "
+                f"| max_tokens={max_tok}"
+            )
+            import time as _t
+            t0 = _t.monotonic()
+
             # Stream to avoid Cloudflare 504 timeouts on long generations
             chunks: list[str] = []
+            chunk_count = 0
             stream = await client.chat.completions.create(
                 model=current_model,
                 messages=full_messages,  # type: ignore[arg-type]
@@ -359,14 +367,40 @@ async def complete(
                 temperature=temp,
                 stream=True,
             )
-            async for chunk in stream:
-                delta = chunk.choices[0].delta if chunk.choices else None
-                if delta and delta.content:
-                    chunks.append(delta.content)
+
+            STREAM_TIMEOUT = 180  # 3 min max for any single stream
+            async def _read_stream():
+                nonlocal chunk_count
+                async for chunk in stream:
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    if delta and delta.content:
+                        chunks.append(delta.content)
+                        chunk_count += 1
+
+            try:
+                await asyncio.wait_for(_read_stream(), timeout=STREAM_TIMEOUT)
+            except asyncio.TimeoutError:
+                elapsed = _t.monotonic() - t0
+                partial = "".join(chunks)
+                logger.warning(
+                    f"[forge:llm] ⏰ Stream timeout after {elapsed:.0f}s on {current_model} "
+                    f"for task={task} | {chunk_count} chunks, {len(partial)} chars received"
+                )
+                # Use partial if it looks substantial enough
+                if len(partial) > 200:
+                    logger.info(f"[forge:llm] Using partial response ({len(partial)} chars)")
+                    return partial
+                # Otherwise fall through to retry
+                raise
+
             result = "".join(chunks)
+            elapsed = _t.monotonic() - t0
+            logger.info(
+                f"[forge:llm] ✓ {current_model} | task={task} | {elapsed:.1f}s "
+                f"| {chunk_count} chunks | {len(result)} chars"
+            )
 
             if not result.strip():
-                # Empty response — retry with fallback model
                 fb = FALLBACK.get(current_model)
                 if fb:
                     logger.warning(
@@ -414,8 +448,20 @@ async def complete(
                     continue
             raise
 
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[forge:llm] ⏰ Stream timed out on {current_model} for task={task} "
+                f"(attempt {attempt+1}/{max_retries}) — retrying with fallback"
+            )
+            fb = FALLBACK.get(current_model)
+            if fb:
+                current_model = fb
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2)
+                continue
+            raise
+
         except Exception as e:
-            # Network errors, timeouts, etc. — retry with backoff
             logger.warning(
                 f"[forge:llm] {type(e).__name__} on {current_model} for task={task}: {e} "
                 f"(attempt {attempt+1}/{max_retries})"
@@ -443,9 +489,14 @@ async def complete_json(
     """Call complete() and parse the response as a Pydantic model. Retries on parse failure."""
     schema = json.dumps(response_model.model_json_schema(), indent=2)
     sys = (system_prompt or "") + f"\n\nRespond ONLY with valid JSON matching:\n{schema}"
+    logger.info(
+        f"[forge:llm] complete_json(task={task}, model={response_model.__name__}, "
+        f"max_retries={max_json_retries})"
+    )
 
     last_error: Exception | None = None
     for attempt in range(max_json_retries):
+        logger.info(f"[forge:llm] complete_json attempt {attempt+1}/{max_json_retries} for task={task}")
         raw = await complete(task=task, messages=messages, system_prompt=sys, temperature=temperature)
         cleaned = raw.strip()
         if cleaned.startswith("```"):

@@ -101,6 +101,9 @@ async def generate_concepts(
     sponsor_map: dict,
     hackathon_id: str = "",
 ) -> ConceptBrief:
+    import time as _t
+    t0 = _t.monotonic()
+    logger.info(f"[forge:strategy] generate_concepts() START (hackathon={hackathon_id})")
 
     # ── Feature 1: Query memory for what worked in past similar hackathons ────
     past_learnings = ""
@@ -109,9 +112,11 @@ async def generate_concepts(
         from agents.python.infra.memory_keeper import get_memory_keeper
         from config.run_context import build_memdir_context_for_agent
 
+        logger.info("[forge:strategy] Querying memory for past learnings...")
         memory = get_memory_keeper()
         theme = hackathon_brief.get("theme", hackathon_brief.get("name", "hackathon"))
         past_results = await memory.get_relevant_past(theme, limit=4)
+        logger.info(f"[forge:strategy] Memory returned {len(past_results)} results ({_t.monotonic()-t0:.1f}s)")
 
         if past_results:
             past_lines = []
@@ -119,11 +124,23 @@ async def generate_concepts(
                 mem = r.get("memory", r.get("text", str(r)))
                 past_lines.append(f"  - {mem}")
             past_learnings = "\n=== MEMORY FROM PAST RUNS (what worked and failed) ===\n" + "\n".join(past_lines) + "\n"
-            logger.info(f"[forge:strategy] Loaded {len(past_results)} past learnings from memory")
 
         memdir_notes = await build_memdir_context_for_agent("strategy_director")
+        logger.info(f"[forge:strategy] Memory + memdir loaded ({_t.monotonic()-t0:.1f}s)")
     except Exception as e:
         logger.warning(f"[forge:strategy] Memory query failed (continuing without it): {e}")
+
+    prompt_size = (
+        len(json.dumps(hackathon_brief))
+        + len(json.dumps(comp_report))
+        + len(json.dumps(judge_profile))
+        + len(json.dumps(sponsor_map))
+        + len(past_learnings)
+    )
+    logger.info(
+        f"[forge:strategy] Calling complete_json(generate-concepts) "
+        f"| prompt_size≈{prompt_size} chars ({_t.monotonic()-t0:.1f}s)"
+    )
 
     brief = await complete_json(
         task="generate-concepts",
@@ -165,16 +182,22 @@ rank=1 should be your best recommendation. Be honest about risks.""",
         }],
         temperature=0.4,
     )
+    logger.info(
+        f"[forge:strategy] complete_json returned {len(brief.concepts)} concepts "
+        f"({_t.monotonic()-t0:.1f}s)"
+    )
 
-    # Score calibration
     for concept in brief.concepts:
         await score_concept(concept, sponsor_map)
 
-    # Sort by score and fix ranks
     brief.concepts.sort(key=lambda c: c.total_score, reverse=True)
     for i, concept in enumerate(brief.concepts):
         concept.rank = i + 1
 
+    logger.info(
+        f"[forge:strategy] generate_concepts() DONE in {_t.monotonic()-t0:.1f}s | "
+        f"top concept: {brief.concepts[0].project_name} (score={brief.concepts[0].total_score})"
+    )
     return brief
 
 
