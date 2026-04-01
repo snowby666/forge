@@ -57,8 +57,19 @@ log "Done. $(date +%H:%M:%S)"
 # --- Start/restart Forge web dashboard (sentinelhive.dev) --------------------
 cd "$DST"
 # Source env so the web server gets REDIS_URL, FORGE_WEB_TOKEN, etc.
-[[ -f "$DST/.env" ]] && { sed -i 's/\r$//' "$DST/.env" 2>/dev/null || true; set -a; source "$DST/.env"; set +a; }
-[[ -f "$DST/forge.secrets" ]] && { sed -i 's/\r$//' "$DST/forge.secrets" 2>/dev/null || true; set -a; source "$DST/forge.secrets"; set +a; }
+if [[ -f "$DST/.env" ]]; then
+  sed -i 's/\r$//' "$DST/.env" 2>/dev/null || true
+  set -a; source "$DST/.env" 2>/dev/null || true; set +a
+fi
+if [[ -f "$DST/forge.secrets" ]]; then
+  sed -i 's/\r$//' "$DST/forge.secrets" 2>/dev/null || true
+  # Only source lines that look like KEY=VALUE (skip garbage/comments)
+  while IFS= read -r line; do
+    line="${line%%#*}"              # strip inline comments
+    [[ -z "$line" ]] && continue   # skip empty
+    [[ "$line" == *=* ]] && export "$line" 2>/dev/null || true
+  done < "$DST/forge.secrets"
+fi
 
 FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
 WEB_PID=$(lsof -ti tcp:"$FORGE_WEB_PORT" 2>/dev/null || true)
