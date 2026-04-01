@@ -33,6 +33,9 @@ dependencies = [
     "bm25s>=0.2.0",                        # Fast BM25 keyword retrieval
     # NOTE: sentence-transformers (+ PyTorch ~2GB) installed separately by setup.sh
     # with graceful BM25 fallback. Kept out of core deps to avoid 10+ min installs.
+    # ── Google Calendar (service account) ────────────────────────────────────
+    "google-auth>=2.0.0",
+    "google-api-python-client>=2.0.0",
     # ── Other agents ─────────────────────────────────────────────────────────
     "aiohttp>=3.11.0",
     "fastapi>=0.115.0",
@@ -75,9 +78,7 @@ daytona = [
     "daytona-sdk>=0.10.0",               # Daytona sandbox SDK (Linux/WSL only)
 ]
 calendar = [
-    "google-auth>=2.0.0",
-    "google-auth-oauthlib>=1.0.0",
-    "google-api-python-client>=2.0.0",
+    "google-auth-oauthlib>=1.0.0",        # Only needed for OAuth browser flow (not service account)
 ]
 tts = [
     "edge-tts>=6.1.0",                   # Text-to-speech for demo narration

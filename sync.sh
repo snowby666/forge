@@ -50,7 +50,7 @@ find "$DST/agents" "$DST/config" "$DST/scripts" "$DST/devpost_api" -type f \( -n
 # Re-install in editable mode (picks up new deps in pyproject.toml, ~2s if nothing changed)
 cd "$DST"
 source .venv/bin/activate
-pip install -e ".[dev]" --quiet 2>&1 | tail -1
+pip install -e ".[dev,calendar]" --quiet 2>&1 | tail -1
 
 log "Done. $(date +%H:%M:%S)"
 
