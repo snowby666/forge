@@ -363,7 +363,27 @@ async def complete(
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta and delta.content:
                     chunks.append(delta.content)
-            return "".join(chunks)
+            result = "".join(chunks)
+
+            if not result.strip():
+                # Empty response — retry with fallback model
+                fb = FALLBACK.get(current_model)
+                if fb:
+                    logger.warning(
+                        f"[forge:llm] Empty response from {current_model} for task={task} "
+                        f"→ retrying with {fb} (attempt {attempt+1})"
+                    )
+                    current_model = fb
+                    await asyncio.sleep(1)
+                    continue
+                logger.warning(
+                    f"[forge:llm] Empty response from {current_model} for task={task} "
+                    f"→ retrying same model (attempt {attempt+1})"
+                )
+                await asyncio.sleep(2 ** attempt)
+                continue
+
+            return result
 
         except APIStatusError as e:
             # Context length exceeded — compress and retry once
@@ -394,6 +414,20 @@ async def complete(
                     continue
             raise
 
+        except Exception as e:
+            # Network errors, timeouts, etc. — retry with backoff
+            logger.warning(
+                f"[forge:llm] {type(e).__name__} on {current_model} for task={task}: {e} "
+                f"(attempt {attempt+1}/{max_retries})"
+            )
+            if attempt < max_retries - 1:
+                fb = FALLBACK.get(current_model)
+                if fb:
+                    current_model = fb
+                await asyncio.sleep(2 ** attempt)
+                continue
+            raise
+
     raise RuntimeError(f"[forge:llm] exhausted {max_retries} retries for task={task}")
 
 
@@ -404,15 +438,38 @@ async def complete_json(
     response_model: Type[T],
     system_prompt: str | None = None,
     temperature: float | None = None,
+    max_json_retries: int = 3,
 ) -> T:
-    """Call complete() and parse the response as a Pydantic model."""
+    """Call complete() and parse the response as a Pydantic model. Retries on parse failure."""
     schema = json.dumps(response_model.model_json_schema(), indent=2)
     sys = (system_prompt or "") + f"\n\nRespond ONLY with valid JSON matching:\n{schema}"
-    raw = await complete(task=task, messages=messages, system_prompt=sys, temperature=temperature)
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    return response_model.model_validate(json.loads(cleaned))
+
+    last_error: Exception | None = None
+    for attempt in range(max_json_retries):
+        raw = await complete(task=task, messages=messages, system_prompt=sys, temperature=temperature)
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        # Strip leading non-JSON garbage (some models emit prose before JSON)
+        if cleaned and not cleaned.startswith(("{", "[")):
+            brace = cleaned.find("{")
+            bracket = cleaned.find("[")
+            start = min(p for p in (brace, bracket) if p >= 0) if max(brace, bracket) >= 0 else -1
+            if start > 0:
+                cleaned = cleaned[start:]
+        try:
+            return response_model.model_validate(json.loads(cleaned))
+        except (json.JSONDecodeError, Exception) as e:
+            last_error = e
+            logger.warning(
+                f"[forge:llm] JSON parse failed for task={task} (attempt {attempt+1}/{max_json_retries}): "
+                f"{type(e).__name__}: {e}\n"
+                f"  Response preview: {cleaned[:200]!r}"
+            )
+            if attempt < max_json_retries - 1:
+                await asyncio.sleep(1)
+
+    raise last_error or RuntimeError(f"[forge:llm] JSON parse failed after {max_json_retries} retries")
 
 
 async def embed(text: str) -> list[float]:
