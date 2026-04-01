@@ -396,46 +396,60 @@ async def _search_searxng(query: str, max_results: int = 8) -> list[SearchResult
     """
     SearXNG self-hosted instance — queries 70+ engines simultaneously
     (Google, Bing, DDG, Startpage, etc.) without tracking.
-    Set SEARXNG_URL in forge.secrets (e.g., http://localhost:8080).
+    Set SEARXNG_URL in forge.secrets (e.g., http://localhost:8081).
     Completely free. Add to docker-compose to enable.
     """
     base_url = os.environ.get("SEARXNG_URL", "").strip().rstrip("/")
     if not base_url:
         return []
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{base_url}/search",
-                params={
-                    "q": query,
-                    "format": "json",
-                    "engines": "google,bing,duckduckgo,brave,startpage",
-                    "language": "en",
-                    "time_range": "year",
-                    "safesearch": "0",
-                },
-                headers={"Accept": "application/json"},
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                if resp.status != 200:
-                    return []
-                data = await resp.json()
+    urls_to_try = [base_url]
+    if "localhost" in base_url or "127.0.0.1" in base_url:
+        port = base_url.rsplit(":", 1)[-1] if ":" in base_url.split("//", 1)[-1] else "8081"
+        urls_to_try = list(dict.fromkeys([
+            base_url,
+            f"http://localhost:{port}",
+            f"http://127.0.0.1:{port}",
+        ]))
 
-        return [
-            SearchResult(
-                title=r.get("title", ""),
-                url=r.get("url", ""),
-                snippet=r.get("content", ""),
-                source="searxng",
-                published=r.get("publishedDate", ""),
-            )
-            for r in data.get("results", [])[:max_results]
-            if r.get("title") and r.get("url")
-        ]
-    except Exception as e:
-        logger.debug(f"[forge:search] SearXNG error: {e}")
-        return []
+    for url in urls_to_try:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{url}/search",
+                    params={
+                        "q": query,
+                        "format": "json",
+                        "engines": "google,bing,brave,startpage",
+                        "language": "en",
+                        "time_range": "year",
+                        "safesearch": "0",
+                    },
+                    headers={"Accept": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status != 200:
+                        logger.debug(f"[forge:search] SearXNG {url} returned {resp.status}")
+                        continue
+                    data = await resp.json()
+
+            results = [
+                SearchResult(
+                    title=r.get("title", ""),
+                    url=r.get("url", ""),
+                    snippet=r.get("content", ""),
+                    source="searxng",
+                    published=r.get("publishedDate", ""),
+                )
+                for r in data.get("results", [])[:max_results]
+                if r.get("title") and r.get("url")
+            ]
+            if results:
+                return results
+        except Exception as e:
+            logger.debug(f"[forge:search] SearXNG {url} error: {e}")
+            continue
+    return []
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1283,6 +1297,11 @@ async def scrape_hackathon_listings(
 
     except ImportError:
         logger.warning("[forge:search] Crawl4AI not installed — hackathon listing scrape unavailable")
+    except (FileNotFoundError, OSError) as e:
+        logger.warning(
+            f"[forge:search] scrape_hackathon_listings: browser binary not found ({e}). "
+            f"Run 'playwright install chromium' or 'crawl4ai-setup' to fix."
+        )
     except Exception as e:
         logger.warning(f"[forge:search] scrape_hackathon_listings failed: {e}")
 

@@ -462,23 +462,31 @@ async def _fast_searxng(query: str, max_results: int = 10) -> list[dict]:
     base_url = os.environ.get("SEARXNG_URL", "http://localhost:8081").rstrip("/")
 
     # Try multiple possible URLs in case of Docker networking differences
-    urls_to_try = [base_url]
-    if "localhost:8081" in base_url:
-        urls_to_try.append("http://127.0.0.1:8081")
-        urls_to_try.append("http://host.docker.internal:8081")
+    port = base_url.rsplit(":", 1)[-1] if ":" in base_url.split("//", 1)[-1] else "8081"
+    urls_to_try = list(dict.fromkeys([
+        base_url,
+        f"http://localhost:{port}",
+        f"http://127.0.0.1:{port}",
+    ]))
 
     for url in urls_to_try:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{url}/search",
-                    params={"q": query, "format": "json", "language": "en", "safesearch": "0"},
+                    params={
+                        "q": query,
+                        "format": "json",
+                        "engines": "google,bing,brave,startpage",
+                        "language": "en",
+                        "safesearch": "0",
+                    },
                     headers={
                         "Accept": "application/json",
                         "X-Forwarded-For": "127.0.0.1",
                         "X-Real-IP": "127.0.0.1",
                     },
-                    timeout=aiohttp.ClientTimeout(total=6),
+                    timeout=aiohttp.ClientTimeout(total=15),
                 ) as resp:
                     if resp.status != 200:
                         logger.debug(f"[forge:scout] SearXNG {url} returned {resp.status}")
@@ -517,7 +525,16 @@ async def discover_community(brief: HackathonBrief) -> HackathonBrief:
     if results:
         logger.info(f"[forge:scout:community]   SearXNG: {len(results)} results")
     else:
-        logger.info(f"[forge:scout:community]   SearXNG unavailable, skipping community search")
+        # Fallback: use ddgs via web_search
+        logger.info(f"[forge:scout:community]   SearXNG unavailable, falling back to web search")
+        try:
+            from config.web_search import web_search, SearchResult
+            ws_results = await web_search(query, max_results=15, timelimit="y")
+            results = [{"title": r.title, "url": r.url} for r in ws_results]
+            if results:
+                logger.info(f"[forge:scout:community]   Web search fallback: {len(results)} results")
+        except Exception as e:
+            logger.warning(f"[forge:scout:community]   Web search fallback failed: {e}")
 
     new_links = 0
     for r in results:
@@ -619,10 +636,22 @@ async def research_hackathon(brief: HackathonBrief) -> HackathonBrief:
             f"{brief.name} hackathon tutorial getting started",
         ]
 
-    # Fast path: SearXNG for all queries in parallel (~2s total)
+    # Fast path: SearXNG for all queries, fallback to web_search
     try:
         search_tasks = [_fast_searxng(q, max_results=8) for q in queries[:4]]
         results_batches = await asyncio.gather(*search_tasks, return_exceptions=True)
+
+        # If all SearXNG calls returned empty, fallback to web_search
+        has_results = any(isinstance(b, list) and len(b) > 0 for b in results_batches)
+        if not has_results:
+            logger.info(f"[forge:scout:research] SearXNG returned nothing, falling back to web search")
+            from config.web_search import web_search as _ws
+            ws_tasks = [_ws(q, max_results=8, timelimit="y") for q in queries[:4]]
+            ws_batches = await asyncio.gather(*ws_tasks, return_exceptions=True)
+            results_batches = [
+                [{"title": r.title, "url": r.url} for r in batch]
+                for batch in ws_batches if isinstance(batch, list)
+            ]
 
         known_urls = {r.url for r in brief.research}
         for batch in results_batches:
@@ -832,7 +861,7 @@ async def scrape_devpost_api(limit: int = 15) -> list[dict]:
 
 
 async def scrape_other_platforms(platforms: list[str], limit: int = 5) -> list[dict]:
-    """Crawl4AI / Stagehand scraping for non-Devpost platforms."""
+    """Crawl4AI / Stagehand / aiohttp scraping for non-Devpost platforms."""
     try:
         from config.web_search import scrape_hackathon_listings
         listings = await scrape_hackathon_listings(platforms, limit_per_platform=limit)
@@ -860,11 +889,37 @@ async def scrape_other_platforms(platforms: list[str], limit: int = 5) -> list[d
             ) as resp:
                 data = await resp.json()
                 listings = data.get("hackathons", [])
-                logger.info(f"[forge:scout] Stagehand returned {len(listings)} listings for {platforms}")
-                return listings
+                if listings:
+                    logger.info(f"[forge:scout] Stagehand returned {len(listings)} listings for {platforms}")
+                    return listings
     except Exception as e:
-        logger.warning(f"[forge:scout] Stagehand fallback also failed: {e}")
-        return []
+        logger.debug(f"[forge:scout] Stagehand not available: {e}")
+
+    # Last resort: aiohttp fetch + regex extraction for known platforms
+    logger.info(f"[forge:scout] Using aiohttp fallback for {platforms}")
+    all_listings: list[dict] = []
+    platform_urls = {
+        "lablab": "https://lablab.ai/event",
+        "devfolio": "https://devfolio.co/hackathons",
+    }
+    for plat in platforms:
+        url = platform_urls.get(plat)
+        if not url:
+            continue
+        try:
+            from config.web_search import _fetch_fallback
+            raw_html = await _fetch_fallback(url, max_chars=20000)
+            if raw_html and len(raw_html) > 200:
+                all_listings.append({
+                    "platform": plat,
+                    "raw_markdown": raw_html[:5000],
+                    "url": url,
+                    "title": f"{plat.title()} hackathon listings (raw)",
+                })
+                logger.info(f"[forge:scout] aiohttp fallback got {len(raw_html)} chars from {plat}")
+        except Exception as e:
+            logger.debug(f"[forge:scout] aiohttp fallback failed for {plat}: {e}")
+    return all_listings
 
 
 async def call_browser_scrape(platforms: list[str], limit: int = 5) -> list[dict]:

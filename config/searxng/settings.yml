@@ -27,11 +27,8 @@ outgoing:
   useragent_suffix: ""
   pool_connections: 100
   pool_maxsize: 20
-  # Proxies are injected by: python scripts/update_searxng_proxies.py
-  # Run that script once to embed webshare proxies here, then restart SearXNG.
-  proxies:
-    "all://":
-      - "http://placeholder:placeholder@0.0.0.0:0"
+  # To add webshare proxies, run: python scripts/update_searxng_proxies.py
+  # Then restart SearXNG: docker compose restart searxng
 
 enabled_plugins:
   - 'Hash plugin'
