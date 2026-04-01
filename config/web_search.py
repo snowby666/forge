@@ -486,6 +486,7 @@ async def _get_c4a_crawler():
                 from crawl4ai import AsyncWebCrawler, BrowserConfig  # type: ignore[import]
                 browser_cfg = BrowserConfig(
                     browser_type="chromium",
+                    chrome_channel="chromium",
                     headless=True,
                     verbose=False,
                     user_agent_mode="random",
@@ -1107,7 +1108,7 @@ async def adaptive_crawl(
     try:
         from crawl4ai import AsyncWebCrawler, AdaptiveCrawler, AdaptiveConfig, BrowserConfig  # type: ignore[import]
 
-        browser_cfg = BrowserConfig(browser_type="chromium", headless=True, verbose=False)
+        browser_cfg = BrowserConfig(browser_type="chromium", chrome_channel="chromium", headless=True, verbose=False)
         config = AdaptiveConfig(
             strategy=strategy,
             confidence_threshold=confidence_threshold,
@@ -1226,6 +1227,7 @@ async def scrape_hackathon_listings(
 
         browser_cfg = BrowserConfig(
             browser_type="chromium",
+            chrome_channel="chromium",
             headless=True,
             verbose=False,
             user_agent_mode="random",
