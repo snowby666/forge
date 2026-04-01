@@ -1,0 +1,36 @@
+use_default_settings: true
+
+general:
+  instance_name: "Forge Search"
+  debug: false
+
+search:
+  safe_search: 0
+  default_lang: "en"
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "forge-searxng-secret-key"
+  limiter: false
+  image_proxy: false
+  public_instance: false
+  method: "GET"
+
+ui:
+  static_use_hash: true
+
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 15.0
+  useragent_suffix: ""
+  pool_connections: 100
+  pool_maxsize: 20
+
+# Disable bot detection entirely — we are the only client
+enabled_plugins:
+  - 'Hash plugin'
+  - 'Self Information'
+  - 'Tracker URL remover'
+  - 'Hostname replace'

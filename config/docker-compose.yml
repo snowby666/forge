@@ -130,6 +130,7 @@ services:
       - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-forge-searxng-secret-change-this}
     volumes:
       - forge-searxng-data:/etc/searxng
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     ports:
       - "8081:8080"
     healthcheck:
