@@ -359,13 +359,14 @@ def run_calendar_auth() -> None:
         print("Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in your environment first.")
         return
 
+    REDIRECT_PORT = 8085
     client_config = {
         "installed": {
             "client_id": client_id,
             "client_secret": client_secret,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": ["http://localhost:0"],
+            "redirect_uris": [f"http://localhost:{REDIRECT_PORT}"],
         }
     }
 
@@ -373,10 +374,19 @@ def run_calendar_auth() -> None:
         client_config,
         scopes=["https://www.googleapis.com/auth/calendar.events"],
     )
-    creds = flow.run_local_server(port=0, open_browser=True)
+
+    # Headless-friendly: bind on 0.0.0.0 so you can open the URL from another machine
+    print(f"\n  Listening on port {REDIRECT_PORT} for OAuth callback...")
+    print(f"  Open the URL below in your browser (any machine on the same network):\n")
+    creds = flow.run_local_server(
+        host="0.0.0.0",
+        port=REDIRECT_PORT,
+        open_browser=False,
+        success_message="Authorization complete! You can close this tab.",
+    )
     _TOKEN_PATH.write_text(creds.to_json())
-    print(f"\nToken saved to {_TOKEN_PATH}")
-    print("Google Calendar is now connected. Test with: forge calendar-test")
+    print(f"\n  Token saved to {_TOKEN_PATH}")
+    print("  Google Calendar is now connected. Test with: forge calendar-test")
 
 
 async def calendar_test() -> bool:
