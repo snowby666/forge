@@ -26,6 +26,10 @@ fi
 
 log "Syncing $SRC → $DST"
 
+# Avoid "getcwd: cannot access parent directories" when rsync --delete
+# recreates dirs under the shell's cwd
+cd "$HOME"
+
 rsync -a --delete \
   --exclude='.venv/' \
   --exclude='node_modules/' \
