@@ -22,22 +22,25 @@ ui:
   static_use_hash: true
 
 outgoing:
-  request_timeout: 10.0
-  max_request_timeout: 15.0
+  request_timeout: 15.0
+  max_request_timeout: 30.0
   useragent_suffix: ""
   pool_connections: 100
   pool_maxsize: 20
+  # Proxies are injected by: python scripts/update_searxng_proxies.py
+  # Run that script once to embed webshare proxies here, then restart SearXNG.
+  proxies:
+    "all://":
+      - "http://placeholder:placeholder@0.0.0.0:0"
 
-# Disable bot detection entirely — we are the only client
 enabled_plugins:
   - 'Hash plugin'
   - 'Self Information'
   - 'Tracker URL remover'
   - 'Hostname replace'
 
-# Disable DuckDuckGo — gets CAPTCHA blocked constantly
-# Use Google, Bing, Brave, Startpage instead
 engines:
+  # ── Disabled engines ──
   - name: duckduckgo
     engine: duckduckgo
     disabled: true
@@ -56,3 +59,24 @@ engines:
   - name: duckduckgo definitions
     engine: duckduckgo_definitions
     disabled: true
+  - name: wikipedia
+    engine: wikipedia
+    disabled: true
+  # ── Tuned engines ──
+  - name: brave
+    engine: brave
+    disabled: false
+    timeout: 15.0
+    send_accept_language_header: true
+  - name: google
+    engine: google
+    disabled: false
+    timeout: 15.0
+  - name: bing
+    engine: bing
+    disabled: false
+    timeout: 15.0
+  - name: startpage
+    engine: startpage
+    disabled: false
+    timeout: 15.0

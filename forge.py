@@ -13,6 +13,7 @@ Usage:
   forge knowledge          Update design + strategy intelligence
   forge test               Run system health checks
   forge ls                 List all active hackathons
+  forge web                Start web dashboard (remote approval from any device)
 """
 
 from __future__ import annotations
@@ -784,6 +785,11 @@ def main():
     # test
     sub.add_parser("test", help="Run system health checks")
 
+    # web
+    p_web = sub.add_parser("web", help="Start web dashboard for remote approval from any device")
+    p_web.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+    p_web.add_argument("--port", type=int, default=9090, help="Port (default: 9090)")
+
     # calendar
     sub.add_parser("calendar-auth", help="Google Calendar service account setup & verification")
     sub.add_parser("calendar-test", help="Create a test event to verify Google Calendar works")
@@ -797,6 +803,17 @@ def main():
     if args.command == "calendar-auth":
         from agents.python.infra.monitor_and_calendar import run_calendar_auth
         run_calendar_auth()
+        return
+
+    if args.command == "web":
+        from forge_web import start as start_web
+        print(f"\n{BOLD}Starting Forge web dashboard on http://{args.host}:{args.port}{RESET}")
+        token = os.environ.get("FORGE_WEB_TOKEN", "")
+        if token:
+            print(f"  Auth token set — append ?token={token} to login\n")
+        else:
+            print(f"  {DIM}No FORGE_WEB_TOKEN set — dashboard is open (set one in forge.secrets){RESET}\n")
+        start_web(args.host, args.port)
         return
 
     async def run():

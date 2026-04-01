@@ -128,6 +128,19 @@ else
   warn "Browser layer health check failed (PID ${BROWSER_PID})"
 fi
 
+# --- Forge web dashboard (sentinelhive.dev) ----------------------------------
+FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
+log "Starting Forge web dashboard on port ${FORGE_WEB_PORT}..."
+$PYTHON_CMD -m uvicorn forge_web:app --host 0.0.0.0 --port "$FORGE_WEB_PORT" --log-level warning &
+WEB_PID=$!
+sleep 2
+
+if curl -sf "http://localhost:${FORGE_WEB_PORT}/health" &>/dev/null 2>&1; then
+  log "Web dashboard ready (port ${FORGE_WEB_PORT})"
+else
+  warn "Web dashboard health check failed (PID ${WEB_PID})"
+fi
+
 echo ""
 log "All services running:"
 info "  Qdrant:    http://localhost:6333"
@@ -135,5 +148,6 @@ info "  Browser:   http://localhost:${BROWSER_PORT}"
 info "  n8n:       http://localhost:5678"
 info "  Temporal:  http://localhost:8080"
 info "  SearXNG:   http://localhost:8081"
+info "  Dashboard: http://localhost:${FORGE_WEB_PORT}  (sentinelhive.dev)"
 echo ""
 log "Run: python scripts/test_run.py --dry-run"

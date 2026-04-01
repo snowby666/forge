@@ -35,6 +35,7 @@ from agents.python.infra.monitor_and_calendar import (
 logger = logging.getLogger(__name__)
 
 N8N_BASE = os.environ.get("N8N_BASE_URL", "http://localhost:5678")
+FORGE_WEB_URL = os.environ.get("FORGE_WEB_URL", "http://localhost:9090")
 
 
 # ── LangGraph state ────────────────────────────────────────────────────────────
@@ -372,9 +373,12 @@ async def wait_for_checkpoint(
 
 
 async def notify_checkpoint(hackathon_id: str, checkpoint_id: str, message: str) -> None:
+    web_token = os.environ.get("FORGE_WEB_TOKEN", "")
+    token_qs = f"?token={web_token}" if web_token else ""
     await send_discord_alert(
         f"**Hackathon Agent — Action Required** :dart:\n{message}\n\n"
-        f"Approve: {N8N_BASE}/webhook/{hackathon_id}/{checkpoint_id}"
+        f"**Approve from any device:** {FORGE_WEB_URL}/approve/{hackathon_id}/{checkpoint_id}{token_qs}\n"
+        f"**CLI:** `forge approve {checkpoint_id.replace('_approval','').replace('_review','')} --id {hackathon_id}`"
     )
 
 
