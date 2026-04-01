@@ -750,7 +750,10 @@ async def run(hackathon_id: str) -> HackathonState:
         "messages": [],
     }
 
-    async with AsyncPostgresSaver.from_conn_string(os.environ["DATABASE_URL"]) as checkpointer:
+    db_url = os.environ["DATABASE_URL"]
+    # psycopg needs plain postgresql:// — strip SQLAlchemy dialect suffixes
+    db_url = db_url.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://")
+    async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
         await checkpointer.setup()
         compiled = build_graph().compile(checkpointer=checkpointer)
         logger.info(f"[forge:commander] Starting hackathon: {brief.get('name')} ({hackathon_id})")
