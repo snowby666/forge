@@ -185,9 +185,6 @@ def _print_hackathon_detail(h, verbose: bool = True):
 
 async def cmd_scout(args):
     """Discover and score hackathons."""
-    import logging
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-
     deep = not getattr(args, 'shallow', False)
     mode = "deep" if deep else "shallow"
     section(f"Scouting hackathons ({mode} mode)...")
@@ -693,6 +690,9 @@ async def cmd_test(args):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
     header()
 
     parser = argparse.ArgumentParser(
