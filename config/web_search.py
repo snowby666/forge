@@ -92,12 +92,17 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 # Ensure Playwright can find its browsers in the default cache location.
-# On WSL2/Linux, browsers live in ~/.cache/ms-playwright/.
-# Crawl4AI sometimes fails to resolve this path automatically.
 if not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
     _pw_default = os.path.expanduser("~/.cache/ms-playwright")
     if os.path.isdir(_pw_default):
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _pw_default
+
+# Fix stale CWD after rsync --delete (WSL2: sync.sh recreates ~/forge, invalidating CWD).
+# crawl4ai's model_loader.py calls os.getcwd() at import time and crashes if CWD is gone.
+try:
+    os.getcwd()
+except (FileNotFoundError, OSError):
+    os.chdir(os.path.expanduser("~"))
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DATA MODELS
@@ -491,6 +496,10 @@ async def _get_c4a_crawler():
     async with _c4a_lock:
         if _c4a_crawler is None:
             try:
+                try:
+                    os.getcwd()
+                except (FileNotFoundError, OSError):
+                    os.chdir(os.path.expanduser("~"))
                 from crawl4ai import AsyncWebCrawler, BrowserConfig  # type: ignore[import]
                 browser_cfg = BrowserConfig(
                     browser_type="chromium",
@@ -516,6 +525,10 @@ async def _fetch_with_c4a(url: str, max_chars: int = 4000) -> str:
     Falls back to the regex extractor if Crawl4AI is unavailable or errors.
     """
     try:
+        try:
+            os.getcwd()
+        except (FileNotFoundError, OSError):
+            os.chdir(os.path.expanduser("~"))
         from crawl4ai import CrawlerRunConfig, CacheMode  # type: ignore[import]
         from crawl4ai.content_filter_strategy import PruningContentFilter  # type: ignore[import]
         from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator  # type: ignore[import]
@@ -1114,6 +1127,10 @@ async def adaptive_crawl(
     Returns list of dicts: [{url, score, content}] sorted by relevance.
     """
     try:
+        try:
+            os.getcwd()
+        except (FileNotFoundError, OSError):
+            os.chdir(os.path.expanduser("~"))
         from crawl4ai import AsyncWebCrawler, AdaptiveCrawler, AdaptiveConfig, BrowserConfig  # type: ignore[import]
 
         browser_cfg = BrowserConfig(browser_type="chromium", chrome_channel="chromium", headless=True, verbose=False)
@@ -1229,6 +1246,12 @@ async def scrape_hackathon_listings(
     all_listings: list[dict] = []
 
     try:
+        # Guard against stale CWD (rsync --delete can invalidate it on WSL2)
+        try:
+            os.getcwd()
+        except (FileNotFoundError, OSError):
+            os.chdir(os.path.expanduser("~"))
+
         from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, BrowserConfig, CacheMode  # type: ignore[import]
         from crawl4ai.extraction_strategy import JsonCssExtractionStrategy  # type: ignore[import]
         import json as _json
