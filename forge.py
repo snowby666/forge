@@ -208,17 +208,38 @@ async def cmd_scout(args):
             info(f"Closest: {top.name} at {top.score}/100")
         return
 
-    section(f"\n{len(qualified)} qualifying hackathons (score >= 65):")
-    for h in qualified[:5]:
-        prize_total = sum(p.amount or 0 for p in h.prizes)
-        sponsor_count = sum(1 for p in h.prizes if p.sponsor)
-        status = f"{GREEN}REGISTERED{RESET}" if not args.dry_run and h.registration_open else f"{YELLOW}DRY RUN{RESET}"
-        print(f"\n  {BOLD}{h.score:3d}/100{RESET}  {h.name}")
-        print(f"         {DIM}{h.days_until_deadline}d left · ${prize_total:,.0f} total · {sponsor_count} sponsor prizes · {status}{RESET}")
+    total_prize = sum(sum(p.amount or 0 for p in h.prizes) for h in qualified)
+    section(f"{len(qualified)} Qualifying Hackathons  (score >= 65 · ${total_prize:,.0f} total prize pool)")
+    print()
+    print(f"  {BOLD}{'#':>2}  {'SCORE':>5}  {'DAYS':>5}  {'PRIZE':>10}  STATUS      NAME{RESET}")
+    print(f"  {DIM}{'─' * 2}  {'─' * 5}  {'─' * 5}  {'─' * 10}  {'─' * 10}  {'─' * 35}{RESET}")
 
+    for idx, h in enumerate(qualified, 1):
+        prize_total = sum(p.amount or 0 for p in h.prizes)
+        status = f"{GREEN}REGISTERED{RESET}" if not args.dry_run and h.registration_open else f"{YELLOW}DRY RUN{RESET}"
+
+        if h.score >= 80:
+            sc = f"{GREEN}{BOLD}{h.score:>5}{RESET}"
+        elif h.score >= 65:
+            sc = f"{GREEN}{h.score:>5}{RESET}"
+        else:
+            sc = f"{YELLOW}{h.score:>5}{RESET}"
+
+        if isinstance(h.days_until_deadline, int) and h.days_until_deadline <= 3:
+            dc = f"{RED}{h.days_until_deadline:>4}d{RESET}"
+        elif isinstance(h.days_until_deadline, int) and h.days_until_deadline <= 7:
+            dc = f"{YELLOW}{h.days_until_deadline:>4}d{RESET}"
+        else:
+            dc = f"{DIM}{str(h.days_until_deadline):>4}d{RESET}"
+
+        name = h.name[:35]
+        print(f"  {DIM}{idx:>2}{RESET}  {sc}  {dc}  {'$' + f'{prize_total:,.0f}':>10}  {status:<10}  {name}")
+
+    print()
     if not args.dry_run:
         info("Calendar events scheduled. Check your Google Calendar.")
-        info("Run 'forge status' to see active hackathons.")
+    info(f"Run {BOLD}forge status{RESET} to see the full dashboard.")
+    info(f"Run {BOLD}forge ls{RESET} for a quick list of all tracked hackathons.")
 
 
 async def cmd_run(args):
@@ -243,17 +264,16 @@ async def cmd_run(args):
 
 
 async def cmd_status(args):
-    """Show live agent status for a hackathon."""
+    """Interactive dashboard showing ALL tracked hackathons + agent details."""
     from redis.asyncio import Redis
 
     redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
 
-    # Find hackathons
     if args.id:
         hackathon_ids = [args.id]
     else:
         keys = await redis.keys("hackathon:*:brief")
-        hackathon_ids = [k.split(":")[1] for k in keys]
+        hackathon_ids = sorted([k.split(":")[1] for k in keys])
 
     if not hackathon_ids:
         warn("No active hackathons. Run 'forge scout' to find some.")
@@ -262,69 +282,117 @@ async def cmd_status(args):
 
     from config.agents_config import ALL_AGENTS
 
-    for hackathon_id in hackathon_ids[:3]:
-        brief_raw = await redis.get(f"hackathon:{hackathon_id}:brief")
-        if not brief_raw:
-            continue
-        brief = json.loads(brief_raw)
+    # Load all briefs
+    briefs_data: list[tuple[str, dict]] = []
+    for hid in hackathon_ids:
+        raw = await redis.get(f"hackathon:{hid}:brief")
+        if raw:
+            briefs_data.append((hid, json.loads(raw)))
+    briefs_data.sort(key=lambda x: x[1].get("score", 0), reverse=True)
 
-        section(f"{brief.get('name', hackathon_id)}")
-        print(f"  {DIM}ID: {hackathon_id} · {brief.get('days_until_deadline', '?')}d remaining{RESET}\n")
+    # ── Scoreboard ────────────────────────────────────────────────────────
+    section(f"Hackathon Dashboard  ({len(briefs_data)} tracked)")
+    print()
+    print(f"  {BOLD}{'#':>2}  {'SCORE':>5}  {'DAYS':>5}  {'PRIZE':>10}  {'REG':>6}  NAME{RESET}")
+    print(f"  {DIM}{'─' * 2}  {'─' * 5}  {'─' * 5}  {'─' * 10}  {'─' * 6}  {'─' * 42}{RESET}")
 
-        # Group by layer
-        layer_agents = {
-            "intelligence": ["hackathon_scout", "competitor_analyst", "judge_profiler", "sponsor_researcher"],
-            "strategy":     ["strategy_director", "pm", "tech_architect"],
-            "design":       ["ui_ux_designer"],
-            "build":        ["frontend_engineer", "backend_engineer", "integration_engineer", "test_engineer", "devops", "security"],
-            "verify":       ["code_reviewer", "ux_auditor", "performance"],
-            "polish":       ["polish", "copy_writer", "data_seeder", "brand"],
-            "submission":   ["demo_producer", "pitch_writer", "submission"],
-            "infra":        ["memory_keeper", "monitor", "calendar", "knowledge_updater", "outcome_tracker"],
-        }
+    for idx, (hid, brief) in enumerate(briefs_data, 1):
+        score = brief.get("score", 0)
+        days = brief.get("days_until_deadline", "?")
+        prize = sum(p.get("amount") or 0 for p in brief.get("prizes", []))
+        participants = brief.get("total_participants")
+        name = brief.get("name", hid)[:42]
+        qualified = score >= 65
 
-        STATUS_ICONS = {
-            "done":        f"{GREEN}✓{RESET}",
-            "in-progress": f"{YELLOW}⟳{RESET}",
-            "pending":     f"{DIM}·{RESET}",
-            "failed":      f"{RED}✗{RESET}",
-            None:          f"{DIM}·{RESET}",
-        }
+        if score >= 80:
+            sc = f"{GREEN}{BOLD}{score:>5}{RESET}"
+        elif score >= 65:
+            sc = f"{GREEN}{score:>5}{RESET}"
+        elif score >= 50:
+            sc = f"{YELLOW}{score:>5}{RESET}"
+        else:
+            sc = f"{DIM}{score:>5}{RESET}"
 
-        for layer, agent_ids in layer_agents.items():
-            statuses = []
-            for agent_id in agent_ids:
-                raw = await redis.get(f"task:{hackathon_id}:{agent_id}")
-                task = json.loads(raw) if raw else {}
+        if isinstance(days, int) and days <= 3:
+            dc = f"{RED}{days:>4}d{RESET}"
+        elif isinstance(days, int) and days <= 7:
+            dc = f"{YELLOW}{days:>4}d{RESET}"
+        else:
+            dc = f"{DIM}{str(days):>4}d{RESET}"
+
+        reg_str = f"{participants:>6,}" if participants else f"{'—':>6}"
+        star = f" {GREEN}★{RESET}" if qualified else ""
+        print(f"  {DIM}{idx:>2}{RESET}  {sc}  {dc}  {'$' + f'{prize:,.0f}':>10}  {reg_str}  {name}{star}")
+
+    # Legend
+    print(f"\n  {DIM}{GREEN}★{RESET}{DIM} = qualifies (≥65)  ·  "
+          f"{RED}red{RESET}{DIM} = ≤3d left  ·  "
+          f"{YELLOW}yellow{RESET}{DIM} = ≤7d left{RESET}")
+
+    # ── Agent Detail ──────────────────────────────────────────────────────
+    detail_set = briefs_data if args.id else briefs_data[:5]
+    if not args.id and len(briefs_data) > 5:
+        print(f"\n  {DIM}Showing agent grid for top 5. Use {BOLD}forge status --id <ID>{RESET}{DIM} for details.{RESET}")
+
+    LAYER_AGENTS = {
+        "intelligence": ["hackathon_scout", "competitor_analyst", "judge_profiler", "sponsor_researcher"],
+        "strategy":     ["strategy_director", "pm", "tech_architect"],
+        "design":       ["ui_ux_designer"],
+        "build":        ["frontend_engineer", "backend_engineer", "integration_engineer", "test_engineer", "devops", "security"],
+        "verify":       ["code_reviewer", "ux_auditor", "performance"],
+        "polish":       ["polish", "copy_writer", "data_seeder", "brand"],
+        "submission":   ["demo_producer", "pitch_writer", "submission"],
+        "infra":        ["memory_keeper", "monitor", "calendar", "knowledge_updater", "outcome_tracker"],
+    }
+    ICONS = {
+        "done": f"{GREEN}✓{RESET}", "in-progress": f"{YELLOW}⟳{RESET}",
+        "pending": f"{DIM}·{RESET}", "failed": f"{RED}✗{RESET}", None: f"{DIM}·{RESET}",
+    }
+
+    for hackathon_id, brief in detail_set:
+        name = brief.get("name", hackathon_id)
+        score = brief.get("score", 0)
+        days = brief.get("days_until_deadline", "?")
+        url = brief.get("url", "")
+        platform = brief.get("platform", "")
+
+        print(f"\n  {'━' * 60}")
+        print(f"  {BOLD}{name}{RESET}  {DIM}{score}/100 · {days}d · {platform}{RESET}")
+        print(f"  {DIM}{url}{RESET}")
+        print(f"  {DIM}ID: {hackathon_id}{RESET}\n")
+
+        for layer, agent_ids in LAYER_AGENTS.items():
+            parts = []
+            for aid in agent_ids:
+                task_raw = await redis.get(f"task:{hackathon_id}:{aid}")
+                task = json.loads(task_raw) if task_raw else {}
                 status = task.get("status")
-                icon = STATUS_ICONS.get(status, STATUS_ICONS[None])
-                name = ALL_AGENTS[agent_id].name if agent_id in ALL_AGENTS else agent_id
-                statuses.append(f"{icon} {name}")
-            print(f"  {DIM}{layer:<12}{RESET}  {'  '.join(statuses)}")
+                icon = ICONS.get(status, ICONS[None])
+                aname = ALL_AGENTS[aid].name if aid in ALL_AGENTS else aid
+                parts.append(f"{icon} {aname}")
+            print(f"  {CYAN}{layer:<12}{RESET}  {'  '.join(parts)}")
 
-        # Check pending checkpoints
+        # Pending checkpoints
         for cp_name, cp_label in [
-            ("concept_approval", "Concept approval"),
-            ("design_approval", "Design approval"),
-            ("quality_review", "Quality review"),
-            ("submission_approval", "Submit approval"),
+            ("concept_approval", "Concept"), ("design_approval", "Design"),
+            ("quality_review", "Quality"), ("submission_approval", "Submit"),
         ]:
             cp_raw = await redis.get(f"checkpoint:{hackathon_id}:{cp_name}")
             if cp_raw == "pending":
                 short = cp_name.split("_")[0]
-                print(f"\n  {YELLOW}⚡ Waiting for you:{RESET} {cp_label} → 'forge approve {short} --id {hackathon_id}'")
+                print(f"\n  {YELLOW}⚡ ACTION NEEDED:{RESET} {cp_label} → {BOLD}forge approve {short} --id {hackathon_id}{RESET}")
 
-        # Cost summary (adapted from Claude Code's cost-tracker.ts)
         try:
             from config.forge_tools import get_run_cost_summary
             cost = await get_run_cost_summary(redis, hackathon_id)
             if cost["total_usd"] > 0:
                 top = sorted(cost["by_agent"].items(), key=lambda x: x[1]["cost_usd"], reverse=True)[:2]
                 top_str = ", ".join(f"{a}: ${v['cost_usd']:.3f}" for a, v in top)
-                print(f"  {DIM}Cost so far: ${cost['total_usd']:.3f} · {cost['total_tokens']:,} tokens · Top: {top_str}{RESET}")
+                print(f"\n  {DIM}Cost: ${cost['total_usd']:.3f} · {cost['total_tokens']:,} tokens · {top_str}{RESET}")
         except Exception:
             pass
 
+    print()
     await redis.aclose()
 
 
@@ -483,7 +551,7 @@ async def cmd_knowledge(args):
 
 
 async def cmd_ls(args):
-    """List all active hackathons."""
+    """List ALL active hackathons with quick stats."""
     from redis.asyncio import Redis
 
     redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
@@ -494,19 +562,58 @@ async def cmd_ls(args):
         await redis.aclose()
         return
 
-    section(f"Active hackathons ({len(keys)}):")
+    rows: list[tuple[str, dict]] = []
     for key in keys:
-        hackathon_id = key.split(":")[1]
-        brief_raw = await redis.get(key)
-        if not brief_raw:
-            continue
-        brief = json.loads(brief_raw)
+        hid = key.split(":")[1]
+        raw = await redis.get(key)
+        if raw:
+            rows.append((hid, json.loads(raw)))
+    rows.sort(key=lambda x: x[1].get("score", 0), reverse=True)
+
+    qualified = [r for r in rows if r[1].get("score", 0) >= 65]
+    total_prize = sum(sum(p.get("amount") or 0 for p in b.get("prizes", [])) for _, b in rows)
+
+    section(f"Active Hackathons  ({len(rows)} total · {len(qualified)} qualified · ${total_prize:,.0f} in prizes)")
+    print()
+    print(f"  {BOLD}{'#':>2}  {'SCORE':>5}  {'DAYS':>5}  {'PRIZE':>10}  NAME{RESET}")
+    print(f"  {DIM}{'─' * 2}  {'─' * 5}  {'─' * 5}  {'─' * 10}  {'─' * 42}{RESET}")
+
+    for idx, (hid, brief) in enumerate(rows, 1):
         score = brief.get("score", 0)
         days = brief.get("days_until_deadline", "?")
         prize = sum(p.get("amount") or 0 for p in brief.get("prizes", []))
-        print(f"  {BOLD}{hackathon_id}{RESET}")
-        print(f"    {brief.get('name')}  {DIM}score:{score} · {days}d · ${prize:,.0f}{RESET}")
+        name = brief.get("name", hid)[:40]
+        featured = brief.get("featured", False)
+        invite = brief.get("invite_only", False)
 
+        if score >= 80:
+            sc = f"{GREEN}{BOLD}{score:>5}{RESET}"
+        elif score >= 65:
+            sc = f"{GREEN}{score:>5}{RESET}"
+        elif score >= 50:
+            sc = f"{YELLOW}{score:>5}{RESET}"
+        else:
+            sc = f"{DIM}{score:>5}{RESET}"
+
+        if isinstance(days, int) and days <= 3:
+            dc = f"{RED}{days:>4}d{RESET}"
+        elif isinstance(days, int) and days <= 7:
+            dc = f"{YELLOW}{days:>4}d{RESET}"
+        else:
+            dc = f"{DIM}{str(days):>4}d{RESET}"
+
+        badges = ""
+        if featured:
+            badges += f" {GREEN}★{RESET}"
+        if invite:
+            badges += f" {RED}🔒{RESET}"
+        if score >= 65:
+            badges += f" {GREEN}GO{RESET}"
+
+        print(f"  {DIM}{idx:>2}{RESET}  {sc}  {dc}  {'$' + f'{prize:,.0f}':>10}  {name}{badges}")
+        print(f"      {' ' * 5}  {' ' * 5}  {' ' * 10}  {DIM}{hid}{RESET}")
+
+    print(f"\n  {DIM}Use {BOLD}forge status{RESET}{DIM} for agent grid · {BOLD}forge status --id <ID>{RESET}{DIM} for detail{RESET}")
     await redis.aclose()
 
 
@@ -606,8 +713,8 @@ def main():
     p_run.add_argument("--listen", action="store_true", help="Daemon mode — listen for Scout triggers")
 
     # status
-    p_status = sub.add_parser("status", help="Live view of all agent statuses")
-    p_status.add_argument("--id", metavar="HACKATHON_ID", help="Filter to specific hackathon")
+    p_status = sub.add_parser("status", help="Dashboard — scoreboard + agent grid for ALL hackathons")
+    p_status.add_argument("--id", metavar="HACKATHON_ID", help="Drill into a specific hackathon")
 
     # approve
     p_approve = sub.add_parser("approve", help="Human checkpoint interface")
@@ -623,7 +730,7 @@ def main():
     p_knowledge.add_argument("--dry-run", action="store_true", help="Preview without writing")
 
     # ls
-    sub.add_parser("ls", help="List active hackathons")
+    sub.add_parser("ls", help="Quick list of ALL active hackathons with scores")
 
     # test
     sub.add_parser("test", help="Run system health checks")
