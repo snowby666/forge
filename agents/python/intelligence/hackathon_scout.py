@@ -1108,8 +1108,33 @@ async def run_scout(
         f"{len(qualified)} qualify (score ≥ {min_score}) ═══"
     )
 
-    # Process top 3 qualified
-    for brief in qualified[:3]:
+    # ── Dedup: check which hackathon URLs are already tracked in Redis ──
+    existing_keys = await redis.keys("hackathon:*:brief")
+    existing_urls: set[str] = set()
+    for key in existing_keys:
+        raw_brief = await redis.get(key)
+        if raw_brief:
+            try:
+                existing_urls.add(json.loads(raw_brief).get("url", ""))
+            except Exception:
+                pass
+
+    new_qualified: list[HackathonBrief] = []
+    for brief in qualified:
+        if brief.url in existing_urls:
+            logger.info(f"[forge:scout] Skipping duplicate: {brief.name} ({brief.url})")
+            continue
+        new_qualified.append(brief)
+        existing_urls.add(brief.url)
+
+    if len(qualified) != len(new_qualified):
+        logger.info(
+            f"[forge:scout] Dedup: {len(qualified)} qualified → {len(new_qualified)} new "
+            f"({len(qualified) - len(new_qualified)} already tracked)"
+        )
+
+    # Process top 3 NEW qualified
+    for brief in new_qualified[:3]:
         await redis.set(f"hackathon:{brief.hackathon_id}:brief", brief.model_dump_json(), ex=604800)
         await memory.store_hackathon_brief(brief.hackathon_id, brief.model_dump())
 

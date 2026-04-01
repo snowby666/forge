@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
 import sys
 from datetime import datetime, timezone
 
@@ -44,13 +43,13 @@ def _check_auth(request: Request) -> bool:
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    if request.url.path in ("/login", "/health"):
+    public = ("/login", "/health")
+    if request.url.path in public:
         return await call_next(request)
-    if request.url.path.startswith("/api/") or request.url.path == "/":
-        if not _check_auth(request):
-            if request.url.path.startswith("/api/"):
-                return JSONResponse({"error": "unauthorized"}, status_code=401)
-            return RedirectResponse("/login")
+    if not _check_auth(request):
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return RedirectResponse("/login")
     return await call_next(request)
 
 
@@ -169,6 +168,26 @@ def _base(title: str, body: str) -> str:
   .concept-score {{ color: var(--dim); float: right; }}
   .concept-tagline {{ color: var(--dim); font-size: 0.85rem; margin-top: 4px; }}
   .empty {{ text-align: center; padding: 40px 16px; color: var(--dim); }}
+  .btn-sm {{
+    display: inline-block; padding: 6px 14px; border-radius: 8px;
+    font-size: 0.8rem; font-weight: 600; cursor: pointer; border: none;
+    text-decoration: none; transition: opacity 0.2s;
+  }}
+  .btn-sm:hover {{ opacity: 0.85; }}
+  .actions {{ display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }}
+  .confirm-overlay {{
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7); display: flex; align-items: center;
+    justify-content: center; z-index: 100; display: none;
+  }}
+  .confirm-box {{
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 24px; max-width: 400px; width: 90%;
+  }}
+  .confirm-box h3 {{ margin-bottom: 8px; }}
+  .confirm-box p {{ color: var(--dim); margin-bottom: 16px; font-size: 0.9rem; }}
+  .confirm-btns {{ display: flex; gap: 8px; }}
+  .confirm-btns .btn {{ flex: 1; margin-top: 0; }}
   .topbar {{
     display: flex; justify-content: space-between; align-items: center;
     margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--border);
@@ -271,22 +290,205 @@ async def dashboard(request: Request, token: str | None = None):
         body += f"<h2 style='margin-top:20px'>{len(hackathons)} hackathons</h2>"
         for h in hackathons[:10]:
             name = h["brief"].get("name", h["id"])[:60]
+            safe_name = name.replace("'", "\\'").replace('"', "&quot;")
             score = h["brief"].get("score", "?")
+            days = h["brief"].get("days_until_deadline", "?")
+            prize = h["brief"].get("prizes", [])
+            prize_total = sum(p.get("amount", 0) for p in prize if isinstance(p, dict))
+            prize_str = f"${prize_total:,.0f}" if prize_total else ""
+            hid = h["id"]
+            token_qs = f"?token={WEB_TOKEN}" if WEB_TOKEN else ""
             body += f"""
-            <div class="card">
+            <div class="card" id="hack-{hid}">
               <div class="card-title">{name}</div>
               <div class="card-meta">
                 <span class="badge badge-phase">{h['phase']}</span>
-                score: {score}
+                score: {score} &middot; {days}d left{(' &middot; ' + prize_str) if prize_str else ''}
+              </div>
+              <div class="actions">
+                <a href="/hackathon/{hid}{token_qs}" class="btn-sm btn-primary" style="background:var(--accent);color:#fff">Details</a>
+                <button class="btn-sm" style="background:var(--yellow);color:#000"
+                  onclick="confirmAction('Reroll concepts for {safe_name[:40]}?', 'This clears strategy &amp; design progress and re-generates concepts.', () => doReroll('{hid}'))">
+                  Reroll
+                </button>
+                <button class="btn-sm" style="background:var(--red);color:#fff"
+                  onclick="confirmAction('Delete {safe_name[:40]}?', 'This removes all data, tasks, and checkpoints for this hackathon.', () => doDelete('{hid}'))">
+                  Delete
+                </button>
               </div>
             </div>"""
 
+    body += """
+    <div class="confirm-overlay" id="confirm-overlay" onclick="if(event.target===this)closeConfirm()">
+      <div class="confirm-box">
+        <h3 id="confirm-title"></h3>
+        <p id="confirm-desc"></p>
+        <div class="confirm-btns">
+          <button class="btn btn-outline" onclick="closeConfirm()">Cancel</button>
+          <button class="btn btn-red" id="confirm-yes" onclick="">Confirm</button>
+        </div>
+      </div>
+    </div>
+    <script>
+      let _confirmCb = null;
+      function confirmAction(title, desc, cb) {
+        document.getElementById('confirm-title').textContent = title;
+        document.getElementById('confirm-desc').textContent = desc;
+        _confirmCb = cb;
+        document.getElementById('confirm-yes').onclick = () => { closeConfirm(); cb(); };
+        document.getElementById('confirm-overlay').style.display = 'flex';
+      }
+      function closeConfirm() {
+        document.getElementById('confirm-overlay').style.display = 'none';
+      }
+      async function doDelete(hid) {
+        const resp = await fetch('/api/hackathon/' + hid, { method: 'DELETE' });
+        if (resp.ok) {
+          const el = document.getElementById('hack-' + hid);
+          if (el) el.style.display = 'none';
+        } else {
+          alert('Error: ' + (await resp.json()).error);
+        }
+      }
+      async function doReroll(hid) {
+        const resp = await fetch('/api/hackathon/' + hid + '/reroll', { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+          alert('Concepts cleared. Run: forge run --id ' + hid + ' to regenerate.');
+          location.reload();
+        } else {
+          alert('Error: ' + (data.error || 'unknown'));
+        }
+      }
+    </script>"""
+
     return HTMLResponse(_base("Dashboard", body))
+
+
+@app.get("/hackathon/{hackathon_id}", response_class=HTMLResponse)
+async def hackathon_detail(hackathon_id: str, request: Request):
+    redis = get_redis()
+    name = hackathon_id
+    try:
+        brief_raw = await redis.get(f"hackathon:{hackathon_id}:brief")
+        if not brief_raw:
+            raise HTTPException(404, "Hackathon not found")
+        brief = json.loads(brief_raw)
+        name = brief.get("name", hackathon_id)
+
+        task_keys = await redis.keys(f"task:{hackathon_id}:*")
+        agents = {}
+        for tk in sorted(task_keys):
+            agent = tk.split(":")[-1]
+            raw = await redis.get(tk)
+            if raw:
+                try:
+                    agents[agent] = json.loads(raw).get("status", "?")
+                except Exception:
+                    agents[agent] = "?"
+
+        cp_keys = await redis.keys(f"checkpoint:{hackathon_id}:*")
+        checkpoints = {}
+        for ck in sorted(cp_keys):
+            cp_name = ck.split(":")[-1]
+            raw = await redis.get(ck)
+            if raw == "pending":
+                checkpoints[cp_name] = "pending"
+            elif raw:
+                try:
+                    checkpoints[cp_name] = "approved" if json.loads(raw).get("approved") else "?"
+                except Exception:
+                    checkpoints[cp_name] = "?"
+
+        score = brief.get("score", "?")
+        days = brief.get("days_until_deadline", "?")
+        theme = brief.get("theme", "")
+        url = brief.get("url", "")
+        token_qs = f"?token={WEB_TOKEN}" if WEB_TOKEN else ""
+
+        body = f"<h1>{name}</h1>"
+        body += f'<h2>Score: {score}/100 &middot; {days}d left</h2>'
+        if url:
+            body += f'<p><a href="{url}" target="_blank">{url}</a></p>'
+        if theme:
+            body += f'<p style="color:var(--dim);margin:8px 0">{theme[:200]}</p>'
+
+        body += f'<p style="margin:8px 0;color:var(--dim)"><code>{hackathon_id}</code></p>'
+
+        if checkpoints:
+            body += "<h2 style='margin-top:20px'>Checkpoints</h2>"
+            for cp_name, status in checkpoints.items():
+                label = CHECKPOINT_LABELS.get(cp_name, cp_name)
+                badge_cls = "badge-pending" if status == "pending" else "badge-approved"
+                body += f"""
+                <div class="card" style="padding:12px">
+                  <span>{label}</span>
+                  <span class="badge {badge_cls}" style="float:right">{status}</span>
+                </div>"""
+                if status == "pending":
+                    body += f'<a href="/approve/{hackathon_id}/{cp_name}{token_qs}" class="btn btn-green" style="margin-bottom:12px">Approve</a>'
+
+        if agents:
+            body += "<h2 style='margin-top:20px'>Agents</h2>"
+            for agent, status in agents.items():
+                icon = "✓" if status == "done" else "⟳" if status == "pending" else "✗" if status == "failed" else "·"
+                color = "var(--green)" if status == "done" else "var(--yellow)" if status == "pending" else "var(--red)" if status == "failed" else "var(--dim)"
+                body += f'<div style="padding:4px 0;font-size:0.9rem"><span style="color:{color}">{icon}</span> {agent} <span style="color:var(--dim);font-size:0.8rem">({status})</span></div>'
+
+        body += f"""
+        <div class="actions" style="margin-top:24px">
+          <button class="btn" style="background:var(--yellow);color:#000;flex:1"
+            onclick="confirmAction('Reroll concepts?', 'Clears strategy & design, re-generates concepts.', () => doReroll('{hackathon_id}'))">
+            Reroll Concepts
+          </button>
+          <button class="btn btn-red" style="flex:1"
+            onclick="confirmAction('Delete this hackathon?', 'Removes all data, tasks, and checkpoints.', () => doDelete('{hackathon_id}'))">
+            Delete
+          </button>
+        </div>
+        <a href="/" class="btn btn-outline" style="margin-top:8px">Back to dashboard</a>
+
+        <div class="confirm-overlay" id="confirm-overlay" onclick="if(event.target===this)closeConfirm()">
+          <div class="confirm-box">
+            <h3 id="confirm-title"></h3>
+            <p id="confirm-desc"></p>
+            <div class="confirm-btns">
+              <button class="btn btn-outline" onclick="closeConfirm()">Cancel</button>
+              <button class="btn btn-red" id="confirm-yes">Confirm</button>
+            </div>
+          </div>
+        </div>
+        <script>
+          function confirmAction(title, desc, cb) {{
+            document.getElementById('confirm-title').textContent = title;
+            document.getElementById('confirm-desc').textContent = desc;
+            document.getElementById('confirm-yes').onclick = () => {{ closeConfirm(); cb(); }};
+            document.getElementById('confirm-overlay').style.display = 'flex';
+          }}
+          function closeConfirm() {{ document.getElementById('confirm-overlay').style.display = 'none'; }}
+          async function doDelete(hid) {{
+            const resp = await fetch('/api/hackathon/' + hid, {{ method: 'DELETE' }});
+            if (resp.ok) window.location.href = '/';
+            else alert('Error: ' + (await resp.json()).error);
+          }}
+          async function doReroll(hid) {{
+            const resp = await fetch('/api/hackathon/' + hid + '/reroll', {{ method: 'POST' }});
+            if (resp.ok) {{ alert('Concepts cleared. Run forge to regenerate.'); location.reload(); }}
+            else alert('Error: ' + ((await resp.json()).error || 'unknown'));
+          }}
+        </script>"""
+
+    finally:
+        await redis.aclose()
+
+    return HTMLResponse(_base(name, body))
 
 
 @app.get("/approve/{hackathon_id}/{checkpoint}", response_class=HTMLResponse)
 async def approve_page(hackathon_id: str, checkpoint: str, request: Request):
     redis = get_redis()
+    label = CHECKPOINT_LABELS.get(checkpoint, checkpoint)
+    body = ""
     try:
         raw = await redis.get(f"checkpoint:{hackathon_id}:{checkpoint}")
         if not raw:
@@ -305,7 +507,6 @@ async def approve_page(hackathon_id: str, checkpoint: str, request: Request):
                 """
                 return HTMLResponse(_base("Approved", body))
 
-        label = CHECKPOINT_LABELS.get(checkpoint, checkpoint)
         body = f"<h1>{label}</h1><h2>{hackathon_id}</h2>"
 
         if checkpoint == "concept_approval":
@@ -394,6 +595,78 @@ async def api_hackathons():
     redis = get_redis()
     try:
         return await _get_hackathons(redis)
+    finally:
+        await redis.aclose()
+
+
+@app.delete("/api/hackathon/{hackathon_id}")
+async def api_delete_hackathon(hackathon_id: str):
+    """Delete a hackathon and all its Redis keys."""
+    redis = get_redis()
+    try:
+        brief_raw = await redis.get(f"hackathon:{hackathon_id}:brief")
+        if not brief_raw:
+            raise HTTPException(404, detail="Hackathon not found")
+
+        name = "?"
+        try:
+            name = json.loads(brief_raw).get("name", "?")
+        except Exception:
+            pass
+
+        deleted = 0
+        for pattern in [f"hackathon:{hackathon_id}:*", f"task:{hackathon_id}:*", f"checkpoint:{hackathon_id}:*"]:
+            keys = await redis.keys(pattern)
+            if keys:
+                deleted += await redis.delete(*keys)
+
+        return {"ok": True, "name": name, "keys_deleted": deleted}
+    finally:
+        await redis.aclose()
+
+
+@app.post("/api/hackathon/{hackathon_id}/reroll")
+async def api_reroll(hackathon_id: str):
+    """Clear strategy/design agent tasks and approvals so concepts can be regenerated."""
+    redis = get_redis()
+    try:
+        brief_raw = await redis.get(f"hackathon:{hackathon_id}:brief")
+        if not brief_raw:
+            raise HTTPException(404, detail="Hackathon not found")
+
+        name = json.loads(brief_raw).get("name", "?")
+
+        agents_to_clear = [
+            "strategy_director", "pm", "tech_architect", "ui_ux_designer",
+            "frontend_engineer", "backend_engineer", "integration_engineer",
+            "test_engineer", "devops", "security_agent",
+        ]
+        checkpoints_to_clear = ["concept_approval", "design_approval", "quality_review"]
+
+        cleared = 0
+        for agent in agents_to_clear:
+            key = f"task:{hackathon_id}:{agent}"
+            if await redis.exists(key):
+                await redis.delete(key)
+                cleared += 1
+        for cp in checkpoints_to_clear:
+            key = f"checkpoint:{hackathon_id}:{cp}"
+            if await redis.exists(key):
+                await redis.delete(key)
+                cleared += 1
+
+        # Clear stored concepts
+        concepts_key = f"hackathon:{hackathon_id}:concepts"
+        if await redis.exists(concepts_key):
+            await redis.delete(concepts_key)
+            cleared += 1
+
+        return {
+            "ok": True,
+            "name": name,
+            "keys_cleared": cleared,
+            "message": f"Cleared strategy/design state. Run: forge run --id {hackathon_id}",
+        }
     finally:
         await redis.aclose()
 

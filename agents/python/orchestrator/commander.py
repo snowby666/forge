@@ -1138,7 +1138,7 @@ async def run(
         existing = await checkpointer.aget(thread_config)
 
         if from_phase and existing:
-            saved_state = existing["channel_values"]
+            saved_state = {**existing["channel_values"]}
             saved_state["phase"] = from_phase
             node = PHASE_TO_NODE[from_phase]
             logger.info(

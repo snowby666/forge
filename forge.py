@@ -274,6 +274,93 @@ async def cmd_run(args):
         print("  Run 'forge ls' to see active hackathons")
 
 
+async def cmd_delete(args):
+    """Delete one or more hackathons from Redis (brief, tasks, checkpoints)."""
+    redis = get_redis()
+
+    ids_to_delete = args.ids if args.ids else ([args.id] if args.id else [])
+
+    if args.all:
+        keys = await redis.keys("hackathon:*:brief")
+        ids_to_delete = [k.split(":")[1] for k in keys]
+        if not ids_to_delete:
+            warn("No hackathons found.")
+            await redis.aclose()
+            return
+        if not args.yes:
+            print(f"  This will delete ALL {len(ids_to_delete)} hackathons. Are you sure? [y/N] ", end="", flush=True)
+            if input().strip().lower() != "y":
+                info("Cancelled.")
+                await redis.aclose()
+                return
+
+    if not ids_to_delete:
+        err("Specify --id <ID>, multiple IDs, or --all")
+        await redis.aclose()
+        return
+
+    for hid in ids_to_delete:
+        brief_raw = await redis.get(f"hackathon:{hid}:brief")
+        name = "?"
+        if brief_raw:
+            try:
+                name = json.loads(brief_raw).get("name", "?")
+            except Exception:
+                pass
+
+        patterns = [
+            f"hackathon:{hid}:*",
+            f"task:{hid}:*",
+            f"checkpoint:{hid}:*",
+        ]
+        deleted = 0
+        for pattern in patterns:
+            keys = await redis.keys(pattern)
+            if keys:
+                deleted += await redis.delete(*keys)
+
+        ok(f"Deleted {name} ({hid}) — {deleted} keys removed")
+
+    await redis.aclose()
+
+
+async def cmd_reroll(args):
+    """Re-generate concepts for a hackathon — restarts from strategy phase."""
+    from agents.python.orchestrator.commander import run
+
+    redis = get_redis()
+    brief_raw = await redis.get(f"hackathon:{args.id}:brief")
+    if not brief_raw:
+        err(f"Hackathon not found: {args.id}")
+        await redis.aclose()
+        return
+
+    brief = json.loads(brief_raw)
+    name = brief.get("name", "?")
+
+    task_keys = await redis.keys(f"task:{args.id}:strategy_director")
+    task_keys += await redis.keys(f"task:{args.id}:pm")
+    task_keys += await redis.keys(f"task:{args.id}:tech_architect")
+    task_keys += await redis.keys(f"task:{args.id}:ui_ux_designer")
+    cp_keys = await redis.keys(f"checkpoint:{args.id}:concept_approval")
+    cp_keys += await redis.keys(f"checkpoint:{args.id}:design_approval")
+    all_keys = task_keys + cp_keys
+    if all_keys:
+        await redis.delete(*all_keys)
+
+    await redis.aclose()
+
+    section(f"Rerolling concepts for: {name}")
+    info("Cleared strategy/design agent tasks and approvals")
+    info("Restarting from strategy phase (intelligence data preserved)")
+
+    result = await run(args.id, from_phase="strategy")
+    if result.get("submission_url"):
+        ok(f"Submitted: {result['submission_url']}")
+    else:
+        warn(f"Run ended in phase: {result.get('phase', 'unknown')}")
+
+
 async def cmd_status(args):
     """Interactive dashboard showing ALL tracked hackathons + agent details."""
     redis = get_redis()
@@ -771,6 +858,17 @@ def main():
         help="Jump to a specific phase (keeps state from prior phases)",
     )
 
+    # delete
+    p_delete = sub.add_parser("delete", help="Remove hackathon(s) from Forge (Redis keys + checkpoints)")
+    p_delete.add_argument("--id", metavar="HACKATHON_ID", help="Delete a single hackathon")
+    p_delete.add_argument("ids", nargs="*", metavar="ID", help="Delete multiple hackathons by ID")
+    p_delete.add_argument("--all", action="store_true", help="Delete ALL tracked hackathons")
+    p_delete.add_argument("-y", "--yes", action="store_true", help="Skip confirmation for --all")
+
+    # reroll
+    p_reroll = sub.add_parser("reroll", help="Re-generate concepts (clears strategy+design, restarts from strategy)")
+    p_reroll.add_argument("--id", required=True, metavar="HACKATHON_ID", help="Hackathon to reroll")
+
     # status
     p_status = sub.add_parser("status", help="Dashboard — scoreboard + agent grid for ALL hackathons")
     p_status.add_argument("--id", metavar="HACKATHON_ID", help="Drill into a specific hackathon")
@@ -835,6 +933,10 @@ def main():
             await cmd_scout(args)
         elif args.command == "run":
             await cmd_run(args)
+        elif args.command == "delete":
+            await cmd_delete(args)
+        elif args.command == "reroll":
+            await cmd_reroll(args)
         elif args.command == "status":
             await cmd_status(args)
         elif args.command == "approve":
