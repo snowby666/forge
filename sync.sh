@@ -49,4 +49,14 @@ source .venv/bin/activate
 pip install -e ".[dev]" --quiet 2>&1 | tail -1
 
 log "Done. $(date +%H:%M:%S)"
-log "${DIM}Run: cd ~/forge && source .venv/bin/activate && forge scout${NC}"
+
+# Auto-run forge if arguments were passed (e.g. bash sync.sh scout --shallow)
+if [[ $# -gt 0 ]]; then
+  log "Running: forge $*"
+  forge "$@"
+else
+  log "${DIM}Now run:${NC}"
+  echo ""
+  echo "  cd ~/forge && source .venv/bin/activate && forge scout"
+  echo ""
+fi
