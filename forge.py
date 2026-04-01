@@ -291,13 +291,23 @@ async def cmd_status(args):
             briefs_data.append((hid, json.loads(raw)))
     briefs_data.sort(key=lambda x: x[1].get("score", 0), reverse=True)
 
-    # ── Scoreboard ────────────────────────────────────────────────────────
-    section(f"Hackathon Dashboard  ({len(briefs_data)} tracked)")
-    print()
-    print(f"  {BOLD}{'#':>2}  {'SCORE':>5}  {'DAYS':>5}  {'PRIZE':>10}  {'REG':>6}  NAME{RESET}")
-    print(f"  {DIM}{'─' * 2}  {'─' * 5}  {'─' * 5}  {'─' * 10}  {'─' * 6}  {'─' * 42}{RESET}")
+    total_count = len(briefs_data)
+    per_page = getattr(args, "per_page", 15)
+    page = getattr(args, "page", 1)
+    total_pages = max(1, (total_count + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+    start_idx = (page - 1) * per_page
+    end_idx = min(start_idx + per_page, total_count)
+    page_data = briefs_data[start_idx:end_idx]
 
-    for idx, (hid, brief) in enumerate(briefs_data, 1):
+    # ── Scoreboard ────────────────────────────────────────────────────────
+    page_label = f"  page {page}/{total_pages}" if total_pages > 1 else ""
+    section(f"Hackathon Dashboard  ({total_count} tracked{page_label})")
+    print()
+    print(f"  {BOLD}{'#':>3}  {'SCORE':>5}  {'DAYS':>5}  {'PRIZE':>10}  {'REG':>6}  NAME{RESET}")
+    print(f"  {DIM}{'─' * 3}  {'─' * 5}  {'─' * 5}  {'─' * 10}  {'─' * 6}  {'─' * 42}{RESET}")
+
+    for idx, (hid, brief) in enumerate(page_data, start_idx + 1):
         score = brief.get("score", 0)
         days = brief.get("days_until_deadline", "?")
         prize = sum(p.get("amount") or 0 for p in brief.get("prizes", []))
@@ -323,17 +333,30 @@ async def cmd_status(args):
 
         reg_str = f"{participants:>6,}" if participants else f"{'—':>6}"
         star = f" {GREEN}★{RESET}" if qualified else ""
-        print(f"  {DIM}{idx:>2}{RESET}  {sc}  {dc}  {'$' + f'{prize:,.0f}':>10}  {reg_str}  {name}{star}")
+        print(f"  {DIM}{idx:>3}{RESET}  {sc}  {dc}  {'$' + f'{prize:,.0f}':>10}  {reg_str}  {name}{star}")
 
-    # Legend
+    # Legend + pagination nav
     print(f"\n  {DIM}{GREEN}★{RESET}{DIM} = qualifies (≥65)  ·  "
           f"{RED}red{RESET}{DIM} = ≤3d left  ·  "
           f"{YELLOW}yellow{RESET}{DIM} = ≤7d left{RESET}")
 
+    if total_pages > 1:
+        nav_parts = []
+        if page > 1:
+            nav_parts.append(f"{BOLD}forge status -p {page - 1}{RESET}{DIM}")
+        nav_parts.append(f"page {page}/{total_pages}")
+        if page < total_pages:
+            nav_parts.append(f"{BOLD}forge status -p {page + 1}{RESET}{DIM}")
+        print(f"  {DIM}◀ {'  ·  '.join(nav_parts)} ▶{RESET}")
+
     # ── Agent Detail ──────────────────────────────────────────────────────
-    detail_set = briefs_data if args.id else briefs_data[:5]
-    if not args.id and len(briefs_data) > 5:
-        print(f"\n  {DIM}Showing agent grid for top 5. Use {BOLD}forge status --id <ID>{RESET}{DIM} for details.{RESET}")
+    if args.id:
+        detail_set = briefs_data
+    else:
+        detail_set = page_data[:5]
+        if len(page_data) > 5:
+            print(f"\n  {DIM}Showing agent grid for top 5 on this page. "
+                  f"Use {BOLD}forge status --id <ID>{RESET}{DIM} for details.{RESET}")
 
     LAYER_AGENTS = {
         "intelligence": ["hackathon_scout", "competitor_analyst", "judge_profiler", "sponsor_researcher"],
@@ -574,12 +597,26 @@ async def cmd_ls(args):
     qualified = [r for r in rows if r[1].get("score", 0) >= 65]
     total_prize = sum(sum(p.get("amount") or 0 for p in b.get("prizes", [])) for _, b in rows)
 
-    section(f"Active Hackathons  ({len(rows)} total · {len(qualified)} qualified · ${total_prize:,.0f} in prizes)")
-    print()
-    print(f"  {BOLD}{'#':>2}  {'SCORE':>5}  {'DAYS':>5}  {'PRIZE':>10}  NAME{RESET}")
-    print(f"  {DIM}{'─' * 2}  {'─' * 5}  {'─' * 5}  {'─' * 10}  {'─' * 42}{RESET}")
+    total_count = len(rows)
+    show_all = getattr(args, "show_all", False)
+    per_page = total_count if show_all else getattr(args, "per_page", 20)
+    page = 1 if show_all else getattr(args, "page", 1)
+    total_pages = max(1, (total_count + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+    start_idx = (page - 1) * per_page
+    end_idx = min(start_idx + per_page, total_count)
+    page_rows = rows[start_idx:end_idx]
 
-    for idx, (hid, brief) in enumerate(rows, 1):
+    page_label = f"  page {page}/{total_pages}" if total_pages > 1 else ""
+    section(
+        f"Active Hackathons  ({total_count} total · {len(qualified)} qualified "
+        f"· ${total_prize:,.0f} in prizes{page_label})"
+    )
+    print()
+    print(f"  {BOLD}{'#':>3}  {'SCORE':>5}  {'DAYS':>5}  {'PRIZE':>10}  NAME{RESET}")
+    print(f"  {DIM}{'─' * 3}  {'─' * 5}  {'─' * 5}  {'─' * 10}  {'─' * 42}{RESET}")
+
+    for idx, (hid, brief) in enumerate(page_rows, start_idx + 1):
         score = brief.get("score", 0)
         days = brief.get("days_until_deadline", "?")
         prize = sum(p.get("amount") or 0 for p in brief.get("prizes", []))
@@ -611,9 +648,19 @@ async def cmd_ls(args):
         if score >= 65:
             badges += f" {GREEN}GO{RESET}"
 
-        print(f"  {DIM}{idx:>2}{RESET}  {sc}  {dc}  {'$' + f'{prize:,.0f}':>10}  {name}{badges}")
+        print(f"  {DIM}{idx:>3}{RESET}  {sc}  {dc}  {'$' + f'{prize:,.0f}':>10}  {name}{badges}")
         print(f"      {' ' * 5}  {' ' * 5}  {' ' * 10}  {DIM}{hid}{RESET}")
 
+    # Pagination nav
+    if total_pages > 1:
+        nav_parts = []
+        if page > 1:
+            nav_parts.append(f"{BOLD}forge ls -p {page - 1}{RESET}{DIM}")
+        nav_parts.append(f"page {page}/{total_pages}")
+        if page < total_pages:
+            nav_parts.append(f"{BOLD}forge ls -p {page + 1}{RESET}{DIM}")
+        print(f"\n  {DIM}◀ {'  ·  '.join(nav_parts)} ▶{RESET}")
+        print(f"  {DIM}Show all: {BOLD}forge ls --all{RESET}")
     print(f"\n  {DIM}Use {BOLD}forge status{RESET}{DIM} for agent grid · {BOLD}forge status --id <ID>{RESET}{DIM} for detail{RESET}")
     await redis.aclose()
 
@@ -719,6 +766,8 @@ def main():
     # status
     p_status = sub.add_parser("status", help="Dashboard — scoreboard + agent grid for ALL hackathons")
     p_status.add_argument("--id", metavar="HACKATHON_ID", help="Drill into a specific hackathon")
+    p_status.add_argument("--page", "-p", type=int, default=1, help="Page number (default: 1)")
+    p_status.add_argument("--per-page", "-n", type=int, default=15, help="Hackathons per page (default: 15)")
 
     # approve
     p_approve = sub.add_parser("approve", help="Human checkpoint interface")
@@ -734,7 +783,10 @@ def main():
     p_knowledge.add_argument("--dry-run", action="store_true", help="Preview without writing")
 
     # ls
-    sub.add_parser("ls", help="Quick list of ALL active hackathons with scores")
+    p_ls = sub.add_parser("ls", help="Quick list of ALL active hackathons with scores")
+    p_ls.add_argument("--page", "-p", type=int, default=1, help="Page number (default: 1)")
+    p_ls.add_argument("--per-page", "-n", type=int, default=20, help="Hackathons per page (default: 20)")
+    p_ls.add_argument("--all", "-a", action="store_true", dest="show_all", help="Show all (no pagination)")
 
     # test
     sub.add_parser("test", help="Run system health checks")
