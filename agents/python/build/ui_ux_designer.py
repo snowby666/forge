@@ -120,39 +120,63 @@ class DesignTokensOutput(BaseModel):
 
 # ── Google Stitch integration ─────────────────────────────────────────────────
 
+_stitch_tokens: list[str] = []
+_stitch_idx = 0
+
+def _get_stitch_token() -> str | None:
+    """Round-robin across all available Stitch tokens."""
+    global _stitch_tokens, _stitch_idx
+    if not _stitch_tokens:
+        raw = os.environ.get("GOOGLE_STITCH_TOKENS") or os.environ.get("GOOGLE_STITCH_TOKEN", "")
+        _stitch_tokens = [t.strip() for t in raw.split(",") if t.strip()]
+    if not _stitch_tokens:
+        return None
+    token = _stitch_tokens[_stitch_idx % len(_stitch_tokens)]
+    _stitch_idx = (_stitch_idx + 1) % len(_stitch_tokens)
+    return token
+
 async def call_google_stitch(prompt: str, personality: str) -> list[dict]:
-    """Generate design directions via Google Stitch API."""
-    token = os.environ.get("GOOGLE_STITCH_TOKEN")
+    """Generate design directions via Google Stitch API with token rotation."""
+    token = _get_stitch_token()
     if not token:
-        logger.warning("[forge:design] GOOGLE_STITCH_TOKEN not set — using ElectronHub fallback")
+        logger.warning("[forge:design] No GOOGLE_STITCH_TOKENS set — using ElectronHub fallback")
         return []
 
     personality_data = DESIGN_PERSONALITIES.get(personality, {})
+    max_attempts = min(len(_stitch_tokens), 3)
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://stitch.google.com/api/generate",
-                headers={"Authorization": f"Bearer {token}"},
-                json={
-                    "prompt": f"{prompt}. "
-                              f"Aesthetic: {personality_data.get('description', '')}. "
-                              f"Background: {personality_data.get('background_base', '#ffffff')}. "
-                              f"IMPORTANT: {personality_data.get('accent_style', 'clean and professional')}. "
-                              f"AVOID: {', '.join(personality_data.get('anti_patterns', []))}.",
-                    "screens": 5,
-                    "platform": "web",
-                    "style": personality,
-                },
-                timeout=aiohttp.ClientTimeout(total=120),
-            ) as resp:
-                if resp.status != 200:
-                    return []
-                data = await resp.json()
-                return data.get("screens", [])
-    except Exception as e:
-        logger.warning(f"[forge:design] Stitch API error: {e}")
-        return []
+    for attempt in range(max_attempts):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://stitch.google.com/api/generate",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={
+                        "prompt": f"{prompt}. "
+                                  f"Aesthetic: {personality_data.get('description', '')}. "
+                                  f"Background: {personality_data.get('background_base', '#ffffff')}. "
+                                  f"IMPORTANT: {personality_data.get('accent_style', 'clean and professional')}. "
+                                  f"AVOID: {', '.join(personality_data.get('anti_patterns', []))}.",
+                        "screens": 5,
+                        "platform": "web",
+                        "style": personality,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    if resp.status == 429:
+                        logger.warning(f"[forge:design] Stitch token rate-limited, rotating")
+                        token = _get_stitch_token()
+                        continue
+                    if resp.status != 200:
+                        logger.warning(f"[forge:design] Stitch API returned {resp.status}")
+                        return []
+                    data = await resp.json()
+                    return data.get("screens", [])
+        except Exception as e:
+            logger.warning(f"[forge:design] Stitch API error: {e}")
+            token = _get_stitch_token()
+            continue
+    return []
 
 
 # ── Figma MCP integration ─────────────────────────────────────────────────────
