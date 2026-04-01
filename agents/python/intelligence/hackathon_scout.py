@@ -446,77 +446,91 @@ async def deep_scrape_hackathon(brief: HackathonBrief) -> HackathonBrief:
 
 # ── Phase 3: Community Intel ──────────────────────────────────────────────────
 
+COMMUNITY_PATTERNS = {
+    "discord": re.compile(r"discord\.(gg|com)", re.I),
+    "reddit": re.compile(r"reddit\.com", re.I),
+    "twitter": re.compile(r"(twitter|x)\.com", re.I),
+    "slack": re.compile(r"slack\.(com|to)", re.I),
+    "telegram": re.compile(r"t\.me", re.I),
+    "youtube": re.compile(r"youtube\.com|youtu\.be", re.I),
+    "github": re.compile(r"github\.com", re.I),
+    "blog": re.compile(r"medium\.com|dev\.to|hashnode|substack", re.I),
+}
+
+
+async def _fast_searxng(query: str, max_results: int = 10) -> list[dict]:
+    """Direct SearXNG query — local Docker, ~1-2s, no rate limits."""
+    base_url = os.environ.get("SEARXNG_URL", "http://localhost:8081").rstrip("/")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{base_url}/search",
+                params={"q": query, "format": "json", "language": "en", "safesearch": "0"},
+                headers={"Accept": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+                return [
+                    {"title": r.get("title", ""), "url": r.get("url", "")}
+                    for r in data.get("results", [])[:max_results]
+                    if r.get("url")
+                ]
+    except Exception as e:
+        logger.debug(f"[forge:scout:community] SearXNG error: {e}")
+        return []
+
+
 async def discover_community(brief: HackathonBrief) -> HackathonBrief:
     """
-    Search the web for Discord, Reddit, Twitter, Slack, GitHub, blog posts
-    related to this hackathon. Builds the community_links list.
+    Find community links (Discord, Reddit, etc.) for a hackathon.
+
+    Strategy (fast path first):
+      1. Links already extracted from HTML in Phase 2 — free, instant
+      2. Single SearXNG query (local Docker, ~1-2s) — covers Google/Bing/DDG
+      3. Only if SearXNG unavailable: fall back to ddgs (slow)
     """
-    logger.info(f"[forge:scout:community] Searching for community around: {brief.name}")
-
-    # Already found some links from the detail page — track URLs to avoid dupes
     known_urls = {cl.url for cl in brief.community_links}
+    query = f'"{brief.name}" discord OR reddit OR slack OR github OR twitter'
+    logger.info(f"[forge:scout:community] {brief.name[:40]}: searching ({len(known_urls)} links from HTML)")
 
-    search_queries = [
-        f'"{brief.name}" discord OR reddit OR slack OR telegram',
-        f'"{brief.name}" hackathon twitter OR blog OR announcement',
-        f'"{brief.name}" github OR devpost OR youtube',
-    ]
+    results: list[dict] = []
 
-    try:
-        from config.web_search import web_search, SearchResult
+    # Fast path: SearXNG (local, ~1-2s)
+    results = await _fast_searxng(query, max_results=15)
+    if results:
+        logger.info(f"[forge:scout:community]   SearXNG: {len(results)} results in <2s")
+    else:
+        # Fallback: ddgs (slow, but works without Docker)
+        logger.info(f"[forge:scout:community]   SearXNG unavailable, trying ddgs...")
+        try:
+            from config.web_search import web_search
+            batch = await asyncio.wait_for(web_search(query, max_results=10), timeout=15.0)
+            results = [{"title": r.title, "url": r.url} for r in batch]
+            logger.info(f"[forge:scout:community]   ddgs: {len(results)} results")
+        except Exception as e:
+            logger.warning(f"[forge:scout:community]   ddgs failed: {e}")
 
-        for i, q in enumerate(search_queries, 1):
-            logger.info(f"[forge:scout:community]   query {i}/{len(search_queries)}: {q[:80]}")
+    new_links = 0
+    for r in results:
+        url = r.get("url", "")
+        if url in known_urls:
+            continue
+        for platform, pattern in COMMUNITY_PATTERNS.items():
+            if pattern.search(url):
+                brief.community_links.append(CommunityLink(
+                    platform=platform, url=url, description=r.get("title", "")[:120],
+                ))
+                known_urls.add(url)
+                new_links += 1
+                logger.info(f"[forge:scout:community]   + [{platform}] {url[:80]}")
+                break
 
-        tasks = [asyncio.wait_for(web_search(q, max_results=5), timeout=30.0) for q in search_queries]
-        results_batches = await asyncio.gather(*tasks, return_exceptions=True)
-
-        all_results: list[SearchResult] = []
-        for i, batch in enumerate(results_batches):
-            query_short = search_queries[i][:50]
-            if isinstance(batch, list):
-                all_results.extend(batch)
-                logger.info(f"[forge:scout:community]   ✓ query {i+1}: {len(batch)} results — {query_short}")
-            elif isinstance(batch, (asyncio.TimeoutError, TimeoutError)):
-                logger.warning(f"[forge:scout:community]   ✗ query {i+1}: TIMEOUT (30s) — {query_short}")
-            elif isinstance(batch, Exception):
-                logger.warning(f"[forge:scout:community]   ✗ query {i+1}: {type(batch).__name__}: {batch} — {query_short}")
-
-        platform_patterns = {
-            "discord": r"discord\.(gg|com)",
-            "reddit": r"reddit\.com",
-            "twitter": r"(twitter|x)\.com",
-            "slack": r"slack\.(com|to)",
-            "telegram": r"t\.me",
-            "youtube": r"youtube\.com|youtu\.be",
-            "github": r"github\.com",
-            "blog": r"medium\.com|dev\.to|hashnode|substack",
-        }
-
-        new_links = 0
-        for result in all_results:
-            if result.url in known_urls:
-                continue
-            for platform, pattern in platform_patterns.items():
-                if re.search(pattern, result.url, re.I):
-                    brief.community_links.append(CommunityLink(
-                        platform=platform,
-                        url=result.url,
-                        description=result.title[:120],
-                    ))
-                    known_urls.add(result.url)
-                    new_links += 1
-                    logger.info(f"[forge:scout:community]   + [{platform}] {result.url[:80]}")
-                    break
-
-        logger.info(
-            f"[forge:scout:community] {brief.name[:40]}: "
-            f"+{new_links} new links ({len(brief.community_links)} total)"
-        )
-
-    except Exception as e:
-        logger.warning(f"[forge:scout:community] Search failed for {brief.name}: {e}")
-
+    logger.info(
+        f"[forge:scout:community] {brief.name[:40]}: "
+        f"+{new_links} new ({len(brief.community_links)} total)"
+    )
     return brief
 
 
@@ -598,46 +612,40 @@ async def research_hackathon(brief: HackathonBrief) -> HackathonBrief:
             f"{brief.name} hackathon tutorial getting started",
         ]
 
+    # Fast path: SearXNG for all queries in parallel (~2s total)
     try:
-        from config.web_search import deep_search, SearchResult
-
-        search_tasks = [
-            asyncio.wait_for(deep_search(q, max_results=5, expand_queries=False, rerank=False), timeout=30.0)
-            for q in queries[:4]
-        ]
+        search_tasks = [_fast_searxng(q, max_results=8) for q in queries[:4]]
         results_batches = await asyncio.gather(*search_tasks, return_exceptions=True)
 
         known_urls = {r.url for r in brief.research}
         for batch in results_batches:
-            if isinstance(batch, Exception):
+            if not isinstance(batch, list):
                 continue
-            results, stats = batch
-            for result in results:
-                if result.url in known_urls:
+            for r in batch:
+                url = r.get("url", "")
+                title = r.get("title", "")
+                if not url or url in known_urls:
                     continue
 
                 source = "blog"
-                if "arxiv" in result.url:
+                if "arxiv" in url:
                     source = "arxiv"
-                elif "github.com" in result.url:
+                elif "github.com" in url:
                     source = "github"
-                elif "docs." in result.url or "documentation" in result.url.lower():
+                elif "docs." in url or "documentation" in url.lower():
                     source = "docs"
-                elif "tutorial" in result.title.lower() or "guide" in result.title.lower():
+                elif "tutorial" in title.lower() or "guide" in title.lower():
                     source = "tutorial"
 
                 brief.research.append(ResearchItem(
-                    title=result.title[:150],
-                    url=result.url,
-                    source=source,
-                    relevance=result.snippet[:200],
-                    snippet=result.snippet[:300],
+                    title=title[:150], url=url, source=source,
+                    relevance=title[:200],
                 ))
-                known_urls.add(result.url)
+                known_urls.add(url)
 
         logger.info(
-            f"[forge:scout:research] {brief.name}: "
-            f"found {len(brief.research)} research items "
+            f"[forge:scout:research] {brief.name[:40]}: "
+            f"{len(brief.research)} items "
             f"({sum(1 for r in brief.research if r.source == 'arxiv')} papers, "
             f"{sum(1 for r in brief.research if r.source == 'github')} repos, "
             f"{sum(1 for r in brief.research if r.source == 'docs')} docs)"
