@@ -15,9 +15,9 @@ from pathlib import Path
 
 from daytona_sdk import Daytona, DaytonaConfig, CreateWorkspaceParams, CodeLanguage
 from pydantic import BaseModel
-from redis.asyncio import Redis
 
 from config.electronhub import complete, complete_batch
+from config.redis_client import get_redis
 from config.agents_config import ALL_AGENTS
 from config.design_constitution import SYSTEM_PROMPT_FRONTEND_AGENT
 
@@ -286,7 +286,7 @@ async def run_backend_engineer(
     daytona = get_daytona()
     repo_name = f"hack-{hackathon_id[:8]}-backend"
     repo_path = f"/workspace/{repo_name}"
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
 
     workspace = await daytona.create(CreateWorkspaceParams(
         language=CodeLanguage.PYTHON,
@@ -452,7 +452,7 @@ async def health() -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def run_frontend_worker() -> None:
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     pubsub = redis.pubsub()
     await pubsub.subscribe("agent:trigger", "agent:api_contract_ready", "agent:api_contract_delta")
     logger.info("[forge:frontend] Worker ready — waiting for API contract to start")
@@ -541,7 +541,7 @@ Output only the complete src/lib/api.ts file.""",
 
 
 async def run_backend_worker() -> None:
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     pubsub = redis.pubsub()
     await pubsub.subscribe("agent:trigger")
     logger.info("[forge:backend] Worker ready")

@@ -10,10 +10,11 @@ All commands use the `forge` executable at the project root. Run `pip install -e
 graph LR
     CLI["./forge"] --> SCOUT["scout\nDiscover hackathons"]
     CLI --> RUN["run\nFull build cycle"]
-    CLI --> STATUS["status\nLive agent view"]
+    CLI --> STATUS["status\nLive agent view\n-p / -n pagination"]
     CLI --> APPROVE["approve\nHuman checkpoints"]
     CLI --> KNOWLEDGE["knowledge\nUpdate intelligence"]
-    CLI --> LS["ls\nList active hackathons"]
+    CLI --> LS["ls\nList active hackathons\n-p / -n / -a"]
+    CLI --> CAL["calendar-auth\ncalendar-test"]
     CLI --> TEST["test\nHealth checks"]
 ```
 
@@ -55,7 +56,7 @@ Found 4 qualifying hackathons:
 1. `POST /scrape` to browser layer — scrapes Devpost, Lablab, Devfolio
 2. Each hackathon scored via ElectronHub (theme fit is LLM-scored)
 3. Top 3 qualifying hackathons: stored in Redis + Qdrant, registered via `POST /register`
-4. Calendar events created via n8n → Google Calendar
+4. Calendar events created via Google Calendar API (service account)
 5. `commander:new_hackathon` published to Redis — triggers Commander
 
 ---
@@ -82,6 +83,8 @@ Live view of all 30 agent statuses for active hackathons.
 ```bash
 forge status          # show all active hackathons
 forge status --id devpost-123  # show specific hackathon
+forge status -p 2     # page number (--page N)
+forge status -n 25    # hackathons per page (--per-page N)
 ```
 
 **Output:**
@@ -226,6 +229,9 @@ Lists all hackathons Forge is currently tracking.
 
 ```bash
 forge ls
+forge ls -p 2      # page number (--page N)
+forge ls -n 50     # items per page (--per-page N)
+forge ls -a        # show all without pagination (--all)
 ```
 
 **Output:**
@@ -241,6 +247,28 @@ Active hackathons (3):
   devfolio-789
     Healthcare AI Hackathon  score:68 · 11d · $12,000
 ```
+
+---
+
+## `forge calendar-auth`
+
+Prints **Google Calendar service account** setup instructions (credentials path, calendar sharing, one-time steps). Run once when wiring calendar integration.
+
+```bash
+forge calendar-auth
+```
+
+---
+
+## `forge calendar-test`
+
+Creates a **test calendar event** to verify Google Calendar connectivity after setup.
+
+```bash
+forge calendar-test
+```
+
+If this fails, run `forge calendar-auth` and complete the documented steps first.
 
 ---
 

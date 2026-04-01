@@ -19,9 +19,9 @@ import os
 
 import aiohttp
 from pydantic import BaseModel
-from redis.asyncio import Redis
 
 from config.electronhub import complete_json
+from config.redis_client import get_redis
 from config.agents_config import ALL_AGENTS
 from config.design_constitution import DESIGN_CRITIQUE_RUBRIC, ANTI_SLOP_RULES
 
@@ -276,7 +276,7 @@ async def run_ux_audit(
 # ── Redis worker ──────────────────────────────────────────────────────────────
 
 async def run_worker() -> None:
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     pubsub = redis.pubsub()
     await pubsub.subscribe("agent:trigger")
 

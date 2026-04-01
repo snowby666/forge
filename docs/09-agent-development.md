@@ -61,9 +61,9 @@ Consumes: ProjectPlan
 Produces: MyNewArtifact
 """
 from __future__ import annotations
-import asyncio, json, logging, os
+import asyncio, json, logging
 from pydantic import BaseModel
-from redis.asyncio import Redis
+from config.redis_client import get_redis
 from config.electronhub import complete_json
 from config.agents_config import ALL_AGENTS
 
@@ -93,7 +93,7 @@ async def run_my_new_agent(
 
 
 async def run_worker() -> None:
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     pubsub = redis.pubsub()
     await pubsub.subscribe("agent:trigger")
     logger.info("[forge:my_new_agent] Worker ready")
@@ -231,13 +231,14 @@ redis-cli -a $REDIS_PASSWORD get "task:devpost-123:ui_ux_designer"
 
 ```python
 # Manually trigger any agent for testing:
-import asyncio, os, json
-from redis.asyncio import Redis
+import asyncio, json
 from dotenv import load_dotenv
+from config.redis_client import get_redis
+
 load_dotenv()
 
 async def test_agent():
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     
     # Read the brief from Redis
     brief = json.loads(await redis.get("hackathon:devpost-123:brief"))

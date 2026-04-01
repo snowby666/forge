@@ -25,6 +25,7 @@ import sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config.redis_client import get_redis
 from dotenv import load_dotenv
 load_dotenv()
 # Also load forge.secrets (env vars take precedence)
@@ -266,9 +267,7 @@ async def cmd_run(args):
 
 async def cmd_status(args):
     """Interactive dashboard showing ALL tracked hackathons + agent details."""
-    from redis.asyncio import Redis
-
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
 
     if args.id:
         hackathon_ids = [args.id]
@@ -422,9 +421,7 @@ async def cmd_status(args):
 
 async def cmd_approve(args):
     """Human checkpoint interface."""
-    from redis.asyncio import Redis
-
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
 
     checkpoint = args.checkpoint
     hackathon_id = args.id
@@ -498,8 +495,7 @@ async def cmd_approve(args):
 
 async def cmd_plan(args):
     """Show the build plan for a hackathon run (Feature 6: /ultraplan)."""
-    from redis.asyncio import Redis
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
 
     hackathon_id = args.id
     if not hackathon_id:
@@ -576,9 +572,7 @@ async def cmd_knowledge(args):
 
 async def cmd_ls(args):
     """List ALL active hackathons with quick stats."""
-    from redis.asyncio import Redis
-
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     keys = await redis.keys("hackathon:*:brief")
 
     if not keys:
@@ -696,8 +690,7 @@ async def cmd_test(args):
 
     # Redis
     try:
-        from redis.asyncio import Redis
-        r = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+        r = get_redis()
         await r.ping()
         await r.aclose()
         checks.append(("Redis", True))
@@ -792,7 +785,7 @@ def main():
     sub.add_parser("test", help="Run system health checks")
 
     # calendar
-    sub.add_parser("calendar-auth", help="One-time Google Calendar OAuth authorization")
+    sub.add_parser("calendar-auth", help="Google Calendar service account setup & verification")
     sub.add_parser("calendar-test", help="Create a test event to verify Google Calendar works")
 
     args = parser.parse_args()

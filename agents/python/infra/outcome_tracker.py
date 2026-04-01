@@ -30,10 +30,9 @@ from pathlib import Path
 
 import aiohttp
 from pydantic import BaseModel
-from redis.asyncio import Redis
-
 from config.electronhub import complete, complete_json
 from config.agents_config import ALL_AGENTS
+from config.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 AGENT = ALL_AGENTS["outcome_tracker"]
@@ -316,7 +315,7 @@ async def store_outcome_and_close_loop(
         )
 
     # Feed learning signal into LIVING_KNOWLEDGE via Knowledge Updater mechanism
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     await redis.rpush("forge:outcome_signals", json.dumps({
         "hackathon": result.hackathon_name,
         "signal": analysis.knowledge_update_signal,
@@ -335,7 +334,7 @@ async def run_outcome_tracker(
     hackathon_id: str,
     retry_if_no_results: bool = True,
 ) -> HackathonResult | None:
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
 
     # Load all context from Redis
     brief_raw    = await redis.get(f"hackathon:{hackathon_id}:brief")
@@ -380,7 +379,7 @@ async def run_outcome_tracker(
     if not result.results_available and retry_if_no_results:
         logger.info(f"[forge:outcome] Results not posted yet — will retry in 6 hours")
         # Schedule retry via Redis with TTL
-        redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+        redis = get_redis()
         await redis.set(
             f"outcome:retry:{hackathon_id}",
             json.dumps({"retry_at": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat()}),
@@ -421,7 +420,7 @@ async def run_outcome_tracker(
 # ── Redis worker ──────────────────────────────────────────────────────────────
 
 async def run_worker() -> None:
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     pubsub = redis.pubsub()
     await pubsub.subscribe("agent:trigger", "forge:check_outcomes")
     logger.info("[forge:outcome] Outcome Tracker worker ready")
@@ -431,7 +430,7 @@ async def run_worker() -> None:
         while True:
             await asyncio.sleep(3600)  # check every hour
             try:
-                redis2 = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+                redis2 = get_redis()
                 retry_keys = await redis2.keys("outcome:retry:*")
                 now = datetime.now(timezone.utc)
                 for key in retry_keys:

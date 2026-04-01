@@ -23,10 +23,9 @@ from typing import Any
 
 import aiohttp
 from pydantic import BaseModel, Field
-from redis.asyncio import Redis
-
-from config.electronhub import complete, complete_json
 from config.agents_config import ALL_AGENTS
+from config.electronhub import complete, complete_json
+from config.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 AGENT = ALL_AGENTS["hackathon_scout"]
@@ -928,7 +927,7 @@ async def run_scout(
     from agents.python.infra.memory_keeper import MemoryKeeper
 
     platforms = platforms or ["devpost", "lablab", "devfolio"]
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     memory = MemoryKeeper()
 
     # Load proxies for all network operations

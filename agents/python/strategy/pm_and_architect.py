@@ -17,6 +17,7 @@ from redis.asyncio import Redis
 
 from config.electronhub import complete_json
 from config.agents_config import ALL_AGENTS
+from config.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +223,7 @@ so the frontend engineer can start working in parallel with backend implementati
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def run_pm_worker() -> None:
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     pubsub = redis.pubsub()
     await pubsub.subscribe("agent:trigger")
     logger.info("[forge:pm] Worker ready")
@@ -260,7 +261,7 @@ async def run_pm_worker() -> None:
 
 
 async def run_architect_worker() -> None:
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     pubsub = redis.pubsub()
     await pubsub.subscribe("agent:trigger")
     logger.info("[forge:architect] Worker ready")

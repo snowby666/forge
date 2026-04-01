@@ -27,9 +27,9 @@ from typing import Any
 
 import aiohttp
 from pydantic import BaseModel, Field
-from redis.asyncio import Redis
 
 from config.electronhub import complete, complete_json
+from config.redis_client import get_redis
 from config.agents_config import ALL_AGENTS
 from config.design_constitution import (
     ANTI_SLOP_RULES,
@@ -166,7 +166,7 @@ async def sync_to_figma(design_spec: DesignSpec, tokens: DesignTokensOutput) -> 
         logger.warning("[forge:design] Figma credentials not set")
         return None
 
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     await redis.publish("figma:write", json.dumps({
         "file_id": figma_file_id,
         "design_spec": design_spec.model_dump(),
@@ -649,7 +649,7 @@ Do NOT repeat the same design decisions that caused these failures.""",
 # ── Redis worker ──────────────────────────────────────────────────────────────
 
 async def run_worker() -> None:
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     pubsub = redis.pubsub()
     await pubsub.subscribe("agent:trigger")
 

@@ -24,6 +24,7 @@ from redis.asyncio import Redis
 
 from config.electronhub import complete, complete_json
 from config.agents_config import ALL_AGENTS
+from config.redis_client import get_redis
 from config.design_constitution import ANTI_SLOP_RULES, COMPONENT_QUALITY_CHECKLIST
 
 logger = logging.getLogger(__name__)
@@ -418,7 +419,7 @@ async def run_all_polish(
     output_dir: str,
 ) -> dict:
     """Run all 4 polish agents in parallel."""
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
 
     logger.info(f"[forge:polish] Running all 4 polish agents in parallel")
 

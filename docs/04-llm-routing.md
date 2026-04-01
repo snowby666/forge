@@ -32,6 +32,8 @@ graph LR
     CLIENT -->|OpenAI-compatible API| EH
 ```
 
+**Streaming:** `complete()` in `config/electronhub.py` uses `stream=True` for chat completions (deltas are concatenated client-side). That keeps long generations from sitting behind a single blocking HTTP response, which helps avoid proxy idle timeouts (e.g. Cloudflare 504). Each stream is limited to **180 seconds** wall-clock time via `asyncio.wait_for`; on timeout, a partial body longer than ~200 characters may be returned as-is; shorter partials re-raise so the caller sees a failure (distinct from the rate-limit **Fallback chain** below). `complete_json` goes through `complete()`, so it inherits the same streaming behavior.
+
 ---
 
 ## Model tiers

@@ -18,10 +18,10 @@ import os
 from typing import Any
 
 from pydantic import BaseModel, Field
-from redis.asyncio import Redis
 
 from config.electronhub import complete_json
 from config.agents_config import ALL_AGENTS
+from config.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 AGENT = ALL_AGENTS["strategy_director"]
@@ -204,7 +204,7 @@ rank=1 should be your best recommendation. Be honest about risks.""",
 # ── Redis worker ──────────────────────────────────────────────────────────────
 
 async def run_worker() -> None:
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     pubsub = redis.pubsub()
     await pubsub.subscribe("agent:trigger")
 

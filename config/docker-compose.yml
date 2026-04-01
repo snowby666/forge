@@ -33,7 +33,12 @@ services:
       redis-server
       --requirepass ${REDIS_PASSWORD:-change_me}
       --maxmemory 512mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy volatile-lru
+      --appendonly yes
+      --appendfsync everysec
+      --save "60 100"
+      --save "300 1"
+      --tcp-keepalive 60
     volumes:
       - forge-redis-data:/data
     ports:

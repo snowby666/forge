@@ -13,7 +13,7 @@ graph TB
             PG["forge-postgres :5432\nPostgreSQL 16\nLangGraph state\nApp databases\nn8n config"]
             RD["forge-redis :6379\nWorking memory\npub/sub channels\nTask statuses"]
             QD["forge-qdrant :6333/:6334\nVector store\n5 collections\n1536-dim embeddings"]
-            N8N["forge-n8n :5678\nWorkflow automation\nHuman checkpoint webhooks\nGoogle Calendar MCP"]
+            N8N["forge-n8n :5678\nWorkflow automation\nHuman checkpoint webhooks"]
             TMP["forge-temporal :7233\nDurable workflow execution\nCrash recovery for long runs"]
             TUI["forge-temporal-ui :8080\nWorkflow inspection UI"]
         end
@@ -101,6 +101,15 @@ graph TD
     end
 ```
 
+### Redis server settings (`config/docker-compose.yml`)
+
+Forge runs Redis 7 with:
+
+- **Eviction:** `volatile-lru` (`--maxmemory-policy volatile-lru`) with `--maxmemory 512mb` — only keys with a TTL are candidates when memory is full (not `allkeys-lru`).
+- **AOF persistence:** `appendonly yes`, `appendfsync everysec` — durability with at-most ~1s loss on crash.
+- **RDB snapshots:** `save "60 100"` and `save "300 1"` — periodic dumps in addition to AOF.
+- **TCP:** `tcp-keepalive 60` — detect dead peers faster on long-lived connections.
+
 ---
 
 ## PostgreSQL schema
@@ -180,7 +189,7 @@ Each build creates an isolated Daytona workspace. Frontend and Backend each get 
 
 ## n8n workflows
 
-n8n handles the human-computer interface and external service integrations that don't have Python SDKs:
+n8n handles webhook-driven human checkpoints and Figma MCP. **Calendar** uses the **Google Calendar API (service account)** (Forge subscribes to Redis `calendar:create_events`). **Checkpoint and breaker alerts** go out via **Discord webhooks**.
 
 ```mermaid
 graph LR
@@ -190,12 +199,12 @@ graph LR
         W3["Webhook:\n/webhook/{id}/quality_review\n-> writes Redis checkpoint"]
         W4["Webhook:\n/webhook/{id}/submission_approval\n-> writes Redis checkpoint"]
 
-        CAL["Google Calendar node\nListens: calendar:create_events\nCreates 5 events per hackathon"]
-
         FIG["Figma MCP node\nListens: figma:write\nWrites design spec to Figma file"]
-
-        DISCORD["Discord node\nSends checkpoint notifications\nSends circuit breaker alerts"]
     end
+
+    CAL["Google Calendar API (service account)\nListens: calendar:create_events\nCreates 5 events per hackathon"]
+
+    DISCORD["Discord webhooks\nCheckpoint notifications\ncircuit breaker alerts"]
 
     HUMAN["Human"] -->|clicks link| W1 & W2 & W3 & W4
     W1 & W2 & W3 & W4 -->|set checkpoint key| RD[("Redis")]
@@ -230,7 +239,7 @@ graph LR
 docker compose -f config/docker-compose.yml up -d
 
 # Wait for health
-until docker exec forge-postgres pg_isready -U forge; do sleep 1; done
+until docker exec forge-postgres pg_isready -U ${POSTGRES_USER:-backbone}; do sleep 1; done
 until docker exec forge-redis redis-cli -a $REDIS_PASSWORD ping; do sleep 1; done
 until curl -sf http://localhost:6333/readyz; do sleep 2; done
 

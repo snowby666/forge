@@ -74,7 +74,6 @@ graph TB
         RD[("Redis")]
         QD[("Qdrant")]
         TMP["Temporal"]
-        N8N["n8n"]
     end
 
     subgraph EXT["External"]
@@ -82,6 +81,8 @@ graph TB
         BB["Browserbase"]
         VCL["Vercel"]
         RLW["Railway"]
+        GCAL["Google Calendar API\n(service account)"]
+        DISC["Discord webhooks"]
     end
 
     subgraph BROWSER["TypeScript — browser layer only"]
@@ -121,8 +122,8 @@ graph TB
 
     MK --> QD
     CMD --> TMP
-    CAL --> N8N
-    N8N -.->|webhook| CMD
+    CAL --> GCAL
+    MON -.->|alerts| DISC
 ```
 
 ---
@@ -217,7 +218,7 @@ PostgreSQL checkpointing via LangGraph means the Commander survives crashes. Tem
 | Knowledge Updater modifies `design_constitution.py` | Living knowledge (stacks, trends) updates automatically. Static laws never change. |
 | Outcome Tracker closes the memory loop | `store_outcome()` is called after every judging day. Cross-hackathon learning actually accumulates. |
 | Claude Code-inspired concurrency graph | `forge_tools.get_runnable_now()` replaces hardcoded `asyncio.gather` — agents start only when their declared dependencies finish. Security and Code Reviewer wait for frontend+backend. Test Engineer waits for both. |
-| Per-agent cost tracking | `forge_tools.track_agent_cost()` records tokens and USD per agent call. Monitor alerts at $10 total. `forge status` shows running cost. Adapted from Claude Code's `cost-tracker.ts`. |
+| Per-agent cost tracking | `forge_tools.track_agent_cost()` records tokens and USD per agent call. Monitor alerts via Discord webhooks at $10 total. `forge status` shows running cost. Adapted from Claude Code's `cost-tracker.ts`. |
 | PATCH protocol standardized | `forge_tools.parse_patches()` and `apply_patches()` centralize the FIND/REPLACE file-edit protocol. All agents that produce file modifications use this — eliminates ad-hoc string manipulation. Adapted from Claude Code's `FileEditTool`. |
 | Memdir persistent agent notes | `forge_tools.write_agent_note()` gives agents a cross-session file-based memory. Notes are injected into system prompts on next run. Complements Mem0/Qdrant. Adapted from Claude Code's `src/memdir/`. |
 | Cron trigger system | `forge_tools.schedule_cron_trigger()` + Monitor polling replaces manual `asyncio.sleep()` scheduling. Outcome Tracker, Calendar Agent, and Monitor all use it. Adapted from Claude Code's `ScheduleCronTool`. |

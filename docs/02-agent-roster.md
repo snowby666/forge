@@ -26,7 +26,7 @@ graph TD
         UX["UI/UX Designer (*)\nui_ux_designer.py"]
         FE["Frontend Engineer\nfrontend_and_backend.py"]
         BE["Backend Engineer\nfrontend_and_backend.py"]
-        IE["Integration Engineer\nanalysis_agents.py"]
+        IE["Integration Engineer\nbuild_verify_agents.py"]
         TE["Test Engineer"]
         DO["DevOps"]
         SEC["Security Agent"]
@@ -425,7 +425,7 @@ Two systems: Mem0 (episodic — what worked and failed, per hackathon) + Qdrant 
 **File:** `agents/python/infra/monitor_and_calendar.py`
 **Tier:** `fast`
 
-Tracks latency (P50/P95/P99), error rate, and cost per agent. Circuit breaker: 3 consecutive failures = pause agent + Discord alert. Polls all active hackathons every 60 seconds. Publishes health reports to Redis.
+Tracks latency (P50/P95/P99), error rate, and cost per agent. Circuit breaker: 3 consecutive failures = pause agent + Discord webhook alert. Polls all active hackathons every 60 seconds. Publishes health reports to Redis.
 
 ---
 
@@ -433,7 +433,7 @@ Tracks latency (P50/P95/P99), error rate, and cost per agent. Circuit breaker: 3
 **File:** `agents/python/infra/monitor_and_calendar.py`
 **Tier:** `fast`
 
-Creates 5 Google Calendar events per hackathon via n8n → Google Calendar MCP: concept kickoff, design review, quality review, submit approval, and demo day reminder. Each event has the exact approval URL embedded in the description.
+Creates 5 Google Calendar events per hackathon via the Google Calendar API (service account): concept kickoff, design review, quality review, submit approval, and demo day reminder. Each event has the exact approval URL embedded in the description.
 
 ---
 

@@ -58,3 +58,14 @@ forge status     ← live agent view (check done pending failed)
 forge approve    ← human checkpoint interface
 forge knowledge  ← update design + strategy intelligence
 ```
+
+### CLI reference (quick)
+
+See [08 — CLI Reference](./08-cli-reference.md) for full examples. Highlights:
+
+| Command | Purpose |
+|---|---|
+| `forge status -p N` / `forge status --per-page N` | Paginated dashboard |
+| `forge ls -p N` / `forge ls --all` | Paginated list / show all hackathons |
+| `forge calendar-auth` | Google Calendar service account setup |
+| `forge calendar-test` | Verify calendar integration |

@@ -19,6 +19,8 @@ from pathlib import Path
 import aiohttp
 from redis.asyncio import Redis
 
+from config.redis_client import get_redis
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,7 +99,7 @@ async def check_agent_health(hackathon_id: str, redis: Redis) -> dict:
 
 async def run_monitor_worker() -> None:
     """Continuously monitor all active hackathons."""
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     pubsub = redis.pubsub()
     await pubsub.subscribe("monitor:record_metric")
 
@@ -390,7 +392,7 @@ async def calendar_test() -> bool:
 
 async def run_calendar_worker() -> None:
     """Listen for calendar scheduling requests."""
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     pubsub = redis.pubsub()
     await pubsub.subscribe("commander:new_hackathon")
 

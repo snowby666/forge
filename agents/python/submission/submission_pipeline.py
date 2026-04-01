@@ -17,9 +17,9 @@ from pathlib import Path
 
 import aiohttp
 from pydantic import BaseModel
-from redis.asyncio import Redis
 
 from config.electronhub import complete
+from config.redis_client import get_redis
 from config.agents_config import ALL_AGENTS
 
 logger = logging.getLogger(__name__)
@@ -502,7 +502,7 @@ async def run_full_submission_pipeline(
     dry_run: bool = False,
 ) -> dict:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
 
     logger.info(f"[submission_pipeline] Starting for: {project_plan.get('project_name')}")
 

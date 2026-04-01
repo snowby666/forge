@@ -18,6 +18,7 @@ from redis.asyncio import Redis
 from config.electronhub import complete_json, complete
 from config.web_search import search_and_synthesize, research_people, research_companies
 from config.agents_config import ALL_AGENTS
+from config.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 BROWSER_URL = os.environ.get("BROWSER_SERVER_URL", "http://localhost:3100")
@@ -271,7 +272,7 @@ Prioritize integrations that can run in parallel with the core product build."""
 
 async def run_all_intelligence(hackathon_id: str, brief: dict) -> dict:
     """Run all 4 intelligence agents in parallel."""
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
 
     logger.info(f"[intelligence] Running all 4 agents in parallel for: {brief.get('name')}")
 

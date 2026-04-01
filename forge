@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dotenv import load_dotenv
 load_dotenv()
+from config.redis_client import get_redis
 
 # ── ANSI colors ───────────────────────────────────────────────────────────────
 
@@ -105,9 +106,7 @@ async def cmd_run(args):
 
 async def cmd_status(args):
     """Show live agent status for a hackathon."""
-    from redis.asyncio import Redis
-
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
 
     # Find hackathons
     if args.id:
@@ -191,9 +190,7 @@ async def cmd_status(args):
 
 async def cmd_approve(args):
     """Human checkpoint interface."""
-    from redis.asyncio import Redis
-
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
 
     checkpoint = args.checkpoint
     hackathon_id = args.id
@@ -267,8 +264,7 @@ async def cmd_approve(args):
 
 async def cmd_plan(args):
     """Show the build plan for a hackathon run (Feature 6: /ultraplan)."""
-    from redis.asyncio import Redis
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
 
     hackathon_id = args.id
     if not hackathon_id:
@@ -345,9 +341,7 @@ async def cmd_knowledge(args):
 
 async def cmd_ls(args):
     """List all active hackathons."""
-    from redis.asyncio import Redis
-
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     keys = await redis.keys("hackathon:*:brief")
 
     if not keys:
@@ -402,8 +396,7 @@ async def cmd_test(args):
 
     # Redis
     try:
-        from redis.asyncio import Redis
-        r = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+        r = get_redis()
         await r.ping()
         await r.aclose()
         checks.append(("Redis", True))

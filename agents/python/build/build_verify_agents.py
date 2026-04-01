@@ -26,9 +26,9 @@ from pathlib import Path
 
 import aiohttp
 from pydantic import BaseModel
-from redis.asyncio import Redis
 
 from config.electronhub import complete, complete_json, complete_batch
+from config.redis_client import get_redis
 from config.agents_config import ALL_AGENTS
 
 logger = logging.getLogger(__name__)
@@ -471,7 +471,7 @@ async def run_security_agent(
     # 4. LLM review of CORS and auth configuration
     api_contract_raw = ""
     try:
-        redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+        redis = get_redis()
         raw = await redis.get(f"hackathon:{hackathon_id}:api_contract")
         if raw:
             api_contract_raw = raw[:2000]
@@ -806,7 +806,7 @@ AGENT_HANDLERS = {
 
 
 async def run_worker() -> None:
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis = get_redis()
     pubsub = redis.pubsub()
     await pubsub.subscribe("agent:trigger")
     logger.info("[forge:build_verify] Worker ready — handles: integration_engineer, test_engineer, devops, security, code_reviewer, performance")

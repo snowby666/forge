@@ -21,6 +21,7 @@ from typing import Annotated, Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from config.redis_client import get_redis
 from redis.asyncio import Redis
 
 from config.electronhub import complete_json
@@ -60,8 +61,8 @@ class HackathonState(TypedDict):
     messages: Annotated[list, add_messages]
 
 
-def get_redis() -> Redis:
-    return Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+
+
 
 
 _INLINE_TASKS: set[asyncio.Task] = set()
@@ -257,26 +258,32 @@ async def _dispatch_agent(agent_id: str, hackathon_id: str, inp: dict, redis: Re
         raise ValueError(f"[forge:worker] Unknown agent: {agent_id}")
 
 
+async def _set_task_status(hackathon_id: str, agent_id: str, payload: dict) -> None:
+    """Write task status to Redis with a fresh connection (avoids stale idle connections)."""
+    r = get_redis()
+    try:
+        await r.set(f"task:{hackathon_id}:{agent_id}", json.dumps(payload), ex=604800)
+    finally:
+        await r.aclose()
+
+
 async def _run_agent_inline(hackathon_id: str, agent_id: str, input_data: dict) -> None:
     """Execute an agent function in-process and store result in Redis."""
     import time as _t
-    redis = get_redis()
     t0 = _t.monotonic()
     logger.info(f"[forge:worker] ▶ {agent_id} starting inline (hackathon={hackathon_id})")
     try:
-        await redis.set(
-            f"task:{hackathon_id}:{agent_id}",
-            json.dumps({"status": "in-progress"}),
-            ex=604800,
-        )
-        result = await _dispatch_agent(agent_id, hackathon_id, input_data, redis)
+        await _set_task_status(hackathon_id, agent_id, {"status": "in-progress"})
+
+        redis = get_redis()
+        try:
+            result = await _dispatch_agent(agent_id, hackathon_id, input_data, redis)
+        finally:
+            await redis.aclose()
+
         elapsed = _t.monotonic() - t0
         output = result.model_dump() if hasattr(result, "model_dump") else (result or {})
-        await redis.set(
-            f"task:{hackathon_id}:{agent_id}",
-            json.dumps({"status": "done", "data": output}),
-            ex=604800,
-        )
+        await _set_task_status(hackathon_id, agent_id, {"status": "done", "data": output})
         logger.info(f"[forge:worker] ✓ {agent_id} completed inline ({elapsed:.1f}s)")
     except Exception as e:
         elapsed = _t.monotonic() - t0
@@ -285,13 +292,10 @@ async def _run_agent_inline(hackathon_id: str, agent_id: str, input_data: dict) 
             f"{type(e).__name__}: {e}",
             exc_info=True,
         )
-        await redis.set(
-            f"task:{hackathon_id}:{agent_id}",
-            json.dumps({"status": "failed", "error": str(e)}),
-            ex=604800,
-        )
-    finally:
-        await redis.aclose()
+        try:
+            await _set_task_status(hackathon_id, agent_id, {"status": "failed", "error": str(e)})
+        except Exception:
+            logger.error(f"[forge:worker] Could not write failure status to Redis for {agent_id}")
 
 
 async def trigger_agent(redis: Redis, hackathon_id: str, agent_id: str, input_data: dict) -> None:
