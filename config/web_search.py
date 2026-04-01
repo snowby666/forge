@@ -1169,193 +1169,162 @@ async def adaptive_crawl(
 # Crawl4AI fetches the page, we extract markdown, then parse with regex.
 # Devpost uses its own JSON API (ForgeDevpostClient) and doesn't need Crawl4AI.
 
-_PLATFORM_CONFIG: dict[str, dict] = {
-    "lablab":   {
-        "url": "https://lablab.ai/event",
-        "wait_until": "networkidle",
-        "timeout": 30000,
-    },
-    "devfolio": {
-        "url": "https://devfolio.co/hackathons",
-        "wait_until": "domcontentloaded",
-        "timeout": 45000,
-        "delay_before_extract": 3.0,
-    },
-}
-
-# Lablab markdown format: ## Title\n[StatusHACKATHONDATE...prize...](url)
-_LABLAB_RE = re.compile(
-    r"^## (.+)\n+"
-    r"\[(?:Register|LIVE|TBA|Finished)"
-    r"HACKATHON"
-    r"([A-Z]{3} \d+ - (?:[A-Z]{3} )?\d+)"
-    r"(\d*)"
-    r"(.*?)\]"
-    r"\((https://lablab\.ai/ai-hackathons/[^\)]+)\)",
-    re.MULTILINE,
-)
-
-# Devfolio markdown: ### Title\nHackathon\nTheme\nX\n+ N participating\nOnline/Offline\nOpen\nStarts DD/MM/YY
-_DEVFOLIO_RE = re.compile(
-    r"### (.+)\n+"
-    r"(?:Hackathon\n+)?"
-    r"(?:Theme\n+(.+?)\n+)?"
-    r"(?:\+ (\d+) participat\w+\n+)?"
-    r"(Online|Offline)\n+"
-    r"Open\n+"
-    r"(?:(?:Starts|Live) ?(.+?)\n+)?"
-    r"Apply now",
-    re.MULTILINE | re.IGNORECASE,
-)
-
-
-def _parse_lablab_markdown(md: str, limit: int) -> list[dict]:
-    """Parse lablab.ai markdown into structured hackathon dicts."""
+async def _fetch_devfolio_api(limit: int = 20) -> list[dict]:
+    """Fetch hackathons from Devfolio's real JSON API. No browser needed."""
     results = []
-    for m in _LABLAB_RE.finditer(md):
-        title, date_range, participants, description, url = m.groups()
-        if title.strip().lower() in ("explore our ai hackathons",):
-            continue
-        prize = ""
-        prize_match = re.search(r"\$[\d,]+(?:[\d,]+)?", description or "")
-        if prize_match:
-            prize = prize_match.group(0)
-        results.append({
-            "title": title.strip(),
-            "url": url.strip(),
-            "platform": "lablab",
-            "deadline": date_range.strip() if date_range else "",
-            "prize_amount_raw": prize,
-            "participants": participants.strip() if participants else "",
-        })
-        if len(results) >= limit:
-            break
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
+        "Accept": "application/json",
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            page = 1
+            while len(results) < limit:
+                async with session.get(
+                    "https://api.devfolio.co/api/hackathons",
+                    params={"filter": "application_open", "page": page},
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status != 200:
+                        logger.debug(f"[forge:search] Devfolio API HTTP {resp.status}")
+                        break
+                    data = await resp.json()
+
+                if "result" not in data or not data["result"]:
+                    break
+
+                for item in data["result"]:
+                    title = item.get("name", "")
+                    slug = item.get("slug", "")
+                    if not title or not slug:
+                        continue
+
+                    url = f"https://{slug}.devfolio.co/"
+                    starts = item.get("starts_at", "")
+                    ends = item.get("ends_at", "")
+
+                    results.append({
+                        "title": title,
+                        "url": url,
+                        "platform": "devfolio",
+                        "deadline": ends[:10] if ends else "",
+                        "starts_at": starts[:10] if starts else "",
+                        "mode": "Online" if item.get("is_online") else "Offline",
+                        "participants": str(item.get("participant_count", "")),
+                        "team_size_min": item.get("team_min", 1),
+                        "team_size_max": item.get("team_size", 4),
+                        "location": item.get("location", ""),
+                        "cover_img": item.get("cover_img", ""),
+                    })
+
+                    if len(results) >= limit:
+                        break
+                page += 1
+
+        logger.info(f"[forge:search] Devfolio API: {len(results)} hackathons")
+    except Exception as e:
+        logger.warning(f"[forge:search] Devfolio API error: {e}")
     return results
 
 
-def _parse_devfolio_markdown(md: str, limit: int) -> list[dict]:
-    """Parse devfolio.co markdown into structured hackathon dicts."""
+async def _fetch_lablab_aiohttp(limit: int = 20) -> list[dict]:
+    """Fetch hackathons from lablab.ai by parsing the event page HTML."""
     results = []
-    for m in _DEVFOLIO_RE.finditer(md):
-        title, theme, participants, mode, start_date = m.groups()
-        if not title or title.strip().lower() in ("featured",):
-            continue
-        results.append({
-            "title": title.strip(),
-            "url": f"https://devfolio.co/hackathons",
-            "platform": "devfolio",
-            "deadline": (start_date or "").strip(),
-            "theme": (theme or "").strip(),
-            "participants": (participants or "").strip(),
-            "mode": (mode or "").strip(),
-        })
-        if len(results) >= limit:
-            break
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
+        "Accept": "text/html",
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://lablab.ai/event",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                if resp.status != 200:
+                    logger.debug(f"[forge:search] Lablab HTTP {resp.status}")
+                    return []
+                html = await resp.text()
+
+        hackathon_pattern = re.compile(
+            r'href="(/ai-hackathons/[^"]+)"[^>]*>.*?'
+            r'(?:<h[23][^>]*>([^<]+)</h[23]>)?',
+            re.DOTALL,
+        )
+
+        link_pattern = re.compile(
+            r'href="(https://lablab\.ai/ai-hackathons/([^"]+))"',
+        )
+
+        seen_slugs: set[str] = set()
+        for match in link_pattern.finditer(html):
+            url, slug = match.groups()
+            if slug in seen_slugs:
+                continue
+            seen_slugs.add(slug)
+
+            title = slug.replace("-", " ").title()
+
+            prize = ""
+            context_start = max(0, match.start() - 2000)
+            context = html[context_start:match.end() + 500]
+            prize_match = re.search(r'\$[\d,]+(?:,\d{3})*', context)
+            if prize_match:
+                prize = prize_match.group(0)
+
+            results.append({
+                "title": title,
+                "url": url,
+                "platform": "lablab",
+                "prize_amount_raw": prize,
+            })
+            if len(results) >= limit:
+                break
+
+        logger.info(f"[forge:search] Lablab: {len(results)} hackathons from HTML links")
+    except Exception as e:
+        logger.warning(f"[forge:search] Lablab fetch error: {e}")
     return results
 
 
 async def scrape_hackathon_listings(
     platforms: list[str] | None = None,
-    limit_per_platform: int = 10,
+    limit_per_platform: int = 20,
 ) -> list[dict]:
     """
-    Scrape hackathon listings from Lablab and Devfolio using Crawl4AI.
-    Uses markdown extraction + regex parsing (CSS selectors don't work on React SPAs).
-    Returns structured dicts with title, url, prize, deadline.
+    Scrape hackathon listings from Lablab and Devfolio.
+    Devfolio: uses their real JSON API (https://api.devfolio.co/api/hackathons).
+    Lablab: parses event page HTML links (no public API).
+    No browser/Crawl4AI needed — pure aiohttp.
     """
     platforms = platforms or ["devpost", "lablab", "devfolio"]
-    scrapeable = [p for p in platforms if p in _PLATFORM_CONFIG]
-    if not scrapeable:
-        return []
-
     all_listings: list[dict] = []
 
-    try:
-        try:
-            os.getcwd()
-        except (FileNotFoundError, OSError):
-            os.chdir(os.path.expanduser("~"))
+    tasks = []
+    if "devfolio" in platforms:
+        tasks.append(("devfolio", _fetch_devfolio_api(limit_per_platform)))
+    if "lablab" in platforms:
+        tasks.append(("lablab", _fetch_lablab_aiohttp(limit_per_platform)))
 
-        from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, BrowserConfig, CacheMode  # type: ignore[import]
+    if not tasks:
+        return []
 
-        browser_cfg = BrowserConfig(
-            browser_type="chromium",
-            chrome_channel="chromium",
-            headless=True,
-            verbose=False,
-            user_agent_mode="random",
-            java_script_enabled=True,
-        )
+    results = await asyncio.gather(
+        *[t[1] for t in tasks],
+        return_exceptions=True,
+    )
 
-        async with AsyncWebCrawler(config=browser_cfg) as crawler:
-            for platform in scrapeable:
-                cfg = _PLATFORM_CONFIG[platform]
+    for (platform, _), result in zip(tasks, results):
+        if isinstance(result, list):
+            all_listings.extend(result)
+            for item in result[:3]:
+                logger.info(
+                    f"[forge:search]   {platform}: {item.get('title', '?')[:55]} "
+                    f"| {item.get('url', '')[:50]}"
+                )
+        elif isinstance(result, Exception):
+            logger.warning(f"[forge:search] {platform} error: {result}")
 
-                try:
-                    run_cfg = CrawlerRunConfig(
-                        cache_mode=CacheMode.ENABLED,
-                        remove_overlay_elements=True,
-                        wait_until=cfg.get("wait_until", "domcontentloaded"),
-                        page_timeout=cfg.get("timeout", 30000),
-                        delay_before_return_html=cfg.get("delay_before_extract", 1.0),
-                    )
-
-                    result = await crawler.arun(url=cfg["url"], config=run_cfg)
-
-                    if not result.success:
-                        logger.info(f"[forge:search] {platform}: crawl failed (status={getattr(result, 'status_code', '?')})")
-                        continue
-
-                    raw_md = ""
-                    if result.markdown:
-                        raw_md = result.markdown.raw_markdown or ""
-
-                    if not raw_md or len(raw_md) < 100:
-                        logger.info(f"[forge:search] {platform}: page loaded but no markdown content")
-                        continue
-
-                    # Parse markdown with platform-specific regex
-                    if platform == "lablab":
-                        listings = _parse_lablab_markdown(raw_md, limit_per_platform)
-                    elif platform == "devfolio":
-                        listings = _parse_devfolio_markdown(raw_md, limit_per_platform)
-                    else:
-                        listings = []
-
-                    if listings:
-                        all_listings.extend(listings)
-                        logger.info(f"[forge:search] {platform}: {len(listings)} hackathons from markdown")
-                        for item in listings[:3]:
-                            logger.info(
-                                f"[forge:search]   → {item.get('title', '?')[:55]} "
-                                f"| prize={item.get('prize_amount_raw', '')} "
-                                f"| deadline={item.get('deadline', '')[:25]}"
-                            )
-                    else:
-                        logger.info(
-                            f"[forge:search] {platform}: regex found 0 hackathons in "
-                            f"{len(raw_md)} chars of markdown — DOM may have changed"
-                        )
-                        all_listings.append({
-                            "platform": platform,
-                            "raw_markdown": raw_md[:5000],
-                            "url": cfg["url"],
-                            "title": f"{platform.title()} hackathon listings (raw)",
-                        })
-
-                except Exception as e:
-                    logger.warning(f"[forge:search] {platform} scrape skipped: {type(e).__name__}: {str(e)[:120]}")
-                    continue
-
-    except ImportError:
-        logger.warning("[forge:search] Crawl4AI not installed — hackathon listing scrape unavailable")
-    except (FileNotFoundError, OSError) as e:
-        logger.warning(
-            f"[forge:search] scrape_hackathon_listings: browser launch failed ({e}). "
-            f"Run 'playwright install chromium' to fix."
-        )
-    except Exception as e:
-        logger.warning(f"[forge:search] scrape_hackathon_listings failed: {e}")
-
-    logger.info(f"[forge:search] scrape_hackathon_listings: {len(all_listings)} total listings from {scrapeable}")
+    logger.info(f"[forge:search] scrape_hackathon_listings: {len(all_listings)} total from {[t[0] for t in tasks]}")
     return all_listings

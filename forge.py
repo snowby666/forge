@@ -28,11 +28,10 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config.redis_client import get_redis
 from dotenv import load_dotenv
-load_dotenv()
-# Also load forge.secrets (env vars take precedence)
+load_dotenv(encoding="utf-8-sig")
 _secrets = os.path.join(os.path.dirname(os.path.abspath(__file__)), "forge.secrets")
 if os.path.exists(_secrets):
-    load_dotenv(_secrets, override=False)
+    load_dotenv(_secrets, override=False, encoding="utf-8-sig")
 
 # ── ANSI colors ───────────────────────────────────────────────────────────────
 
