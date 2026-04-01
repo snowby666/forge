@@ -466,10 +466,15 @@ async def _fast_searxng(query: str, max_results: int = 10) -> list[dict]:
             async with session.get(
                 f"{base_url}/search",
                 params={"q": query, "format": "json", "language": "en", "safesearch": "0"},
-                headers={"Accept": "application/json"},
+                headers={
+                    "Accept": "application/json",
+                    "X-Forwarded-For": "127.0.0.1",
+                    "X-Real-IP": "127.0.0.1",
+                },
                 timeout=aiohttp.ClientTimeout(total=8),
             ) as resp:
                 if resp.status != 200:
+                    logger.debug(f"[forge:scout] SearXNG returned {resp.status}")
                     return []
                 data = await resp.json()
                 return [
