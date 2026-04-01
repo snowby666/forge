@@ -53,10 +53,29 @@ source .venv/bin/activate
 pip install -e ".[dev,calendar]" --quiet 2>&1 | tail -1
 
 # Ensure Playwright Chromium is installed (Crawl4AI needs it)
-log "Ensuring Playwright Chromium is installed..."
-python -m playwright install chromium --with-deps 2>&1 || true
-# Crawl4AI also has its own setup command
-python -m crawl4ai.install 2>&1 | tail -3 || true
+log "Installing Playwright system deps..."
+python -m playwright install-deps chromium 2>&1 | tail -3 || true
+log "Downloading Playwright Chromium browser..."
+python -m playwright install chromium 2>&1
+if [ $? -ne 0 ]; then
+  log "Playwright install failed, trying with sudo..."
+  sudo "$(which python)" -m playwright install chromium 2>&1 || true
+fi
+# Verify Chromium is accessible
+CHROMIUM_BIN=$(python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()" 2>/dev/null || echo "NOT_FOUND")
+if [[ "$CHROMIUM_BIN" != "NOT_FOUND" && -f "$CHROMIUM_BIN" ]]; then
+  log "Playwright Chromium OK: $CHROMIUM_BIN"
+else
+  log "WARNING: Chromium binary not found at expected path. Trying crawl4ai setup..."
+  python -c "import subprocess; subprocess.run(['crawl4ai-setup'], check=False)" 2>&1 || true
+  python -c "
+import subprocess, sys
+try:
+    subprocess.run([sys.executable, '-m', 'playwright', 'install', 'chromium'], check=True)
+except Exception as e:
+    print(f'Final playwright install attempt failed: {e}')
+" 2>&1 || true
+fi
 
 log "Done. $(date +%H:%M:%S)"
 

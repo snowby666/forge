@@ -116,9 +116,20 @@ asyncio.run(main())
 " || warn "Qdrant collection init failed (may already exist)"
 
 # Ensure Playwright Chromium is installed (Crawl4AI needs it)
-log "Ensuring Playwright Chromium is installed..."
-$PYTHON_CMD -m playwright install chromium --with-deps 2>&1 || warn "Playwright install had issues"
-$PYTHON_CMD -m crawl4ai.install 2>&1 | tail -3 || true
+log "Installing Playwright system deps..."
+$PYTHON_CMD -m playwright install-deps chromium 2>&1 | tail -3 || true
+log "Downloading Playwright Chromium browser..."
+$PYTHON_CMD -m playwright install chromium 2>&1
+if [ $? -ne 0 ]; then
+  log "Playwright install failed, trying with sudo..."
+  sudo "$PYTHON_CMD" -m playwright install chromium 2>&1 || true
+fi
+CHROMIUM_BIN=$($PYTHON_CMD -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()" 2>/dev/null || echo "NOT_FOUND")
+if [[ "$CHROMIUM_BIN" != "NOT_FOUND" && -f "$CHROMIUM_BIN" ]]; then
+  log "Playwright Chromium OK: $CHROMIUM_BIN"
+else
+  warn "Chromium binary not found — Crawl4AI scraping will use HTTP fallback"
+fi
 
 log "Starting browser layer..."
 cd agents/browser && npm start &
