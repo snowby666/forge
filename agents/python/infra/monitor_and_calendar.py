@@ -347,7 +347,8 @@ async def schedule_hackathon_events(
 def run_calendar_auth() -> None:
     """One-time OAuth flow — run 'forge calendar-auth' to authorize."""
     try:
-        from google_auth_oauthlib.flow import InstalledAppFlow
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
     except ImportError:
         print("Missing dependency. Run:\n  pip install google-auth google-auth-oauthlib google-api-python-client")
         return
@@ -359,34 +360,63 @@ def run_calendar_auth() -> None:
         print("Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in your environment first.")
         return
 
-    REDIRECT_PORT = 8085
-    client_config = {
-        "installed": {
+    SCOPES = "https://www.googleapis.com/auth/calendar.events"
+    REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
+
+    auth_url = (
+        f"https://accounts.google.com/o/oauth2/auth"
+        f"?client_id={client_id}"
+        f"&redirect_uri={REDIRECT_URI}"
+        f"&response_type=code"
+        f"&scope={SCOPES}"
+        f"&access_type=offline"
+        f"&prompt=consent"
+    )
+
+    print(f"\n  1. Open this URL in ANY browser:\n")
+    print(f"  {auth_url}\n")
+    print(f"  2. Sign in and click 'Allow'")
+    print(f"  3. Copy the authorization code and paste it below:\n")
+
+    code = input("  Authorization code: ").strip()
+    if not code:
+        print("  No code entered. Aborting.")
+        return
+
+    # Exchange code for tokens
+    try:
+        import urllib.request
+        import urllib.parse
+        data = urllib.parse.urlencode({
+            "code": code,
             "client_id": client_id,
             "client_secret": client_secret,
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [f"http://localhost:{REDIRECT_PORT}"],
-        }
+            "redirect_uri": REDIRECT_URI,
+            "grant_type": "authorization_code",
+        }).encode()
+        req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        with urllib.request.urlopen(req) as resp:
+            tokens = json.loads(resp.read().decode())
+    except Exception as e:
+        print(f"\n  Token exchange failed: {e}")
+        return
+
+    if "error" in tokens:
+        print(f"\n  Google error: {tokens['error']} — {tokens.get('error_description', '')}")
+        return
+
+    token_data = {
+        "token": tokens["access_token"],
+        "refresh_token": tokens.get("refresh_token"),
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "scopes": [SCOPES],
     }
-
-    flow = InstalledAppFlow.from_client_config(
-        client_config,
-        scopes=["https://www.googleapis.com/auth/calendar.events"],
-    )
-
-    # Headless-friendly: bind on 0.0.0.0 so you can open the URL from another machine
-    print(f"\n  Listening on port {REDIRECT_PORT} for OAuth callback...")
-    print(f"  Open the URL below in your browser (any machine on the same network):\n")
-    creds = flow.run_local_server(
-        host="0.0.0.0",
-        port=REDIRECT_PORT,
-        open_browser=False,
-        success_message="Authorization complete! You can close this tab.",
-    )
-    _TOKEN_PATH.write_text(creds.to_json())
+    _TOKEN_PATH.write_text(json.dumps(token_data, indent=2))
     print(f"\n  Token saved to {_TOKEN_PATH}")
-    print("  Google Calendar is now connected. Test with: forge calendar-test")
+    print("  Google Calendar connected! Test with: forge calendar-test")
 
 
 async def calendar_test() -> bool:
