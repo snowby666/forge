@@ -386,29 +386,39 @@ async def complete(
             async def _read_with_stall_detection():
                 nonlocal stream_was_killed
                 read_task = asyncio.create_task(_read_stream())
-                while not read_task.done():
-                    await asyncio.sleep(5)
-                    if read_task.done():
-                        break
-                    stall = _t.monotonic() - last_chunk_at
-                    total = _t.monotonic() - t0
-                    if stall > STALL_TIMEOUT:
-                        logger.warning(
-                            f"[forge:llm] ⏰ Stream stalled {stall:.0f}s (no new chunks) "
-                            f"on {current_model} for task={task}"
-                        )
-                        stream_was_killed = True
-                        read_task.cancel()
-                        return
-                    if total > STREAM_TIMEOUT:
-                        logger.warning(
-                            f"[forge:llm] ⏰ Stream hit {STREAM_TIMEOUT}s ceiling "
-                            f"on {current_model} for task={task}"
-                        )
-                        stream_was_killed = True
-                        read_task.cancel()
-                        return
-                await read_task
+                try:
+                    while not read_task.done():
+                        await asyncio.sleep(5)
+                        if read_task.done():
+                            break
+                        stall = _t.monotonic() - last_chunk_at
+                        total = _t.monotonic() - t0
+                        if stall > STALL_TIMEOUT:
+                            logger.warning(
+                                f"[forge:llm] ⏰ Stream stalled {stall:.0f}s (no new chunks) "
+                                f"on {current_model} for task={task}"
+                            )
+                            stream_was_killed = True
+                            read_task.cancel()
+                            break
+                        if total > STREAM_TIMEOUT:
+                            logger.warning(
+                                f"[forge:llm] ⏰ Stream hit {STREAM_TIMEOUT}s ceiling "
+                                f"on {current_model} for task={task}"
+                            )
+                            stream_was_killed = True
+                            read_task.cancel()
+                            break
+                    try:
+                        await read_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                except Exception:
+                    read_task.cancel()
+                    try:
+                        await read_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
 
             try:
                 await asyncio.wait_for(_read_with_stall_detection(), timeout=STREAM_TIMEOUT + 30)
