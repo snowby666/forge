@@ -349,6 +349,9 @@ async def wait_for_checkpoint(
     key = f"checkpoint:{hackathon_id}:{checkpoint_id}"
     timeout_sec = timeout_hours * 3600
     start = datetime.now(timezone.utc).timestamp()
+
+    await redis.set(key, "pending", ex=timeout_sec)
+
     logger.info(
         f"[forge:commander]   ⏸  Waiting for human: {checkpoint_id}\n"
         f"[forge:commander]      Approve via: forge approve {checkpoint_id.split('_')[0]} --id {hackathon_id}\n"
