@@ -54,7 +54,9 @@ pip install -e ".[dev,calendar]" --quiet 2>&1 | tail -1
 
 # Ensure Playwright Chromium is installed (Crawl4AI needs it)
 log "Ensuring Playwright Chromium is installed..."
-playwright install chromium --with-deps 2>&1 | tail -5 || true
+python -m playwright install chromium --with-deps 2>&1 || true
+# Crawl4AI also has its own setup command
+python -m crawl4ai.install 2>&1 | tail -3 || true
 
 log "Done. $(date +%H:%M:%S)"
 

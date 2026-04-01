@@ -117,7 +117,8 @@ asyncio.run(main())
 
 # Ensure Playwright Chromium is installed (Crawl4AI needs it)
 log "Ensuring Playwright Chromium is installed..."
-$PYTHON_CMD -m playwright install chromium --with-deps 2>&1 | tail -5 || warn "Playwright install had issues"
+$PYTHON_CMD -m playwright install chromium --with-deps 2>&1 || warn "Playwright install had issues"
+$PYTHON_CMD -m crawl4ai.install 2>&1 | tail -3 || true
 
 log "Starting browser layer..."
 cd agents/browser && npm start &
