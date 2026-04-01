@@ -53,10 +53,12 @@ log "Done. $(date +%H:%M:%S)"
 # Auto-run forge if arguments were passed (e.g. bash sync.sh scout --shallow)
 if [[ $# -gt 0 ]]; then
   log "Running: forge $*"
-  forge "$@"
+  "$DST/.venv/bin/forge" "$@"
 else
   log "${DIM}Now run:${NC}"
   echo ""
-  echo "  cd ~/forge && source .venv/bin/activate && forge scout"
+  echo "  source ~/forge/.venv/bin/activate && forge scout"
+  echo ""
+  echo "  Or:  bash sync.sh scout"
   echo ""
 fi
