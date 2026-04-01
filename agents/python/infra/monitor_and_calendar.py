@@ -347,24 +347,35 @@ async def schedule_hackathon_events(
 def run_calendar_auth() -> None:
     """One-time OAuth flow — run 'forge calendar-auth' to authorize."""
     try:
-        from google.oauth2.credentials import Credentials
-        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials  # noqa: F401
     except ImportError:
         print("Missing dependency. Run:\n  pip install google-auth google-auth-oauthlib google-api-python-client")
         return
 
-    client_id = os.environ.get("GOOGLE_CLIENT_ID")
-    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 
-    if not client_id or not client_secret:
-        print("Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in your environment first.")
+    if not client_id or not client_secret or "your_" in client_id:
+        print("\n  ┌─────────────────────────────────────────────────────────┐")
+        print("  │  GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set        │")
+        print("  │                                                         │")
+        print("  │  Create credentials (takes 2 minutes):                  │")
+        print("  │  1. Go to console.cloud.google.com/apis/credentials     │")
+        print("  │  2. Click '+ CREATE CREDENTIALS' → 'OAuth client ID'    │")
+        print("  │  3. Application type: 'Desktop app', name: 'Forge'      │")
+        print("  │  4. Copy the Client ID and Client Secret                │")
+        print("  │  5. Also enable 'Google Calendar API' under APIs        │")
+        print("  │  6. Add them to ~/forge/.env:                           │")
+        print("  │     GOOGLE_CLIENT_ID=xxxxx.apps.googleusercontent.com   │")
+        print("  │     GOOGLE_CLIENT_SECRET=GOCSPX-xxxxx                   │")
+        print("  └─────────────────────────────────────────────────────────┘")
         return
 
     SCOPES = "https://www.googleapis.com/auth/calendar.events"
-    REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
+    REDIRECT_URI = "http://localhost"
 
     auth_url = (
-        f"https://accounts.google.com/o/oauth2/auth"
+        f"https://accounts.google.com/o/oauth2/v2/auth"
         f"?client_id={client_id}"
         f"&redirect_uri={REDIRECT_URI}"
         f"&response_type=code"
@@ -374,19 +385,33 @@ def run_calendar_auth() -> None:
     )
 
     print(f"\n  1. Open this URL in ANY browser:\n")
-    print(f"  {auth_url}\n")
+    print(f"     {auth_url}\n")
     print(f"  2. Sign in and click 'Allow'")
-    print(f"  3. Copy the authorization code and paste it below:\n")
+    print(f"  3. You'll be redirected to a page that WON'T LOAD (that's normal)")
+    print(f"  4. Copy the FULL URL from your browser's address bar")
+    print(f"     (it looks like: http://localhost/?code=4/0Axx...&scope=...)\n")
 
-    code = input("  Authorization code: ").strip()
-    if not code:
-        print("  No code entered. Aborting.")
+    redirect_url = input("  Paste the full redirect URL here: ").strip()
+    if not redirect_url:
+        print("  No URL entered. Aborting.")
         return
+
+    # Extract code from redirect URL
+    import urllib.parse
+    parsed = urllib.parse.urlparse(redirect_url)
+    params = urllib.parse.parse_qs(parsed.query)
+    code = params.get("code", [None])[0]
+
+    if not code:
+        if redirect_url.startswith("4/") or len(redirect_url) > 20 and "." not in redirect_url[:10]:
+            code = redirect_url
+        else:
+            print("  Could not find authorization code in that URL. Try again.")
+            return
 
     # Exchange code for tokens
     try:
         import urllib.request
-        import urllib.parse
         data = urllib.parse.urlencode({
             "code": code,
             "client_id": client_id,
