@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Monitor Agent + Calendar Agent — Layer 7: Infrastructure
-Monitor: tracks cost, latency, errors, circuit breakers, Slack alerts.
+Monitor: tracks cost, latency, errors, circuit breakers, Discord alerts.
 Calendar: schedules human checkpoint events via Google Calendar MCP.
 """
 
@@ -56,23 +56,21 @@ class AgentMetrics:
 _metrics = AgentMetrics()
 
 
-async def send_slack_alert(message: str, channel: str | None = None) -> None:
-    webhook = os.environ.get("SLACK_WEBHOOK_URL")
+async def send_discord_alert(message: str) -> None:
+    """Send an alert to the Forge Discord channel via webhook."""
+    webhook = os.environ.get("DISCORD_WEBHOOK_URL")
     if not webhook:
-        logger.warning(f"[forge:monitor] SLACK_WEBHOOK_URL not set — alert: {message}")
+        logger.warning(f"[forge:monitor] DISCORD_WEBHOOK_URL not set — alert: {message}")
         return
     try:
         async with aiohttp.ClientSession() as session:
             await session.post(
                 webhook,
-                json={
-                    "text": message,
-                    "channel": channel or os.environ.get("SLACK_CHANNEL", "#hackathon-agent"),
-                },
+                json={"content": message},
                 timeout=aiohttp.ClientTimeout(total=10),
             )
     except Exception as e:
-        logger.error(f"[forge:monitor] Slack alert failed: {e}")
+        logger.error(f"[forge:monitor] Discord alert failed: {e}")
 
 
 async def check_agent_health(hackathon_id: str, redis: Redis) -> dict:
@@ -88,8 +86,8 @@ async def check_agent_health(hackathon_id: str, redis: Redis) -> dict:
             if task.get("status") == "failed":
                 _metrics.record_error(agent_id)
                 if _metrics.is_circuit_open(agent_id, encoding="utf-8"):
-                    await send_slack_alert(
-                        f"⚠️ *Circuit breaker open* for `{agent_id}` on hackathon `{hackathon_id}`\n"
+                    await send_discord_alert(
+                        f":warning: **Circuit breaker open** for `{agent_id}` on hackathon `{hackathon_id}`\n"
                         f"Failed {_metrics.consecutive_failures[agent_id]} times in a row.\n"
                         f"Commander should simplify task scope or skip this agent."
                     )
@@ -120,7 +118,7 @@ async def run_monitor_worker() -> None:
                 try:
                     cost = await get_run_cost_summary(redis, hackathon_id)
                     if cost["total_usd"] > 10.0:
-                        await send_slack_alert(
+                        await send_discord_alert(
                             f"[forge:monitor] Cost alert for {hackathon_id}: "
                             f"${cost['total_usd']:.2f} total so far\n"
                             f"Top spender: {max(cost['by_agent'].items(), key=lambda x: x[1]['cost_usd'], default=('none', {'cost_usd': 0}))[0]}"

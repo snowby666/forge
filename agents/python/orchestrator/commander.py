@@ -28,7 +28,7 @@ from config.agents_config import ALL_AGENTS, HUMAN_CHECKPOINTS
 from agents.python.intelligence.hackathon_scout import HackathonBrief
 from agents.python.intelligence.analysis_agents import run_all_intelligence
 from agents.python.infra.monitor_and_calendar import (
-    schedule_hackathon_events, send_slack_alert,
+    schedule_hackathon_events, send_discord_alert,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,14 +64,227 @@ def get_redis() -> Redis:
     return Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
 
 
+_INLINE_TASKS: set[asyncio.Task] = set()
+
+
+async def _dispatch_agent(agent_id: str, hackathon_id: str, inp: dict, redis: Redis) -> Any:
+    """Route an agent trigger to its actual implementation function."""
+    if agent_id == "strategy_director":
+        from agents.python.strategy.strategy_director import generate_concepts
+        brief = await generate_concepts(
+            hackathon_brief=inp.get("brief", {}),
+            comp_report=inp.get("comp_report", {}),
+            judge_profile=inp.get("judge_profile", {}),
+            sponsor_map=inp.get("sponsor_map", {}),
+            hackathon_id=hackathon_id,
+        )
+        await redis.set(f"hackathon:{hackathon_id}:concepts", brief.model_dump_json(), ex=604800)
+        return brief
+
+    elif agent_id == "pm":
+        from agents.python.strategy.pm_and_architect import create_project_plan
+        return await create_project_plan(
+            hackathon_id=hackathon_id,
+            brief=inp.get("brief", {}),
+            selected_concept=inp.get("selected_concept", {}),
+            judge_profile=inp.get("judge_profile", {}),
+            sponsor_map=inp.get("sponsor_map", {}),
+            redis=redis,
+        )
+
+    elif agent_id == "tech_architect":
+        from agents.python.strategy.pm_and_architect import design_architecture
+        db_schema, api_contract, dep_graph = await design_architecture(
+            hackathon_id=hackathon_id,
+            project_plan=inp.get("project_plan", {}),
+            redis=redis,
+        )
+        return {"endpoints": len(api_contract.endpoints)}
+
+    elif agent_id == "ui_ux_designer":
+        from agents.python.build.ui_ux_designer import run_ui_ux_agent
+        output_dir = f"/tmp/hackathon-{hackathon_id}"
+        return await run_ui_ux_agent(
+            hackathon_id=hackathon_id,
+            project_plan=inp.get("project_plan", {}),
+            judge_profile=inp.get("judge_profile", {}),
+            hackathon_brief=inp.get("brief", {}),
+            output_dir=output_dir,
+        )
+
+    elif agent_id == "frontend_engineer":
+        from agents.python.build.frontend_and_backend import run_frontend_engineer
+        return await run_frontend_engineer(
+            hackathon_id=hackathon_id,
+            project_plan=inp.get("project_plan", {}),
+            design_spec=inp.get("design_spec", {}),
+            design_tokens_content=inp.get("design_tokens_content", ""),
+            component_specs=inp.get("component_specs", []),
+            design_md_content=inp.get("design_md_content", ""),
+            api_contract=inp.get("api_contract", {}),
+        )
+
+    elif agent_id == "backend_engineer":
+        from agents.python.build.frontend_and_backend import run_backend_engineer
+        return await run_backend_engineer(
+            hackathon_id=hackathon_id,
+            project_plan=inp.get("project_plan", {}),
+            db_schema=inp.get("db_schema", {}),
+            simplify=inp.get("simplify", False),
+        )
+
+    elif agent_id in ("integration_engineer", "test_engineer", "devops", "security", "code_reviewer", "performance"):
+        from agents.python.build.build_verify_agents import AGENT_HANDLERS as BV_HANDLERS
+        result = await BV_HANDLERS[agent_id](hackathon_id, inp)
+        artifact_key = {
+            "integration_engineer": "sponsor_integration_manifest",
+            "test_engineer": "test_suite",
+            "devops": "cicd_config",
+            "security": "security_report",
+            "code_reviewer": "code_review_report",
+            "performance": "performance_report",
+        }.get(agent_id, agent_id)
+        output = result.model_dump() if hasattr(result, "model_dump") else result
+        await redis.set(f"hackathon:{hackathon_id}:{artifact_key}", json.dumps(output), ex=604800)
+        return result
+
+    elif agent_id == "ux_auditor":
+        from agents.python.verify.ux_auditor import run_ux_audit
+        report = await run_ux_audit(
+            hackathon_id=hackathon_id,
+            preview_url=inp.get("preview_url", ""),
+            design_spec=inp.get("design_spec", {}),
+            design_md_path=inp.get("design_md_path", ""),
+        )
+        if not report.approved:
+            await redis.publish("commander:audit_failed", json.dumps({
+                "hackathon_id": hackathon_id,
+                "score": report.overall_score,
+                "blockers": report.blockers,
+                "instructions": report.iteration_instructions,
+            }))
+        return report
+
+    elif agent_id == "polish":
+        from agents.python.polish.polish_agents import run_polish_agent
+        return await run_polish_agent(
+            hackathon_id=hackathon_id,
+            preview_url=inp.get("preview_url", ""),
+            ux_audit_report=inp.get("ux_audit_report", {}),
+            frontend_repo_path=inp.get("frontend_repo_path", ""),
+            output_dir=f"/tmp/hackathon-{hackathon_id}",
+            redis=redis,
+        )
+
+    elif agent_id == "copy_writer":
+        from agents.python.polish.polish_agents import run_copy_writer
+        return await run_copy_writer(
+            hackathon_id=hackathon_id,
+            frontend_repo_path=inp.get("frontend_repo_path", ""),
+            judge_profile=inp.get("judge_profile", {}),
+            project_plan=inp.get("project_plan", {}),
+            redis=redis,
+        )
+
+    elif agent_id == "data_seeder":
+        from agents.python.polish.polish_agents import generate_seed_data
+        return await generate_seed_data(
+            hackathon_id=hackathon_id,
+            project_plan=inp.get("project_plan", {}),
+            api_contract=inp.get("api_contract", {}),
+            redis=redis,
+        )
+
+    elif agent_id == "brand":
+        from agents.python.polish.polish_agents import create_brand_kit
+        return await create_brand_kit(
+            hackathon_id=hackathon_id,
+            design_spec=inp.get("design_spec", {}),
+            project_plan=inp.get("project_plan", {}),
+            output_dir=f"/tmp/hackathon-{hackathon_id}",
+            redis=redis,
+        )
+
+    elif agent_id == "demo_producer":
+        from agents.python.submission.submission_pipeline import run_demo_producer
+        return await run_demo_producer(
+            hackathon_id=hackathon_id,
+            preview_url=inp.get("preview_url", ""),
+            project_plan=inp.get("project_plan", {}),
+            judge_profile=inp.get("judge_profile", {}),
+            output_dir=f"/tmp/hackathon-{hackathon_id}",
+        )
+
+    elif agent_id == "pitch_writer":
+        from agents.python.submission.submission_pipeline import run_pitch_writer
+        return await run_pitch_writer(
+            hackathon_id=hackathon_id,
+            project_plan=inp.get("project_plan", {}),
+            judge_profile=inp.get("judge_profile", {}),
+            sponsor_manifest=inp.get("sponsor_manifest", {}),
+            repo_url=inp.get("repo_url", ""),
+            preview_url=inp.get("preview_url", ""),
+            video_url=inp.get("video_url", ""),
+            output_dir=f"/tmp/hackathon-{hackathon_id}",
+        )
+
+    elif agent_id == "submission":
+        from agents.python.submission.submission_pipeline import run_submission_agent
+        return await run_submission_agent(
+            hackathon_id=hackathon_id,
+            hackathon_url=inp.get("hackathon_url", ""),
+            platform=inp.get("platform", "devpost"),
+            project_plan=inp.get("project_plan", {}),
+            description=inp.get("description", ""),
+            video_url=inp.get("video_url", ""),
+            preview_url=inp.get("preview_url", ""),
+            repo_url=inp.get("repo_url", ""),
+            sponsor_manifest=inp.get("sponsor_manifest", {}),
+            output_dir=inp.get("output_dir", f"/tmp/hackathon-{hackathon_id}"),
+        )
+
+    elif agent_id == "outcome_tracker":
+        from agents.python.infra.outcome_tracker import run_outcome_tracker
+        return await run_outcome_tracker(hackathon_id)
+
+    else:
+        raise ValueError(f"[forge:worker] Unknown agent: {agent_id}")
+
+
+async def _run_agent_inline(hackathon_id: str, agent_id: str, input_data: dict) -> None:
+    """Execute an agent function in-process and store result in Redis."""
+    redis = get_redis()
+    try:
+        await redis.set(
+            f"task:{hackathon_id}:{agent_id}",
+            json.dumps({"status": "in-progress"}),
+            ex=604800,
+        )
+        result = await _dispatch_agent(agent_id, hackathon_id, input_data, redis)
+        output = result.model_dump() if hasattr(result, "model_dump") else (result or {})
+        await redis.set(
+            f"task:{hackathon_id}:{agent_id}",
+            json.dumps({"status": "done", "data": output}),
+            ex=604800,
+        )
+        logger.info(f"[forge:worker] ✓ {agent_id} completed inline")
+    except Exception as e:
+        logger.error(f"[forge:worker] ✗ {agent_id} failed: {e}", exc_info=True)
+        await redis.set(
+            f"task:{hackathon_id}:{agent_id}",
+            json.dumps({"status": "failed", "error": str(e)}),
+            ex=604800,
+        )
+    finally:
+        await redis.aclose()
+
+
 async def trigger_agent(redis: Redis, hackathon_id: str, agent_id: str, input_data: dict) -> None:
     logger.info(f"[forge:commander]   → Triggering {agent_id}")
     await redis.set(f"task:{hackathon_id}:{agent_id}", json.dumps({"status": "pending"}), ex=604800)
-    await redis.publish("agent:trigger", json.dumps({
-        "hackathon_id": hackathon_id,
-        "agent": agent_id,
-        "input": input_data,
-    }))
+    task = asyncio.create_task(_run_agent_inline(hackathon_id, agent_id, input_data))
+    _INLINE_TASKS.add(task)
+    task.add_done_callback(_INLINE_TASKS.discard)
 
 
 async def wait_for_agent(redis: Redis, hackathon_id: str, agent_id: str, timeout_sec: int = 3600) -> dict | None:
@@ -93,13 +306,13 @@ async def wait_for_agent(redis: Redis, hackathon_id: str, agent_id: str, timeout
                 return None
         elapsed = datetime.now(timezone.utc).timestamp() - start
         now = datetime.now(timezone.utc).timestamp()
-        if now - last_log > 120:
+        if now - last_log > 30:
             logger.info(f"[forge:commander]   ⟳ Still waiting for {agent_id}... ({elapsed:.0f}s elapsed)")
             last_log = now
         if elapsed > timeout_sec:
             logger.warning(f"[forge:commander]   ⏰ {agent_id} TIMED OUT after {timeout_sec}s")
             return None
-        await asyncio.sleep(30)
+        await asyncio.sleep(5)
 
 
 async def wait_for_checkpoint(
@@ -136,8 +349,8 @@ async def wait_for_checkpoint(
 
 
 async def notify_checkpoint(hackathon_id: str, checkpoint_id: str, message: str) -> None:
-    await send_slack_alert(
-        f"*Hackathon Agent — Action Required* 🎯\n{message}\n\n"
+    await send_discord_alert(
+        f"**Hackathon Agent — Action Required** :dart:\n{message}\n\n"
         f"Approve: {N8N_BASE}/webhook/{hackathon_id}/{checkpoint_id}"
     )
 
@@ -181,7 +394,7 @@ async def generate_concepts(state: HackathonState) -> dict:
         "brief": state["brief"],
         **state["intel"],
     })
-    data = await wait_for_agent(redis, state["hackathon_id"], "strategy_director", timeout_sec=1800)
+    data = await wait_for_agent(redis, state["hackathon_id"], "strategy_director", timeout_sec=300)
 
     if not data:
         await redis.aclose()
@@ -249,8 +462,8 @@ async def run_planning(state: HackathonState) -> dict:
     )
 
     pm_data, arch_data = await asyncio.gather(
-        wait_for_agent(redis, state["hackathon_id"], "pm", timeout_sec=1800),
-        wait_for_agent(redis, state["hackathon_id"], "tech_architect", timeout_sec=1800),
+        wait_for_agent(redis, state["hackathon_id"], "pm", timeout_sec=300),
+        wait_for_agent(redis, state["hackathon_id"], "tech_architect", timeout_sec=300),
     )
 
     if not pm_data:
@@ -287,7 +500,7 @@ async def run_design(state: HackathonState) -> dict:
         "judge_profile": state["intel"].get("judge_profile", {}),
     })
 
-    design_data = await wait_for_agent(redis, state["hackathon_id"], "ui_ux_designer", timeout_sec=7200)
+    design_data = await wait_for_agent(redis, state["hackathon_id"], "ui_ux_designer", timeout_sec=900)
 
     if not design_data:
         await redis.aclose()
@@ -314,7 +527,7 @@ async def generate_build_plan(state: HackathonState) -> dict:
 
     Shows the human: exactly what each agent will build, in what order,
     with dependency relationships and risk items. Injected into the
-    design approval Slack notification so humans approve with full context.
+    design approval Discord notification so humans approve with full context.
     """
     from config.electronhub import complete_json as _cj
     from pydantic import BaseModel as _BM
@@ -462,7 +675,7 @@ async def run_build(state: HackathonState) -> dict:
             logger.info(f"[forge:commander] Triggered (dependency-ordered): {agent_id}")
 
         # Wait for any in-progress agent to complete (poll)
-        await asyncio.sleep(30)
+        await asyncio.sleep(5)
         newly_done: set[str] = set()
         for agent_id in list(in_progress):
             raw = await redis.get(f"task:{state['hackathon_id']}:{agent_id}")
@@ -494,7 +707,7 @@ async def run_build(state: HackathonState) -> dict:
             **agent_inputs["frontend_engineer"], "simplify": True,
         })
         frontend_data = await wait_for_agent(
-            redis, state["hackathon_id"], "frontend_engineer", timeout_sec=14400
+            redis, state["hackathon_id"], "frontend_engineer", timeout_sec=1800
         )
         if not frontend_data:
             await redis.aclose()
@@ -529,7 +742,7 @@ async def run_verification(state: HackathonState) -> dict:
         await trigger_agent(redis, state["hackathon_id"], agent_id, input_data)
 
     # UX Auditor is the gating agent
-    ux_data = await wait_for_agent(redis, state["hackathon_id"], "ux_auditor", timeout_sec=3600)
+    ux_data = await wait_for_agent(redis, state["hackathon_id"], "ux_auditor", timeout_sec=600)
 
     max_ux_retries = 2
     ux_attempt = 0
@@ -546,13 +759,13 @@ async def run_verification(state: HackathonState) -> dict:
             "ux_audit_report": ux_data,
             "frontend_repo_path": "",
         })
-        await wait_for_agent(redis, state["hackathon_id"], "polish", timeout_sec=3600)
+        await wait_for_agent(redis, state["hackathon_id"], "polish", timeout_sec=600)
         await trigger_agent(redis, state["hackathon_id"], "ux_auditor", {
             "preview_url": state["preview_url"],
             "design_spec": design.get("design_spec", {}),
             "design_md_path": design.get("design_md_path", ""),
         })
-        ux_data = await wait_for_agent(redis, state["hackathon_id"], "ux_auditor", timeout_sec=3600)
+        ux_data = await wait_for_agent(redis, state["hackathon_id"], "ux_auditor", timeout_sec=600)
 
     if ux_data and not ux_data.get("approved", False):
         logger.error(
@@ -563,8 +776,8 @@ async def run_verification(state: HackathonState) -> dict:
             "score": ux_data.get("overall_score", 0),
             "blockers": ux_data.get("blockers", []),
         }))
-        await send_slack_alert(
-            f"*UX Audit Escalation* ⚠️\n"
+        await send_discord_alert(
+            f"**UX Audit Escalation** :warning:\n"
             f"Hackathon: {state.get('project_plan', {}).get('project_name', state['hackathon_id'])}\n"
             f"Score: {ux_data.get('overall_score', '?')}/10 after {max_ux_retries} fix attempts\n"
             f"Blockers: {', '.join(ux_data.get('blockers', []))}\n"
@@ -616,10 +829,10 @@ async def run_polish(state: HackathonState) -> dict:
 
     # Wait for polish to complete (parallel)
     await asyncio.gather(
-        wait_for_agent(redis, state["hackathon_id"], "polish", timeout_sec=7200),
-        wait_for_agent(redis, state["hackathon_id"], "copy_writer", timeout_sec=3600),
-        wait_for_agent(redis, state["hackathon_id"], "data_seeder", timeout_sec=3600),
-        wait_for_agent(redis, state["hackathon_id"], "brand", timeout_sec=3600),
+        wait_for_agent(redis, state["hackathon_id"], "polish", timeout_sec=600),
+        wait_for_agent(redis, state["hackathon_id"], "copy_writer", timeout_sec=300),
+        wait_for_agent(redis, state["hackathon_id"], "data_seeder", timeout_sec=300),
+        wait_for_agent(redis, state["hackathon_id"], "brand", timeout_sec=300),
     )
     await redis.aclose()
     return {"phase": "submitting"}
@@ -657,15 +870,15 @@ async def run_submission(state: HackathonState) -> dict:
         await trigger_agent(redis, state["hackathon_id"], agent_id, input_data)
 
     demo_data, pitch_data = await asyncio.gather(
-        wait_for_agent(redis, state["hackathon_id"], "demo_producer", timeout_sec=7200),
-        wait_for_agent(redis, state["hackathon_id"], "pitch_writer", timeout_sec=3600),
+        wait_for_agent(redis, state["hackathon_id"], "demo_producer", timeout_sec=1200),
+        wait_for_agent(redis, state["hackathon_id"], "pitch_writer", timeout_sec=600),
     )
 
     video_url = demo_data.get("video_url", "") if demo_data else ""
 
     await notify_checkpoint(
         state["hackathon_id"], "submission_approval",
-        f"*Ready to submit!* — {state['project_plan'].get('project_name')}\n"
+        f"**Ready to submit!** — {state['project_plan'].get('project_name')}\n"
         f"• Preview: {state['preview_url']}\n"
         f"• Video: {video_url or 'generating...'}\n"
         f"• Submission description preview:\n"
@@ -690,7 +903,7 @@ async def run_submission(state: HackathonState) -> dict:
             "sponsor_manifest": sponsor_manifest,
             "output_dir": output_dir,
         })
-        sub_data = await wait_for_agent(redis, state["hackathon_id"], "submission", timeout_sec=1800)
+        sub_data = await wait_for_agent(redis, state["hackathon_id"], "submission", timeout_sec=600)
         submission_url = sub_data.get("submission_url", "") if sub_data else ""
 
     await redis.aclose()

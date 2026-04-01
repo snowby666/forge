@@ -194,13 +194,13 @@ graph LR
 
         FIG["Figma MCP node\nListens: figma:write\nWrites design spec to Figma file"]
 
-        SLACK["Slack node\nSends checkpoint notifications\nSends circuit breaker alerts"]
+        DISCORD["Discord node\nSends checkpoint notifications\nSends circuit breaker alerts"]
     end
 
     HUMAN["Human"] -->|clicks link| W1 & W2 & W3 & W4
     W1 & W2 & W3 & W4 -->|set checkpoint key| RD[("Redis")]
     RD -->|notify| CAL & FIG
-    CMD[("Commander")] -->|publish| SLACK
+    CMD[("Commander")] -->|publish| DISCORD
 ```
 
 ---

@@ -298,13 +298,13 @@ sequenceDiagram
     You->>CLI: forge scout
     CLI-->>You: 2 hackathons registered
 
-    Note over You,SYS: 2 hours later (Slack notification)
+    Note over You,SYS: 2 hours later (Discord notification)
     You->>CLI: forge approve concept
     CLI-->>You: [shows 3 concepts]
     You->>CLI: [enters: 1]
     CLI-->>You: Concept 1 approved. Forge is building.
 
-    Note over You,SYS: 4 hours later (Slack notification)
+    Note over You,SYS: 4 hours later (Discord notification)
     You->>CLI: forge approve design
     CLI-->>You: [shows preview URL + score]
     You->>CLI: [enters: y]
@@ -313,12 +313,12 @@ sequenceDiagram
     You->>CLI: forge status --id devpost-123
     CLI-->>You: [live status of all agents]
 
-    Note over You,SYS: 20 hours in (Slack notification)
+    Note over You,SYS: 20 hours in (Discord notification)
     You->>CLI: forge approve quality
     CLI-->>You: [shows URL, audit score]
     You->>CLI: [enters: y]
 
-    Note over You,SYS: 23 hours in (Slack notification)
+    Note over You,SYS: 23 hours in (Discord notification)
     You->>CLI: forge approve submit
     CLI-->>You: [shows all materials]
     You->>CLI: [enters: y]

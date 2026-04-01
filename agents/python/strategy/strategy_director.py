@@ -221,7 +221,7 @@ async def run_worker() -> None:
                 ex=604800,
             )
 
-            # Notify human via Slack (Commander handles this)
+            # Notify human via Discord (Commander handles this)
             await redis.publish("commander:checkpoint", json.dumps({
                 "hackathon_id": hackathon_id,
                 "checkpoint": "concept_approval",

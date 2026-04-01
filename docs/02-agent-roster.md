@@ -81,7 +81,7 @@ START → run_intelligence → generate_concepts → wait_concept_approval
       → run_polish → run_submission → END
 ```
 
-**Failure behavior:** On agent failure, increments the failure counter. At 2 failures: simplifies task scope and retriggers. At 3 failures: flags to human via Slack and skips non-critical work.
+**Failure behavior:** On agent failure, increments the failure counter. At 2 failures: simplifies task scope and retriggers. At 3 failures: flags to human via Discord and skips non-critical work.
 
 ---
 
@@ -425,7 +425,7 @@ Two systems: Mem0 (episodic — what worked and failed, per hackathon) + Qdrant 
 **File:** `agents/python/infra/monitor_and_calendar.py`
 **Tier:** `fast`
 
-Tracks latency (P50/P95/P99), error rate, and cost per agent. Circuit breaker: 3 consecutive failures = pause agent + Slack alert. Polls all active hackathons every 60 seconds. Publishes health reports to Redis.
+Tracks latency (P50/P95/P99), error rate, and cost per agent. Circuit breaker: 3 consecutive failures = pause agent + Discord alert. Polls all active hackathons every 60 seconds. Publishes health reports to Redis.
 
 ---
 
@@ -475,7 +475,7 @@ flowchart TD
     FAIL1 -->|1st| RETRY[Retry same task]
     FAIL1 -->|2nd| SIMPLIFY[Simplify scope\nRetrigger]
     FAIL1 -->|3rd| CRITICAL{Critical path?}
-    CRITICAL -->|yes| HUMAN[Slack alert\nWait for human]
+    CRITICAL -->|yes| HUMAN[Discord alert\nWait for human]
     CRITICAL -->|no| SKIP[Skip + log\nContinue without]
     RETRY --> RUN
     SIMPLIFY --> RUN

@@ -65,7 +65,7 @@ Layer 6 — Submission
 
 Layer 7 — Infrastructure (always running)
   Memory Keeper          Mem0 + Qdrant — learns from every hackathon
-  Monitor                Cost tracking, circuit breakers, Slack alerts
+  Monitor                Cost tracking, circuit breakers, Discord alerts
   Calendar Agent         Google Calendar checkpoints
   Knowledge Updater      Updates design + strategy intelligence via web research
   Outcome Tracker        Closes learning loop — scrapes results, feeds memory, adapts strategy

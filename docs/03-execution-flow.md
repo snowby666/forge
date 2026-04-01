@@ -30,7 +30,7 @@ sequenceDiagram
     end
 
     CMD->>CMD: Generate concepts (Strategy Director)
-    CMD-->>Human: Slack: "3 concepts ready — pick one"
+    CMD-->>Human: Discord: "3 concepts ready — pick one"
     Note over Human: Checkpoint 1: Concept pick (~15 min)
     Human-->>CMD: forge approve concept
 
@@ -41,7 +41,7 @@ sequenceDiagram
     L2->>DB: Publish ApiContract <- immediately on schema design
     Note over DB: Frontend unblocks here, not when backend is done
 
-    CMD-->>Human: Slack: "Design ready for review"
+    CMD-->>Human: Discord: "Design ready for review"
     Note over Human: Checkpoint 2: Design approve (~10 min)
     Human-->>CMD: forge approve design
 
@@ -66,7 +66,7 @@ sequenceDiagram
         CMD->>L4: Re-audit
     end
 
-    CMD-->>Human: Slack: "Preview URL ready"
+    CMD-->>Human: Discord: "Preview URL ready"
     Note over Human: Checkpoint 3: Quality review (~20 min)
     Human-->>CMD: forge approve quality
 
@@ -82,7 +82,7 @@ sequenceDiagram
         CMD->>L6: Pitch Writer
     end
 
-    CMD-->>Human: Slack: "All materials ready — final review"
+    CMD-->>Human: Discord: "All materials ready — final review"
     Note over Human: Checkpoint 4: Submit approve (~10 min)
     Human-->>CMD: forge approve submit
 
@@ -170,21 +170,21 @@ stateDiagram-v2
 
     run_intelligence --> generate_concepts: all 4 intel agents done
 
-    generate_concepts --> wait_concept_approval: concepts published to Redis\nSlack notified
+    generate_concepts --> wait_concept_approval: concepts published to Redis\nDiscord notified
 
     wait_concept_approval --> run_planning: human approved\n(or timeout -> auto-select)
     wait_concept_approval --> [*]: errors in intel phase
 
     run_planning --> run_design: PM + Architect done\nApiContract published
 
-    run_design --> wait_design_approval: DESIGN.md ready\nSlack notified
+    run_design --> wait_design_approval: DESIGN.md ready\nDiscord notified
 
     wait_design_approval --> run_build: human approved
 
     run_build --> run_verification: Frontend done\n(Backend may still run)
     run_build --> [*]: frontend failed after 3 attempts
 
-    run_verification --> wait_quality_review: UX Auditor score >= 7.0\nSlack notified
+    run_verification --> wait_quality_review: UX Auditor score >= 7.0\nDiscord notified
 
     run_verification --> run_build: UX Auditor blocked\nretrigger with fix instructions
 
@@ -239,7 +239,7 @@ flowchart TD
     POLISH_FIX["Polish Agent applies\nspecific targeted fixes"]
     REAUDIT["Re-audit\n(second attempt)"]
     FINAL{"Final score?"}
-    ESCALATE["Escalate to human\nSlack: 'Design issues'"]
+    ESCALATE["Escalate to human\nDiscord: 'Design issues'"]
 
     BUILD_DONE --> AUDIT
     AUDIT --> SLOP

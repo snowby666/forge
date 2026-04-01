@@ -535,7 +535,7 @@ DEFAULT_PERMISSION_RULES: dict[str, list[str]] = {
     "pitch_writer":          ["FileWrite(docs/*)", "WebFetch(*)"],
     "submission":            ["BrowserSubmit(*)", "WebFetch(*)"],
     "memory_keeper":         ["QdrantWrite(*)", "Mem0Write(*)"],
-    "monitor":               ["RedisRead(*)", "SlackAlert(*)"],
+    "monitor":               ["RedisRead(*)", "DiscordAlert(*)"],
     "calendar":              ["GoogleCalendarWrite(*)", "N8NWebhook(*)"],
     "knowledge_updater":     ["FileWrite(config/design_constitution.py)", "WebSearch(*)"],
     "outcome_tracker":       ["WebFetch(*)", "Mem0Write(*)", "QdrantWrite(*)", "RedisWrite(*)"],

@@ -108,7 +108,7 @@ HUMAN CHECKPOINTS (4 total)
 4. Submission approval (~10 min) — before Stagehand fills the form
 
 Always output structured JSON. Other agents consume your outputs directly.""",
-    tools=["redis", "postgres", "temporal", "slack", "google_calendar_mcp"],
+    tools=["redis", "postgres", "temporal", "discord", "google_calendar_mcp"],
     max_iterations=100,
     timeout_minutes=10080,
     sop_inputs=[],
@@ -685,7 +685,7 @@ ZERO-DOWNTIME DURING JUDGING
 - Vercel edge network handles frontend (no downtime)
 - Railway auto-restart on crash (< 5s recovery)
 - Health check endpoint monitored every 30s
-- Alert to Slack if backend goes down""",
+- Alert to Discord if backend goes down""",
     tools=["github_mcp", "vercel_mcp", "redis"],
     max_iterations=10,
     timeout_minutes=60,
@@ -1052,7 +1052,7 @@ OG:IMAGE REQUIREMENTS
 - Left half: product name + tagline (reads clearly when small)
 - Right half: screenshot of the most impressive screen
 - Background: from design tokens background_surface color
-- Must look good when shared on Slack, Twitter, LinkedIn
+- Must look good when shared on Discord, Twitter, LinkedIn
 
 BRAND CONSISTENCY AUDIT
 For each screen in the app:
@@ -1295,12 +1295,12 @@ Track all ElectronHub API calls:
 - Report top 5 most expensive agent+task combinations
 
 ALERTING
-Slack alerts for:
+Discord alerts for:
 - Agent failure (with context: hackathon_id, agent, task, error)
 - System health issues
 - Timeline risk: if critical path is running >20% behind schedule
 - Quality gate failure (UX Auditor blocks submission)""",
-    tools=["redis", "postgres", "slack"],
+    tools=["redis", "postgres", "discord"],
     max_iterations=50,
     timeout_minutes=10080,
     sop_inputs=[],
