@@ -104,9 +104,12 @@ async def wait_for_checkpoint(
 
     while True:
         raw = await redis.get(key)
-        if raw:
-            data = json.loads(raw) if raw != "pending" else None
-            if data and data.get("approved"):
+        if raw and raw != "pending":
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                data = None
+            if data and isinstance(data, dict) and data.get("approved"):
                 return data
         elapsed = datetime.now(timezone.utc).timestamp() - start
         if elapsed > timeout_sec:
@@ -337,6 +340,7 @@ demo_path_components = the 3-5 UI components judges will see in the demo.""",
         return {}
 
 
+async def wait_design_approval(state: HackathonState) -> dict:
     """Wait for human design approval."""
     redis = get_redis()
     cfg = HUMAN_CHECKPOINTS["design_approval"]
@@ -420,10 +424,22 @@ async def run_build(state: HackathonState) -> dict:
             raw = await redis.get(f"task:{state['hackathon_id']}:{agent_id}")
             if raw:
                 task = json.loads(raw)
-                if task["status"] in ("done", "failed"):
+                if task["status"] == "done":
                     newly_done.add(agent_id)
-                    if task["status"] == "done" and agent_id == "frontend_engineer":
+                    if agent_id == "frontend_engineer":
                         frontend_data = task.get("data")
+                elif task["status"] == "failed":
+                    newly_done.add(agent_id)
+                    agent_failures = state.get("agent_failures", {})
+                    agent_failures[agent_id] = agent_failures.get(agent_id, 0) + 1
+                    if agent_failures[agent_id] < 2:
+                        logger.warning(f"[forge:commander] {agent_id} failed (attempt {agent_failures[agent_id]}), retrying with simplify")
+                        await trigger_agent(redis, state["hackathon_id"], agent_id, {
+                            **agent_inputs[agent_id], "simplify": True,
+                        })
+                        in_progress.add(agent_id)
+                    else:
+                        logger.error(f"[forge:commander] {agent_id} failed {agent_failures[agent_id]} times, skipping")
 
         in_progress -= newly_done
         completed   |= newly_done
@@ -467,24 +483,46 @@ async def run_verification(state: HackathonState) -> dict:
     # UX Auditor is the gating agent
     ux_data = await wait_for_agent(redis, state["hackathon_id"], "ux_auditor", timeout_sec=3600)
 
-    if ux_data and not ux_data.get("approved", False):
+    max_ux_retries = 2
+    ux_attempt = 0
+    while ux_data and not ux_data.get("approved", False) and ux_attempt < max_ux_retries:
+        ux_attempt += 1
         score = ux_data.get("overall_score", 0)
         blockers = ux_data.get("blockers", [])
-        logger.warning(f"[forge:commander] UX Auditor BLOCKED. Score: {score}, Blockers: {blockers}")
-        # Trigger polish with the audit report for issue-specific fixes
+        logger.warning(
+            f"[forge:commander] UX Auditor BLOCKED (attempt {ux_attempt}/{max_ux_retries}). "
+            f"Score: {score}, Blockers: {blockers}"
+        )
         await trigger_agent(redis, state["hackathon_id"], "polish", {
             "preview_url": state["preview_url"],
             "ux_audit_report": ux_data,
             "frontend_repo_path": "",
         })
-        polish_data = await wait_for_agent(redis, state["hackathon_id"], "polish", timeout_sec=3600)
-        # Re-audit
+        await wait_for_agent(redis, state["hackathon_id"], "polish", timeout_sec=3600)
         await trigger_agent(redis, state["hackathon_id"], "ux_auditor", {
             "preview_url": state["preview_url"],
             "design_spec": design.get("design_spec", {}),
             "design_md_path": design.get("design_md_path", ""),
         })
         ux_data = await wait_for_agent(redis, state["hackathon_id"], "ux_auditor", timeout_sec=3600)
+
+    if ux_data and not ux_data.get("approved", False):
+        logger.error(
+            f"[forge:commander] UX Auditor still blocked after {max_ux_retries} retries — escalating to human"
+        )
+        await redis.publish("commander:audit_failed", json.dumps({
+            "hackathon_id": state["hackathon_id"],
+            "score": ux_data.get("overall_score", 0),
+            "blockers": ux_data.get("blockers", []),
+        }))
+        await send_slack_alert(
+            f"*UX Audit Escalation* ⚠️\n"
+            f"Hackathon: {state.get('project_plan', {}).get('project_name', state['hackathon_id'])}\n"
+            f"Score: {ux_data.get('overall_score', '?')}/10 after {max_ux_retries} fix attempts\n"
+            f"Blockers: {', '.join(ux_data.get('blockers', []))}\n"
+            f"Preview: {state['preview_url']}\n\n"
+            f"Proceeding to quality review — manual intervention recommended."
+        )
 
     await notify_checkpoint(
         state["hackathon_id"], "quality_review",
@@ -680,6 +718,15 @@ def route_after_quality_approval(state: HackathonState) -> str:
     return "run_polish"
 
 
+async def _schedule_outcome_node(state: HackathonState) -> dict:
+    """Properly awaited wrapper for schedule_outcome_check."""
+    try:
+        await schedule_outcome_check(state)
+    except Exception as e:
+        logger.warning(f"[forge:commander] Outcome scheduling failed: {e}")
+    return {}
+
+
 # ── Graph assembly ─────────────────────────────────────────────────────────────
 
 def build_graph() -> StateGraph:
@@ -697,7 +744,7 @@ def build_graph() -> StateGraph:
     g.add_node("wait_quality_review",     wait_quality_review)
     g.add_node("run_polish",              run_polish)
     g.add_node("run_submission",          run_submission)
-    g.add_node("schedule_outcome",        lambda s: asyncio.create_task(schedule_outcome_check(s)) or {})
+    g.add_node("schedule_outcome",        _schedule_outcome_node)
 
     g.add_edge(START, "run_intelligence")
     g.add_conditional_edges("run_intelligence",      route_after_intel)

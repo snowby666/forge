@@ -205,12 +205,21 @@ const HackathonSchema = z.object({
 });
 
 app.post("/scrape", async (req, res) => {
-  const { platforms = ["devpost", "lablab", "devfolio"], limit_per_platform = 5 } = req.body;
+  const {
+    platforms = ["devpost", "lablab", "devfolio"],
+    limit_per_platform = 5,
+    custom_urls = [],
+    extract_judges = false,
+    extract_winners = false,
+    extract_feedback = false,
+  } = req.body;
   const all: object[] = [];
   const stagehand = createStagehand();
 
   try {
     await stagehand.init();
+
+    // Scrape platform listing pages
     for (const platform of platforms) {
       const url = PLATFORM_URLS[platform];
       if (!url) continue;
@@ -238,7 +247,72 @@ app.post("/scrape", async (req, res) => {
         }
       }
     }
-    res.json({ hackathons: all });
+
+    // Scrape custom URLs (used by analysis agents and outcome tracker)
+    for (const customUrl of custom_urls) {
+      console.log(`[forge:browser] Scraping custom URL: ${customUrl}`);
+      try {
+        await stagehand.page.goto(customUrl, { waitUntil: "networkidle" });
+        await humanDelay();
+
+        if (extract_judges) {
+          const judgeData = await stagehand.extract({
+            instruction: "Extract all judges/evaluators: full name, title/role, company/organization, bio/background, LinkedIn URL if visible, expertise areas.",
+            schema: z.object({
+              judges: z.array(z.object({
+                name: z.string(),
+                title: z.string().optional(),
+                company: z.string().optional(),
+                bio: z.string().optional(),
+                linkedin_url: z.string().optional(),
+                expertise: z.array(z.string()).optional(),
+              })),
+            }),
+          });
+          all.push({ url: customUrl, ...judgeData, type: "judges" });
+        } else if (extract_winners) {
+          const winnerData = await stagehand.extract({
+            instruction: "Extract all winning projects/submissions: project name, team name, prize won, placement, project URL, description.",
+            schema: z.object({
+              winners: z.array(z.object({
+                project_name: z.string(),
+                team_name: z.string().optional(),
+                prize: z.string().optional(),
+                placement: z.string().optional(),
+                project_url: z.string().optional(),
+                description: z.string().optional(),
+              })),
+            }),
+          });
+          all.push({ url: customUrl, ...winnerData, type: "winners" });
+        } else if (extract_feedback) {
+          const feedbackData = await stagehand.extract({
+            instruction: "Extract any judge feedback, comments, scores, or reviews visible on this submission page.",
+            schema: z.object({
+              feedback: z.array(z.object({
+                judge_name: z.string().optional(),
+                comment: z.string(),
+                score: z.number().optional(),
+              })),
+              placement: z.string().optional(),
+              prize_won: z.string().optional(),
+            }),
+          });
+          all.push({ url: customUrl, ...feedbackData, type: "feedback" });
+        } else {
+          const detail = await stagehand.extract({
+            instruction: "Extract complete hackathon details: full description, all prizes with amounts and sponsors, judging criteria, judges, sponsor API requirements, registration status, team size limits, submission deadline, past winners.",
+            schema: HackathonSchema.shape.hackathons.element,
+          });
+          all.push({ url: customUrl, ...detail, type: "detail" });
+        }
+      } catch (err) {
+        console.error(`[forge:browser] Failed to scrape ${customUrl}: ${err}`);
+        all.push({ url: customUrl, error: String(err) });
+      }
+    }
+
+    res.json({ hackathons: all, judges: all.filter((x: any) => x.type === "judges").flatMap((x: any) => x.judges || []), winners: all.filter((x: any) => x.type === "winners").flatMap((x: any) => x.winners || []), feedback: all.filter((x: any) => x.type === "feedback") });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   } finally {
