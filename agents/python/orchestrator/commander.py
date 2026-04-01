@@ -65,6 +65,7 @@ def get_redis() -> Redis:
 
 
 async def trigger_agent(redis: Redis, hackathon_id: str, agent_id: str, input_data: dict) -> None:
+    logger.info(f"[forge:commander]   → Triggering {agent_id}")
     await redis.set(f"task:{hackathon_id}:{agent_id}", json.dumps({"status": "pending"}), ex=604800)
     await redis.publish("agent:trigger", json.dumps({
         "hackathon_id": hackathon_id,
@@ -75,18 +76,28 @@ async def trigger_agent(redis: Redis, hackathon_id: str, agent_id: str, input_da
 
 async def wait_for_agent(redis: Redis, hackathon_id: str, agent_id: str, timeout_sec: int = 3600) -> dict | None:
     """Poll Redis until agent completes or times out."""
+    logger.info(f"[forge:commander]   Waiting for {agent_id} (timeout: {timeout_sec}s)...")
     start = datetime.now(timezone.utc).timestamp()
+    last_log = start
     while True:
         raw = await redis.get(f"task:{hackathon_id}:{agent_id}")
         if raw:
             task = json.loads(raw)
             if task["status"] == "done":
+                elapsed = datetime.now(timezone.utc).timestamp() - start
+                logger.info(f"[forge:commander]   ✓ {agent_id} done ({elapsed:.0f}s)")
                 return task.get("data")
             if task["status"] == "failed":
+                elapsed = datetime.now(timezone.utc).timestamp() - start
+                logger.error(f"[forge:commander]   ✗ {agent_id} FAILED ({elapsed:.0f}s): {task.get('error', '?')}")
                 return None
         elapsed = datetime.now(timezone.utc).timestamp() - start
+        now = datetime.now(timezone.utc).timestamp()
+        if now - last_log > 120:
+            logger.info(f"[forge:commander]   ⟳ Still waiting for {agent_id}... ({elapsed:.0f}s elapsed)")
+            last_log = now
         if elapsed > timeout_sec:
-            logger.warning(f"[forge:commander] Timeout waiting for {agent_id}")
+            logger.warning(f"[forge:commander]   ⏰ {agent_id} TIMED OUT after {timeout_sec}s")
             return None
         await asyncio.sleep(30)
 
@@ -101,6 +112,11 @@ async def wait_for_checkpoint(
     key = f"checkpoint:{hackathon_id}:{checkpoint_id}"
     timeout_sec = timeout_hours * 3600
     start = datetime.now(timezone.utc).timestamp()
+    logger.info(
+        f"[forge:commander]   ⏸  Waiting for human: {checkpoint_id}\n"
+        f"[forge:commander]      Approve via: forge approve {checkpoint_id.split('_')[0]} --id {hackathon_id}\n"
+        f"[forge:commander]      Timeout: {timeout_hours}h (auto-proceeds on timeout)"
+    )
 
     while True:
         raw = await redis.get(key)
@@ -110,10 +126,11 @@ async def wait_for_checkpoint(
             except (json.JSONDecodeError, TypeError):
                 data = None
             if data and isinstance(data, dict) and data.get("approved"):
+                logger.info(f"[forge:commander]   ✓ {checkpoint_id} APPROVED by human")
                 return data
         elapsed = datetime.now(timezone.utc).timestamp() - start
         if elapsed > timeout_sec:
-            logger.warning(f"[forge:commander] Checkpoint {checkpoint_id} timed out after {timeout_hours}h")
+            logger.warning(f"[forge:commander]   ⏰ {checkpoint_id} timed out after {timeout_hours}h — auto-proceeding")
             return None
         await asyncio.sleep(30)
 
@@ -129,20 +146,35 @@ async def notify_checkpoint(hackathon_id: str, checkpoint_id: str, message: str)
 
 async def run_intelligence(state: HackathonState) -> dict:
     """Layer 1: Run all 4 intel agents in parallel."""
-    logger.info(f"[forge:commander] Phase: Intelligence")
+    logger.info(
+        f"[forge:commander] ━━━ Phase 1: INTELLIGENCE ━━━\n"
+        f"[forge:commander]   Running: Competitor Analyst, Judge Profiler, Sponsor Researcher (parallel)\n"
+        f"[forge:commander]   Hackathon: {state['brief'].get('name')}"
+    )
+    import time as _time
+    t0 = _time.monotonic()
     redis = get_redis()
+    logger.info(f"[forge:commander]   Scheduling calendar events...")
     await schedule_hackathon_events(
         state["hackathon_id"], state["brief"].get("name", "Hackathon"),
         state["brief"].get("deadline", ""), ""
     )
+    logger.info(f"[forge:commander]   Starting 4 intelligence agents in parallel...")
     intel = await run_all_intelligence(state["hackathon_id"], state["brief"])
+    elapsed = _time.monotonic() - t0
+    logger.info(
+        f"[forge:commander]   Intelligence complete in {elapsed:.0f}s\n"
+        f"[forge:commander]   CompReport: {'yes' if intel.get('comp_report') else 'no'}\n"
+        f"[forge:commander]   JudgeProfile: {'yes' if intel.get('judge_profile') else 'no'}\n"
+        f"[forge:commander]   SponsorMap: {'yes' if intel.get('sponsor_map') else 'no'}"
+    )
     await redis.aclose()
     return {"intel": intel, "phase": "strategy"}
 
 
 async def generate_concepts(state: HackathonState) -> dict:
     """Trigger Strategy Director, wait for concepts, notify human."""
-    logger.info(f"[forge:commander] Phase: Concept generation")
+    logger.info(f"[forge:commander] ━━━ Phase 1b: CONCEPT GENERATION ━━━")
     redis = get_redis()
 
     await trigger_agent(redis, state["hackathon_id"], "strategy_director", {
@@ -196,7 +228,11 @@ async def wait_concept_approval(state: HackathonState) -> dict:
 
 async def run_planning(state: HackathonState) -> dict:
     """Run PM + Tech Architect in parallel."""
-    logger.info(f"[forge:commander] Phase: Planning")
+    logger.info(
+        f"[forge:commander] ━━━ Phase 2: PLANNING ━━━\n"
+        f"[forge:commander]   Concept: {state['selected_concept'].get('project_name', '?')}\n"
+        f"[forge:commander]   Running: PM + Tech Architect (parallel)"
+    )
     redis = get_redis()
 
     # Trigger PM and Architect in parallel
@@ -238,7 +274,11 @@ async def run_planning(state: HackathonState) -> dict:
 
 async def run_design(state: HackathonState) -> dict:
     """Trigger UI/UX Designer, wait, notify human for design approval."""
-    logger.info(f"[forge:commander] Phase: Design")
+    logger.info(
+        f"[forge:commander] ━━━ Phase 2b: DESIGN ━━━\n"
+        f"[forge:commander]   Running: UI/UX Designer\n"
+        f"[forge:commander]   Project: {state['project_plan'].get('project_name', '?')}"
+    )
     redis = get_redis()
 
     await trigger_agent(redis, state["hackathon_id"], "ui_ux_designer", {
@@ -362,7 +402,11 @@ async def run_build(state: HackathonState) -> dict:
     Uses forge_tools.get_runnable_now() — adapted from Claude Code's
     isConcurrencySafe() concurrency scheduling pattern.
     """
-    logger.info(f"[forge:commander] Phase: Build")
+    logger.info(
+        f"[forge:commander] ━━━ Phase 3: BUILD ━━━\n"
+        f"[forge:commander]   Running: Frontend, Backend, Integration, Test, DevOps, Security\n"
+        f"[forge:commander]   Dependency-ordered scheduling via get_runnable_now()"
+    )
     redis = get_redis()
 
     design = state.get("design_spec", {})
@@ -465,7 +509,11 @@ async def run_build(state: HackathonState) -> dict:
 
 async def run_verification(state: HackathonState) -> dict:
     """Run Code Reviewer + UX Auditor + Performance in parallel."""
-    logger.info(f"[forge:commander] Phase: Verification")
+    logger.info(
+        f"[forge:commander] ━━━ Phase 4: VERIFICATION ━━━\n"
+        f"[forge:commander]   Running: Code Reviewer, UX Auditor [veto], Performance Agent\n"
+        f"[forge:commander]   Preview: {state.get('preview_url', '?')}"
+    )
     redis = get_redis()
     design = state.get("design_spec", {})
 
@@ -546,7 +594,10 @@ async def wait_quality_review(state: HackathonState) -> dict:
 
 async def run_polish(state: HackathonState) -> dict:
     """Run all 4 polish agents in parallel."""
-    logger.info(f"[forge:commander] Phase: Polish")
+    logger.info(
+        f"[forge:commander] ━━━ Phase 5: POLISH ━━━\n"
+        f"[forge:commander]   Running: Polish Agent, Copy Writer, Data Seeder, Brand Agent (parallel)"
+    )
     redis = get_redis()
 
     design = state.get("design_spec", {})
@@ -576,7 +627,11 @@ async def run_polish(state: HackathonState) -> dict:
 
 async def run_submission(state: HackathonState) -> dict:
     """Run demo producer + pitch writer in parallel, then submit."""
-    logger.info(f"[forge:commander] Phase: Submission")
+    logger.info(
+        f"[forge:commander] ━━━ Phase 6: SUBMISSION ━━━\n"
+        f"[forge:commander]   Running: Demo Producer + Pitch Writer (parallel), then Submission Agent\n"
+        f"[forge:commander]   Preview: {state.get('preview_url', '?')}"
+    )
     redis = get_redis()
 
     sponsor_manifest_raw = await redis.get(f"hackathon:{state['hackathon_id']}:sponsor_map")
@@ -800,12 +855,31 @@ async def run(hackathon_id: str) -> HackathonState:
     db_url = os.environ["DATABASE_URL"]
     # psycopg needs plain postgresql:// — strip SQLAlchemy dialect suffixes
     db_url = db_url.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://")
+
+    logger.info(f"[forge:commander] Connecting to PostgreSQL for checkpointing...")
     async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
+        logger.info(f"[forge:commander] PostgreSQL connected. Setting up checkpoint tables...")
         await checkpointer.setup()
+        logger.info(f"[forge:commander] Checkpoint tables ready. Building execution graph...")
         compiled = build_graph().compile(checkpointer=checkpointer)
-        logger.info(f"[forge:commander] Starting hackathon: {brief.get('name')} ({hackathon_id})")
+        logger.info(
+            f"[forge:commander] ═══════════════════════════════════════════════════\n"
+            f"[forge:commander]   STARTING: {brief.get('name')}\n"
+            f"[forge:commander]   ID: {hackathon_id}\n"
+            f"[forge:commander]   Theme: {brief.get('theme', '?')}\n"
+            f"[forge:commander]   Deadline: {brief.get('days_until_deadline', '?')}d left\n"
+            f"[forge:commander]   Graph nodes: {len(compiled.get_graph().nodes)}\n"
+            f"[forge:commander] ═══════════════════════════════════════════════════"
+        )
         result = await compiled.ainvoke(initial, config={"configurable": {"thread_id": hackathon_id}})
-        logger.info(f"[forge:commander] Done. Phase: {result.get('phase')}, Submitted: {result.get('submission_url')}")
+        logger.info(
+            f"[forge:commander] ═══════════════════════════════════════════════════\n"
+            f"[forge:commander]   COMPLETE: {brief.get('name')}\n"
+            f"[forge:commander]   Final phase: {result.get('phase')}\n"
+            f"[forge:commander]   Submission: {result.get('submission_url', 'none')}\n"
+            f"[forge:commander]   Errors: {len(result.get('errors', []))}\n"
+            f"[forge:commander] ═══════════════════════════════════════════════════"
+        )
         return result
 
 
