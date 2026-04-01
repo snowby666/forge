@@ -256,8 +256,15 @@ async def cmd_run(args):
         info("Press Ctrl+C to stop")
         await run_listener()
     elif args.id:
-        section(f"Starting Forge for: {args.id}")
-        result = await run(args.id)
+        restart = getattr(args, "restart", False)
+        from_phase = getattr(args, "from_phase", None)
+        if from_phase:
+            section(f"Forge → jumping to '{from_phase}' for: {args.id}")
+        elif restart:
+            section(f"Forge → restarting from scratch: {args.id}")
+        else:
+            section(f"Forge → resuming: {args.id}")
+        result = await run(args.id, force_restart=restart, from_phase=from_phase)
         if result.get("submission_url"):
             ok(f"Submitted: {result['submission_url']}")
         else:
@@ -754,9 +761,15 @@ def main():
     p_scout.add_argument("--shallow", action="store_true", help="Skip deep scrape / community / research phases")
 
     # run
-    p_run = sub.add_parser("run", help="Full autonomous build cycle")
+    p_run = sub.add_parser("run", help="Full autonomous build cycle (auto-resumes from last checkpoint)")
     p_run.add_argument("--id", metavar="HACKATHON_ID", help="Run specific hackathon")
     p_run.add_argument("--listen", action="store_true", help="Daemon mode — listen for Scout triggers")
+    p_run.add_argument("--restart", action="store_true", help="Discard checkpoint and start from scratch")
+    p_run.add_argument(
+        "--from-phase", metavar="PHASE",
+        choices=["intelligence", "strategy", "planning", "design", "building", "verifying", "polishing", "submitting"],
+        help="Jump to a specific phase (keeps state from prior phases)",
+    )
 
     # status
     p_status = sub.add_parser("status", help="Dashboard — scoreboard + agent grid for ALL hackathons")

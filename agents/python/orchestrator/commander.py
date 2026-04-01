@@ -1064,7 +1064,29 @@ def build_graph() -> StateGraph:
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
-async def run(hackathon_id: str) -> HackathonState:
+PHASE_ORDER = [
+    "intelligence", "strategy", "planning", "design",
+    "building", "verifying", "polishing", "submitting", "done",
+]
+
+PHASE_TO_NODE: dict[str, str] = {
+    "intelligence": "run_intelligence",
+    "strategy":     "generate_concepts",
+    "planning":     "run_planning",
+    "design":       "run_design",
+    "building":     "run_build",
+    "verifying":    "run_verification",
+    "polishing":    "run_polish",
+    "submitting":   "run_submission",
+}
+
+
+async def run(
+    hackathon_id: str,
+    *,
+    force_restart: bool = False,
+    from_phase: str | None = None,
+) -> HackathonState:
     redis = get_redis()
     brief_raw = await redis.get(f"hackathon:{hackathon_id}:brief")
     await redis.aclose()
@@ -1073,31 +1095,38 @@ async def run(hackathon_id: str) -> HackathonState:
         raise SystemExit(f"No brief for hackathon_id={hackathon_id}")
 
     brief = json.loads(brief_raw)
-    initial: HackathonState = {
-        "hackathon_id": hackathon_id,
-        "brief": brief,
-        "intel": {},
-        "concepts": {},
-        "selected_concept": {},
-        "project_plan": {},
-        "db_schema": {},
-        "api_contract": {},
-        "design_spec": {},
-        "preview_url": "",
-        "repo_url": "",
-        "submission_url": "",
-        "phase": "intelligence",
-        "checkpoint_approvals": {},
-        "agent_statuses": {},
-        "agent_failures": {},
-        "errors": [],
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "messages": [],
-    }
+
+    def _make_initial(phase: str = "intelligence") -> HackathonState:
+        return {
+            "hackathon_id": hackathon_id,
+            "brief": brief,
+            "intel": {},
+            "concepts": {},
+            "selected_concept": {},
+            "project_plan": {},
+            "db_schema": {},
+            "api_contract": {},
+            "design_spec": {},
+            "preview_url": "",
+            "repo_url": "",
+            "submission_url": "",
+            "phase": phase,
+            "checkpoint_approvals": {},
+            "agent_statuses": {},
+            "agent_failures": {},
+            "errors": [],
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "messages": [],
+        }
+
+    if from_phase and from_phase not in PHASE_TO_NODE:
+        valid = ", ".join(PHASE_TO_NODE.keys())
+        raise SystemExit(f"Unknown phase '{from_phase}'. Valid phases: {valid}")
 
     db_url = os.environ["DATABASE_URL"]
-    # psycopg needs plain postgresql:// — strip SQLAlchemy dialect suffixes
     db_url = db_url.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://")
+
+    thread_config = {"configurable": {"thread_id": hackathon_id}}
 
     logger.info(f"[forge:commander] Connecting to PostgreSQL for checkpointing...")
     async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
@@ -1105,16 +1134,60 @@ async def run(hackathon_id: str) -> HackathonState:
         await checkpointer.setup()
         logger.info(f"[forge:commander] Checkpoint tables ready. Building execution graph...")
         compiled = build_graph().compile(checkpointer=checkpointer)
-        logger.info(
-            f"[forge:commander] ═══════════════════════════════════════════════════\n"
-            f"[forge:commander]   STARTING: {brief.get('name')}\n"
-            f"[forge:commander]   ID: {hackathon_id}\n"
-            f"[forge:commander]   Theme: {brief.get('theme', '?')}\n"
-            f"[forge:commander]   Deadline: {brief.get('days_until_deadline', '?')}d left\n"
-            f"[forge:commander]   Graph nodes: {len(compiled.get_graph().nodes)}\n"
-            f"[forge:commander] ═══════════════════════════════════════════════════"
-        )
-        result = await compiled.ainvoke(initial, config={"configurable": {"thread_id": hackathon_id}})
+
+        existing = await checkpointer.aget(thread_config)
+
+        if from_phase and existing:
+            saved_state = existing["channel_values"]
+            saved_state["phase"] = from_phase
+            node = PHASE_TO_NODE[from_phase]
+            logger.info(
+                f"[forge:commander] ═══════════════════════════════════════════════════\n"
+                f"[forge:commander]   JUMPING TO PHASE: {from_phase}\n"
+                f"[forge:commander]   Hackathon: {brief.get('name')}\n"
+                f"[forge:commander]   ID: {hackathon_id}\n"
+                f"[forge:commander]   Target node: {node}\n"
+                f"[forge:commander]   Preserving state from: {existing['channel_values'].get('phase', '?')}\n"
+                f"[forge:commander] ═══════════════════════════════════════════════════"
+            )
+            result = await compiled.ainvoke(
+                saved_state,
+                config={**thread_config, "configurable": {**thread_config["configurable"]}},
+            )
+
+        elif from_phase and not existing:
+            logger.warning(
+                f"[forge:commander] No checkpoint found — cannot jump to '{from_phase}'. "
+                f"Starting from scratch."
+            )
+            result = await compiled.ainvoke(_make_initial(), config=thread_config)
+
+        elif not force_restart and existing:
+            saved_phase = existing["channel_values"].get("phase", "?")
+            logger.info(
+                f"[forge:commander] ═══════════════════════════════════════════════════\n"
+                f"[forge:commander]   RESUMING: {brief.get('name')}\n"
+                f"[forge:commander]   ID: {hackathon_id}\n"
+                f"[forge:commander]   Saved phase: {saved_phase}\n"
+                f"[forge:commander]   Checkpoint: {existing['id'][:12]}...\n"
+                f"[forge:commander] ═══════════════════════════════════════════════════"
+            )
+            result = await compiled.ainvoke(None, config=thread_config)
+
+        else:
+            if force_restart and existing:
+                logger.info(f"[forge:commander] Force restart — discarding existing checkpoint")
+            logger.info(
+                f"[forge:commander] ═══════════════════════════════════════════════════\n"
+                f"[forge:commander]   STARTING: {brief.get('name')}\n"
+                f"[forge:commander]   ID: {hackathon_id}\n"
+                f"[forge:commander]   Theme: {brief.get('theme', '?')}\n"
+                f"[forge:commander]   Deadline: {brief.get('days_until_deadline', '?')}d left\n"
+                f"[forge:commander]   Graph nodes: {len(compiled.get_graph().nodes)}\n"
+                f"[forge:commander] ═══════════════════════════════════════════════════"
+            )
+            result = await compiled.ainvoke(_make_initial(), config=thread_config)
+
         logger.info(
             f"[forge:commander] ═══════════════════════════════════════════════════\n"
             f"[forge:commander]   COMPLETE: {brief.get('name')}\n"
