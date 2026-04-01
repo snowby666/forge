@@ -16,9 +16,9 @@ Model overrides — set any of these in .env or forge.secrets:
   FORGE_MODEL_VISION   default: claude-sonnet-4-6  (vision-capable)
 
 Max token overrides per tier:
-  FORGE_MAX_TOKENS_HEAVY    default: 32000
-  FORGE_MAX_TOKENS_STANDARD default: 16000
-  FORGE_MAX_TOKENS_DESIGN   default: 16000
+  FORGE_MAX_TOKENS_HEAVY    default: 64000
+  FORGE_MAX_TOKENS_STANDARD default: 32000
+  FORGE_MAX_TOKENS_DESIGN   default: 32000
   FORGE_MAX_TOKENS_WRITING  default: 16000
   FORGE_MAX_TOKENS_BULK     default: 8000
   FORGE_MAX_TOKENS_FAST     default: 4000
@@ -134,9 +134,9 @@ MODELS = get_models()
 # Sonnet 4.6 → 64k output; Opus 4.6 → 128k output; GPT-4.1 → 32k output.
 
 _DEFAULT_MAX_TOKENS: dict[Tier, int] = {
-    Tier.HEAVY:    32_000,  # Cap Opus at 32k for cost control (supports 128k)
-    Tier.STANDARD: 16_000,  # Sonnet 4.6 supports 64k; 16k covers all agent tasks
-    Tier.DESIGN:   16_000,  # Component specs + design tokens
+    Tier.HEAVY:    64_000,  # Opus 4.6 supports 128k; 64k is generous for any task
+    Tier.STANDARD: 32_000,  # Sonnet 4.6 supports 64k; 32k avoids truncation on large JSON
+    Tier.DESIGN:   32_000,  # Component specs + design tokens can be large
     Tier.WRITING:  16_000,  # READMEs, pitch decks, demo scripts
     Tier.BULK:     8_000,   # Tests + boilerplate rarely exceed 8k
     Tier.FAST:     4_000,   # Short classification/scoring outputs
@@ -368,7 +368,8 @@ async def complete(
                 stream=True,
             )
 
-            STREAM_TIMEOUT = 180  # 3 min max for any single stream
+            STREAM_TIMEOUT = 300  # 5 min — Claude can take 3-4 min for large JSON
+            STALL_TIMEOUT = 90   # kill only if no new chunk for 90s (actually stalled)
             async def _read_stream():
                 nonlocal chunk_count
                 async for chunk in stream:
@@ -386,11 +387,9 @@ async def complete(
                     f"[forge:llm] ⏰ Stream timeout after {elapsed:.0f}s on {current_model} "
                     f"for task={task} | {chunk_count} chunks, {len(partial)} chars received"
                 )
-                # Use partial if it looks substantial enough
                 if len(partial) > 200:
                     logger.info(f"[forge:llm] Using partial response ({len(partial)} chars)")
                     return partial
-                # Otherwise fall through to retry
                 raise
 
             result = "".join(chunks)
