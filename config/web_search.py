@@ -485,9 +485,9 @@ async def _get_c4a_crawler():
             try:
                 from crawl4ai import AsyncWebCrawler, BrowserConfig  # type: ignore[import]
                 browser_cfg = BrowserConfig(
+                    browser_type="chromium",
                     headless=True,
                     verbose=False,
-                    # Randomise fingerprint to reduce bot detection on hackathon platforms
                     user_agent_mode="random",
                     java_script_enabled=True,
                 )
@@ -1107,7 +1107,7 @@ async def adaptive_crawl(
     try:
         from crawl4ai import AsyncWebCrawler, AdaptiveCrawler, AdaptiveConfig, BrowserConfig  # type: ignore[import]
 
-        browser_cfg = BrowserConfig(headless=True, verbose=False)
+        browser_cfg = BrowserConfig(browser_type="chromium", headless=True, verbose=False)
         config = AdaptiveConfig(
             strategy=strategy,
             confidence_threshold=confidence_threshold,
@@ -1225,6 +1225,7 @@ async def scrape_hackathon_listings(
         import json as _json
 
         browser_cfg = BrowserConfig(
+            browser_type="chromium",
             headless=True,
             verbose=False,
             user_agent_mode="random",
