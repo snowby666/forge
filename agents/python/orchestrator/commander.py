@@ -35,7 +35,7 @@ from agents.python.infra.monitor_and_calendar import (
 logger = logging.getLogger(__name__)
 
 N8N_BASE = os.environ.get("N8N_BASE_URL", "http://localhost:5678")
-FORGE_WEB_URL = os.environ.get("FORGE_WEB_URL", "http://localhost:9090")
+FORGE_WEB_URL = os.environ.get("FORGE_WEB_URL", "https://sentinelhive.dev")
 
 
 # ── LangGraph state ────────────────────────────────────────────────────────────

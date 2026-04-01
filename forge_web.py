@@ -430,7 +430,7 @@ async def api_approve(hackathon_id: str, checkpoint: str, request: Request):
 
 # ─── Standalone run ───────────────────────────────────────────────────────────
 
-def start(host: str = "0.0.0.0", port: int = 9090):
+def start(host: str = "0.0.0.0", port: int = 3000):
     import uvicorn
     uvicorn.run("forge_web:app", host=host, port=port, reload=False, log_level="info")
 
@@ -439,6 +439,6 @@ if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument("--host", default="0.0.0.0")
-    p.add_argument("--port", type=int, default=9090)
+    p.add_argument("--port", type=int, default=3000)
     args = p.parse_args()
     start(args.host, args.port)

@@ -788,7 +788,7 @@ def main():
     # web
     p_web = sub.add_parser("web", help="Start web dashboard for remote approval from any device")
     p_web.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
-    p_web.add_argument("--port", type=int, default=9090, help="Port (default: 9090)")
+    p_web.add_argument("--port", type=int, default=3000, help="Port (default: 3000)")
 
     # calendar
     sub.add_parser("calendar-auth", help="Google Calendar service account setup & verification")

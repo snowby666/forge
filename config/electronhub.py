@@ -368,29 +368,60 @@ async def complete(
                 stream=True,
             )
 
-            STREAM_TIMEOUT = 300  # 5 min — Claude can take 3-4 min for large JSON
-            STALL_TIMEOUT = 90   # kill only if no new chunk for 90s (actually stalled)
+            STREAM_TIMEOUT = 600  # 10 min total ceiling
+            STALL_TIMEOUT = 90   # kill if no new chunk for 90s (actually stalled)
+            last_chunk_at = _t.monotonic()
+
             async def _read_stream():
-                nonlocal chunk_count
+                nonlocal chunk_count, last_chunk_at
                 async for chunk in stream:
                     delta = chunk.choices[0].delta if chunk.choices else None
                     if delta and delta.content:
                         chunks.append(delta.content)
                         chunk_count += 1
+                        last_chunk_at = _t.monotonic()
+
+            async def _read_with_stall_detection():
+                read_task = asyncio.create_task(_read_stream())
+                while not read_task.done():
+                    await asyncio.sleep(5)
+                    if read_task.done():
+                        break
+                    stall = _t.monotonic() - last_chunk_at
+                    total = _t.monotonic() - t0
+                    if stall > STALL_TIMEOUT:
+                        logger.warning(
+                            f"[forge:llm] ⏰ Stream stalled {stall:.0f}s (no new chunks) "
+                            f"on {current_model} for task={task}"
+                        )
+                        read_task.cancel()
+                        return
+                    if total > STREAM_TIMEOUT:
+                        logger.warning(
+                            f"[forge:llm] ⏰ Stream hit {STREAM_TIMEOUT}s ceiling "
+                            f"on {current_model} for task={task}"
+                        )
+                        read_task.cancel()
+                        return
+                await read_task
 
             try:
-                await asyncio.wait_for(_read_stream(), timeout=STREAM_TIMEOUT)
-            except asyncio.TimeoutError:
-                elapsed = _t.monotonic() - t0
-                partial = "".join(chunks)
+                await asyncio.wait_for(_read_with_stall_detection(), timeout=STREAM_TIMEOUT + 30)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+
+            elapsed = _t.monotonic() - t0
+            partial = "".join(chunks)
+
+            if chunk_count > 0 and elapsed >= STALL_TIMEOUT:
                 logger.warning(
-                    f"[forge:llm] ⏰ Stream timeout after {elapsed:.0f}s on {current_model} "
+                    f"[forge:llm] ⏰ Stream ended after {elapsed:.0f}s on {current_model} "
                     f"for task={task} | {chunk_count} chunks, {len(partial)} chars received"
                 )
                 if len(partial) > 200:
                     logger.info(f"[forge:llm] Using partial response ({len(partial)} chars)")
                     return partial
-                raise
+                raise asyncio.TimeoutError()
 
             result = "".join(chunks)
             elapsed = _t.monotonic() - t0
