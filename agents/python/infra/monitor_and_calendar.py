@@ -2,7 +2,7 @@
 """
 Monitor Agent + Calendar Agent — Layer 7: Infrastructure
 Monitor: tracks cost, latency, errors, circuit breakers, Discord alerts.
-Calendar: schedules human checkpoint events via Google Calendar MCP.
+Calendar: schedules human checkpoint events directly via Google Calendar API.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import os
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import aiohttp
 from redis.asyncio import Redis
@@ -172,110 +173,237 @@ async def run_monitor_worker() -> None:
 # CALENDAR AGENT
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# GOOGLE CALENDAR — direct API integration (no n8n needed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_TOKEN_PATH = Path(os.path.dirname(__file__)).parent.parent.parent / "forge-google-token.json"
+
+
+def _get_google_creds():
+    """Load or refresh Google OAuth2 credentials."""
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+    except ImportError:
+        logger.warning("[forge:calendar] google-auth not installed — run: pip install google-auth google-auth-oauthlib google-api-python-client")
+        return None
+
+    client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
+
+    if not client_id or not client_secret:
+        logger.warning("[forge:calendar] GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set — skipping calendar")
+        return None
+
+    creds = None
+    if _TOKEN_PATH.exists():
+        try:
+            creds = Credentials.from_authorized_user_file(str(_TOKEN_PATH))
+        except Exception:
+            pass
+
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+            _TOKEN_PATH.write_text(creds.to_json())
+        except Exception as e:
+            logger.warning(f"[forge:calendar] Token refresh failed: {e}")
+            creds = None
+
+    if not creds or not creds.valid:
+        logger.warning(
+            "[forge:calendar] No valid token. Run 'forge calendar-auth' to authorize."
+        )
+        return None
+
+    return creds
+
+
+async def _create_calendar_event(service, event_body: dict) -> str | None:
+    """Create a single Google Calendar event (runs in executor to avoid blocking)."""
+    import functools
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            functools.partial(
+                service.events().insert,
+                calendarId="primary",
+                body=event_body,
+            ),
+        )
+        created = await loop.run_in_executor(None, result.execute)
+        return created.get("htmlLink", "")
+    except Exception as e:
+        logger.error(f"[forge:calendar] Failed to create event: {e}")
+        return None
+
+
 async def schedule_hackathon_events(
     hackathon_id: str,
     hackathon_name: str,
     deadline_iso: str,
     preview_url: str = "",
 ) -> list[dict]:
-    """
-    Schedule all human checkpoint events via n8n → Google Calendar MCP.
-    Events are published to Redis and consumed by n8n workflow.
-    """
-    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
-
+    """Schedule all human checkpoint events directly via Google Calendar API."""
     try:
         deadline = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00"))
     except Exception:
         deadline = datetime.now(timezone.utc) + timedelta(days=7)
 
     now = datetime.now(timezone.utc)
-    n8n_base = os.environ.get("N8N_BASE_URL", "http://localhost:5678")
+    approve_base = os.environ.get("N8N_BASE_URL", "http://localhost:5678")
 
     events = [
         {
-            "title": f"[Agent] {hackathon_name} — Concept pick (15 min)",
-            "start": now.isoformat(),
+            "title": f"[Forge] {hackathon_name} — Concept pick",
+            "start": now,
             "duration_minutes": 15,
             "description": (
                 f"3 project concepts ready for review. Agent is waiting.\n\n"
-                f"Approve at: {n8n_base}/webhook/{hackathon_id}/concept_approval\n\n"
+                f"Approve at: {approve_base}/webhook/{hackathon_id}/concept_approval\n\n"
                 f"The agent has analyzed:\n"
-                f"• Past winners and failure patterns\n"
-                f"• Judge panel backgrounds and preferences\n"
-                f"• Top sponsor API opportunities\n\n"
+                f"- Past winners and failure patterns\n"
+                f"- Judge panel backgrounds and preferences\n"
+                f"- Top sponsor API opportunities\n\n"
                 f"Pick one concept and the build starts immediately."
             ),
         },
         {
-            "title": f"[Agent] {hackathon_name} — Design review (10 min)",
-            "start": (now + timedelta(hours=4)).isoformat(),
+            "title": f"[Forge] {hackathon_name} — Design review",
+            "start": now + timedelta(hours=4),
             "duration_minutes": 10,
             "description": (
                 f"UI/UX designs ready. Frontend build is BLOCKED until you approve.\n\n"
-                f"Approve at: {n8n_base}/webhook/{hackathon_id}/design_approval\n\n"
-                f"Review:\n"
-                f"• Design personality selection and rationale\n"
-                f"• Color system and typography\n"
-                f"• All screen mockups from DESIGN.md\n"
-                f"• Figma file (if connected)"
+                f"Approve at: {approve_base}/webhook/{hackathon_id}/design_approval"
             ),
         },
         {
-            "title": f"[Agent] {hackathon_name} — Quality review (20 min) ⭐",
-            "start": (deadline - timedelta(hours=6)).isoformat(),
+            "title": f"[Forge] {hackathon_name} — Quality review",
+            "start": deadline - timedelta(hours=6),
             "duration_minutes": 20,
             "description": (
                 f"App built and quality-checked. Review live preview before polish.\n\n"
                 f"Preview: {preview_url or 'URL pending'}\n"
-                f"Approve at: {n8n_base}/webhook/{hackathon_id}/quality_review\n\n"
-                f"Check it on mobile too (375px width matters to judges)\n"
-                f"UX Auditor score must be ≥ 7.0 — see audit report for details."
+                f"Approve at: {approve_base}/webhook/{hackathon_id}/quality_review"
             ),
         },
         {
-            "title": f"[Agent] {hackathon_name} — SUBMIT APPROVAL ⚠️ (10 min)",
-            "start": (deadline - timedelta(hours=1, minutes=30)).isoformat(),
+            "title": f"[Forge] {hackathon_name} — SUBMIT APPROVAL",
+            "start": deadline - timedelta(hours=1, minutes=30),
             "duration_minutes": 10,
             "description": (
                 f"All submission materials ready. FINAL review before submitting.\n\n"
-                f"Approve at: {n8n_base}/webhook/{hackathon_id}/submission_approval\n\n"
-                f"Materials ready:\n"
-                f"• Live demo: {preview_url or 'URL pending'}\n"
-                f"• Demo video (90 seconds, YouTube unlisted)\n"
-                f"• README.md\n"
-                f"• Pitch deck (Gamma.app)\n"
-                f"• Devpost form pre-filled (dry run preview attached)\n\n"
-                f"⚠️ Submission deadline: {deadline.strftime('%B %d at %I:%M %p UTC')}"
+                f"Approve at: {approve_base}/webhook/{hackathon_id}/submission_approval\n\n"
+                f"Deadline: {deadline.strftime('%B %d at %I:%M %p UTC')}"
             ),
         },
         {
-            "title": f"[Agent] {hackathon_name} — DEMO DAY 🎯",
-            "start": deadline.isoformat(),
+            "title": f"[Forge] {hackathon_name} — DEMO DAY",
+            "start": deadline,
             "duration_minutes": 5,
             "description": (
-                f"We submitted! Here's everything you need if judges contact you:\n\n"
-                f"• Live URL: {preview_url or 'check Devpost'}\n"
-                f"• Talking points: /tmp/hackathon-{hackathon_id}/demo-script.txt\n"
-                f"• GitHub: check submission page\n\n"
-                f"If judges ask technical questions:\n"
-                f"• Tech stack: Next.js + FastAPI + PostgreSQL\n"
-                f"• AI/ML: via ElectronHub routing to Claude/GPT-4o\n"
-                f"• Deployment: Vercel (frontend) + Railway (backend)"
+                f"Submitted! Live URL: {preview_url or 'check Devpost'}\n"
+                f"Talking points: /tmp/hackathon-{hackathon_id}/demo-script.txt"
             ),
         },
     ]
 
-    # Publish to Redis for n8n to consume
-    await redis.publish("calendar:create_events", json.dumps({
-        "hackathon_id": hackathon_id,
-        "hackathon_name": hackathon_name,
-        "events": events,
-    }))
+    creds = _get_google_creds()
+    if not creds:
+        logger.info(f"[forge:calendar] Scheduled {len(events)} events (local only — no Google token)")
+        return events
 
-    logger.info(f"[forge:calendar] Scheduled {len(events)} events for {hackathon_name}")
-    await redis.aclose()
+    try:
+        from googleapiclient.discovery import build as build_service
+        service = build_service("calendar", "v3", credentials=creds)
+    except Exception as e:
+        logger.error(f"[forge:calendar] Could not build Calendar service: {e}")
+        return events
+
+    created_count = 0
+    for ev in events:
+        start_dt = ev["start"]
+        end_dt = start_dt + timedelta(minutes=ev["duration_minutes"])
+        body = {
+            "summary": ev["title"],
+            "description": ev["description"],
+            "start": {"dateTime": start_dt.isoformat(), "timeZone": "UTC"},
+            "end": {"dateTime": end_dt.isoformat(), "timeZone": "UTC"},
+            "reminders": {"useDefault": False, "overrides": [
+                {"method": "popup", "minutes": 10},
+            ]},
+        }
+        link = await _create_calendar_event(service, body)
+        if link:
+            created_count += 1
+            logger.info(f"[forge:calendar] Created: {ev['title']}")
+
+    logger.info(f"[forge:calendar] Scheduled {created_count}/{len(events)} events for {hackathon_name}")
     return events
+
+
+def run_calendar_auth() -> None:
+    """One-time OAuth flow — run 'forge calendar-auth' to authorize."""
+    try:
+        from google_auth_oauthlib.flow import InstalledAppFlow
+    except ImportError:
+        print("Missing dependency. Run:\n  pip install google-auth google-auth-oauthlib google-api-python-client")
+        return
+
+    client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
+
+    if not client_id or not client_secret:
+        print("Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in your environment first.")
+        return
+
+    client_config = {
+        "installed": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": ["http://localhost:0"],
+        }
+    }
+
+    flow = InstalledAppFlow.from_client_config(
+        client_config,
+        scopes=["https://www.googleapis.com/auth/calendar.events"],
+    )
+    creds = flow.run_local_server(port=0, open_browser=True)
+    _TOKEN_PATH.write_text(creds.to_json())
+    print(f"\nToken saved to {_TOKEN_PATH}")
+    print("Google Calendar is now connected. Test with: forge calendar-test")
+
+
+async def calendar_test() -> bool:
+    """Create a test event to verify Google Calendar works."""
+    creds = _get_google_creds()
+    if not creds:
+        return False
+
+    try:
+        from googleapiclient.discovery import build as build_service
+        service = build_service("calendar", "v3", credentials=creds)
+    except Exception as e:
+        logger.error(f"[forge:calendar] Service build failed: {e}")
+        return False
+
+    now = datetime.now(timezone.utc)
+    body = {
+        "summary": "[Forge] Calendar Test — delete me",
+        "description": "This is a test event from Forge. You can safely delete it.",
+        "start": {"dateTime": (now + timedelta(minutes=5)).isoformat(), "timeZone": "UTC"},
+        "end": {"dateTime": (now + timedelta(minutes=15)).isoformat(), "timeZone": "UTC"},
+    }
+    link = await _create_calendar_event(service, body)
+    if link:
+        print(f"  Test event created: {link}")
+        return True
+    return False
 
 
 async def run_calendar_worker() -> None:

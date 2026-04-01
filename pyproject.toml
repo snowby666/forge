@@ -74,12 +74,17 @@ temporal = [
 daytona = [
     "daytona-sdk>=0.10.0",               # Daytona sandbox SDK (Linux/WSL only)
 ]
+calendar = [
+    "google-auth>=2.0.0",
+    "google-auth-oauthlib>=1.0.0",
+    "google-api-python-client>=2.0.0",
+]
 tts = [
     "edge-tts>=6.1.0",                   # Text-to-speech for demo narration
     "readmeai>=0.5.0",                    # README generation
 ]
 full = [
-    "forge[embeddings,gpu,crawl,temporal,daytona,tts]",
+    "forge[embeddings,gpu,crawl,temporal,daytona,tts,calendar]",
 ]
 
 [tool.ruff]

@@ -735,10 +735,19 @@ def main():
     # test
     sub.add_parser("test", help="Run system health checks")
 
+    # calendar
+    sub.add_parser("calendar-auth", help="One-time Google Calendar OAuth authorization")
+    sub.add_parser("calendar-test", help="Create a test event to verify Google Calendar works")
+
     args = parser.parse_args()
 
     if not args.command:
         parser.print_help()
+        return
+
+    if args.command == "calendar-auth":
+        from agents.python.infra.monitor_and_calendar import run_calendar_auth
+        run_calendar_auth()
         return
 
     async def run():
@@ -763,6 +772,14 @@ def main():
             await cmd_ls(args)
         elif args.command == "test":
             await cmd_test(args)
+        elif args.command == "calendar-test":
+            from agents.python.infra.monitor_and_calendar import calendar_test
+            print(f"\n{BOLD}Testing Google Calendar integration...{RESET}\n")
+            success = await calendar_test()
+            if success:
+                ok("Google Calendar is working! Check your calendar for the test event.")
+            else:
+                err("Google Calendar test failed. Run 'forge calendar-auth' first.")
 
     asyncio.run(run())
 
