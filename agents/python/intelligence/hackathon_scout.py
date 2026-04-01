@@ -160,10 +160,121 @@ async def deep_scrape_hackathon(brief: HackathonBrief) -> HackathonBrief:
     """
     Visit the hackathon's detail page and extract EVERYTHING:
     rules, prizes, judges, tracks, sponsors, FAQs, community links, tech stack.
-    Uses Crawl4AI for page content, then LLM for structured extraction.
+
+    For Devpost: uses ForgeDevpostClient.get_hackathon_detail() (real HTML + LLM).
+    For others: uses Crawl4AI for page content, then LLM for structured extraction.
     """
     logger.info(f"[forge:scout:deep] Scraping detail page: {brief.url}")
 
+    # Devpost: use our custom client — scrapes /rules, /details/faq, main page in parallel
+    if brief.platform == "devpost":
+        try:
+            from config.devpost import ForgeDevpostClient, DevpostHackathon
+            async with ForgeDevpostClient() as client:
+                dh = DevpostHackathon(
+                    id=0, title=brief.name, url=brief.url,
+                    open_state="open", themes=[], prize_amount_raw="",
+                    prize_usd=0, registrations_count=0,
+                    submission_period="", time_left="", location="",
+                    thumbnail_url="", organization_name="",
+                    featured=False, invite_only=False, invite_description="",
+                    prizes_cash_count=0, prizes_other_count=0,
+                    winners_announced=False, submission_gallery_url="",
+                    start_submission_url="", managed_by_devpost=False,
+                )
+                dh = await client.enrich_hackathon(dh)
+
+                if dh.description:
+                    brief.description = dh.description
+                if dh.rules:
+                    brief.rules = dh.rules
+                if dh.deadline_iso:
+                    brief.deadline = dh.deadline_iso
+                if dh.judging_criteria:
+                    brief.judging_criteria = dh.judging_criteria
+                if dh.faqs:
+                    brief.faqs = dh.faqs
+                if dh.allowed_techs:
+                    brief.allowed_techs = dh.allowed_techs
+                brief.team_size_min = dh.team_size_min
+                brief.team_size_max = dh.team_size_max
+
+                for p in dh.prizes:
+                    try:
+                        amt = p.get("amount", 0)
+                        if isinstance(amt, str):
+                            amt = _parse_prize_amount(amt)
+                        brief.prizes.append(Prize(
+                            name=p.get("name", "Prize"),
+                            amount=float(amt) if amt else None,
+                            sponsor=p.get("sponsor"),
+                        ))
+                    except Exception:
+                        continue
+
+                for j in dh.judges:
+                    try:
+                        brief.judges.append(JudgeInfo(
+                            name=j.get("name", ""),
+                            title=j.get("title", ""),
+                            company=j.get("company", ""),
+                        ))
+                    except Exception:
+                        continue
+
+                for t in dh.tracks:
+                    try:
+                        brief.tracks.append(TrackInfo(
+                            name=t.get("name", ""),
+                            description=t.get("description", ""),
+                            sponsor=t.get("sponsor", ""),
+                        ))
+                    except Exception:
+                        continue
+
+                for s in dh.sponsors:
+                    try:
+                        brief.sponsor_techs.append(SponsorTech(
+                            sponsor=s.get("name", ""),
+                            api_name=s.get("api_name", ""),
+                            docs_url=s.get("docs_url"),
+                        ))
+                    except Exception:
+                        continue
+
+                for cl in dh.community_links:
+                    try:
+                        brief.community_links.append(CommunityLink(
+                            platform=cl.get("platform", "other"),
+                            url=cl.get("url", ""),
+                        ))
+                    except Exception:
+                        continue
+
+                for r in dh.resources:
+                    try:
+                        brief.community_links.append(CommunityLink(
+                            platform="resource",
+                            url=r.get("url", ""),
+                        ))
+                    except Exception:
+                        continue
+
+                if dh.eligibility:
+                    brief.rules = f"{brief.rules}\n\nEligibility: {dh.eligibility}".strip()
+
+                brief.deep_scraped = True
+                logger.info(
+                    f"[forge:scout:deep] {brief.name}: "
+                    f"{len(brief.prizes)} prizes, {len(brief.tracks)} tracks, "
+                    f"{len(brief.judges)} judges, {len(brief.sponsor_techs)} sponsors"
+                )
+                return brief
+
+        except Exception as e:
+            logger.warning(f"[forge:scout:deep] Devpost client failed, falling back to generic: {e}")
+
+    # Generic path: Crawl4AI fetch + LLM extraction
     page_content = ""
     try:
         from config.web_search import fetch_full_content
@@ -413,10 +524,43 @@ async def research_hackathon(brief: HackathonBrief) -> HackathonBrief:
     for sponsor in brief.sponsor_techs[:3]:
         queries.append(f"{sponsor.sponsor} {sponsor.api_name} API tutorial hackathon")
 
-    # Search for past winners on the same platform
-    if brief.platform == "devpost":
-        queries.append(f"site:devpost.com {brief.theme or brief.name} winner")
-    elif brief.platform == "devfolio":
+    # Devpost: use real API for past winner analysis
+    if brief.platform == "devpost" and brief.url:
+        try:
+            from config.devpost import ForgeDevpostClient
+            async with ForgeDevpostClient() as client:
+                # Extract slug from URL
+                from urllib.parse import urlparse
+                parsed = urlparse(brief.url)
+                slug = parsed.netloc.replace(".devpost.com", "") if "devpost.com" in parsed.netloc else ""
+                if slug:
+                    logger.info(f"[forge:scout:research] Analyzing past winners from {slug}.devpost.com")
+                    analysis = await client.get_past_winners(slug, pages=1, include_github=True)
+                    if analysis.projects:
+                        for proj in analysis.projects[:5]:
+                            brief.research.append(ResearchItem(
+                                title=f"Past project: {proj.name}",
+                                url=proj.url,
+                                source="devpost",
+                                relevance=proj.tagline or f"Tags: {', '.join(proj.tags[:5])}",
+                                snippet=proj.description[:200] if proj.description else "",
+                            ))
+                        if analysis.tech_stack_frequency:
+                            top_tech = list(analysis.tech_stack_frequency.keys())[:10]
+                            brief.research.append(ResearchItem(
+                                title=f"Common tech in past winners: {', '.join(top_tech)}",
+                                url=brief.url,
+                                source="analysis",
+                                relevance=f"Top languages: {', '.join(list(analysis.github_languages.keys())[:5])}",
+                            ))
+                        logger.info(
+                            f"[forge:scout:research] Past winners: {len(analysis.projects)} projects, "
+                            f"top tech: {', '.join(list(analysis.tech_stack_frequency.keys())[:5])}"
+                        )
+        except Exception as e:
+            logger.debug(f"[forge:scout:research] Past winner analysis failed: {e}")
+
+    if brief.platform == "devfolio":
         queries.append(f"site:devfolio.co {brief.theme or brief.name} project")
 
     # Search for track-specific strategies
@@ -504,7 +648,8 @@ async def score_hackathon(brief: HackathonBrief) -> HackathonBrief:
     if brief.total_participants is not None:
         breakdown["competition_size"] = (
             20 if brief.total_participants < 100 else
-            10 if brief.total_participants < 300 else 5
+            10 if brief.total_participants < 300 else
+            5 if brief.total_participants < 1000 else 2
         )
 
     # LLM theme scoring — use deep intel for richer context
@@ -543,6 +688,20 @@ async def score_hackathon(brief: HackathonBrief) -> HackathonBrief:
         f"{theme_score.score}/20 — {theme_score.reasoning[:100]}"
     )
 
+    # Intelligence modifiers from API fields
+    raw = brief._raw_listing if hasattr(brief, '_raw_listing') else {}
+    if raw.get("featured"):
+        breakdown["featured_bonus"] = 5
+    if raw.get("invite_only"):
+        breakdown["invite_only_penalty"] = -10
+
+    # Prizes diversity: more cash prizes = more chances to win
+    cash_count = raw.get("prizes_cash_count", 0)
+    if isinstance(cash_count, int) and cash_count >= 3:
+        breakdown["prize_diversity"] = 5
+    elif isinstance(cash_count, int) and cash_count >= 2:
+        breakdown["prize_diversity"] = 3
+
     brief.score = sum(breakdown.values())
     brief.score_breakdown = breakdown
     brief.recommended = brief.score >= 65
@@ -551,17 +710,72 @@ async def score_hackathon(brief: HackathonBrief) -> HackathonBrief:
 
 # ── Platform Scraping ─────────────────────────────────────────────────────────
 
-async def call_browser_scrape(platforms: list[str], limit: int = 5) -> list[dict]:
+async def scrape_devpost_api(limit: int = 15) -> list[dict]:
     """
-    Scrape hackathon listings.
-    Primary: Crawl4AI native Python extraction.
-    Fallback: Stagehand browser layer.
+    Use Devpost's real JSON API — structured data, every field captured.
+    Fetches ALL open hackathons (not just first page), then returns top N by prize.
     """
+    try:
+        from config.devpost import ForgeDevpostClient, _parse_time_left
+        async with ForgeDevpostClient() as client:
+            # Fetch all open hackathons across all pages
+            hackathons = await client.list_hackathons(status="open", pages=8)
+
+            # Filter out invite-only and winners-announced
+            hackathons = [h for h in hackathons if not h.winners_announced]
+
+            listings = []
+            for h in hackathons[:limit]:
+                days_left = _parse_time_left(h.time_left)
+                listings.append({
+                    "platform": "devpost",
+                    "title": h.title,
+                    "name": h.title,
+                    "url": h.url,
+                    "prize_amount": str(h.prize_usd),
+                    "deadline": h.submission_period,
+                    "participants": str(h.registrations_count) if h.registrations_count else None,
+                    "theme": ", ".join(h.themes) if h.themes else "",
+                    "tagline": ", ".join(h.themes[:3]) if h.themes else "",
+                    "open_state": h.open_state,
+                    "days_left": days_left,
+                    "time_left": h.time_left,
+                    # New intelligence fields
+                    "organization": h.organization_name,
+                    "featured": h.featured,
+                    "invite_only": h.invite_only,
+                    "invite_description": h.invite_description,
+                    "prizes_cash_count": h.prizes_cash_count,
+                    "prizes_other_count": h.prizes_other_count,
+                    "submission_gallery_url": h.submission_gallery_url,
+                    "start_submission_url": h.start_submission_url,
+                    "location": h.location,
+                    "_devpost_obj": h,
+                })
+
+            logger.info(f"[forge:scout] Devpost JSON API: {len(listings)}/{len(hackathons)} hackathons")
+            for item in listings[:10]:
+                logger.info(
+                    f"[forge:scout]   devpost: {item['title'][:45]:45s} "
+                    f"| ${float(item['prize_amount']):>8,.0f} "
+                    f"| {item.get('participants', '?'):>5s} reg "
+                    f"| {item.get('time_left', '?'):<20s} "
+                    f"| {'★' if item.get('featured') else ' '} "
+                    f"| {item['theme'][:30]}"
+                )
+            return listings
+    except Exception as e:
+        logger.warning(f"[forge:scout] Devpost JSON API failed: {e}")
+        return []
+
+
+async def scrape_other_platforms(platforms: list[str], limit: int = 5) -> list[dict]:
+    """Crawl4AI / Stagehand scraping for non-Devpost platforms."""
     try:
         from config.web_search import scrape_hackathon_listings
         listings = await scrape_hackathon_listings(platforms, limit_per_platform=limit)
         if listings:
-            logger.info(f"[forge:scout] Crawl4AI extracted {len(listings)} listings from {len(platforms)} platforms")
+            logger.info(f"[forge:scout] Crawl4AI extracted {len(listings)} listings from {platforms}")
             for item in listings:
                 logger.info(
                     f"[forge:scout]   raw: {item.get('title', item.get('name', '?'))[:60]} "
@@ -570,10 +784,11 @@ async def call_browser_scrape(platforms: list[str], limit: int = 5) -> list[dict
                     f"| url={item.get('url', '?')[:70]}"
                 )
             return listings
-        logger.info("[forge:scout] Crawl4AI returned 0 listings — trying Stagehand fallback")
+        logger.info(f"[forge:scout] Crawl4AI returned 0 listings for {platforms}")
     except Exception as e:
-        logger.warning(f"[forge:scout] Crawl4AI scrape failed ({e}) — trying Stagehand")
+        logger.warning(f"[forge:scout] Crawl4AI failed for {platforms}: {e}")
 
+    # Stagehand fallback
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -583,11 +798,39 @@ async def call_browser_scrape(platforms: list[str], limit: int = 5) -> list[dict
             ) as resp:
                 data = await resp.json()
                 listings = data.get("hackathons", [])
-                logger.info(f"[forge:scout] Stagehand returned {len(listings)} listings")
+                logger.info(f"[forge:scout] Stagehand returned {len(listings)} listings for {platforms}")
                 return listings
     except Exception as e:
         logger.warning(f"[forge:scout] Stagehand fallback also failed: {e}")
         return []
+
+
+async def call_browser_scrape(platforms: list[str], limit: int = 5) -> list[dict]:
+    """
+    Scrape hackathon listings from all platforms.
+    Devpost: uses real JSON API (structured, reliable).
+    Others: Crawl4AI CSS extraction, Stagehand fallback.
+    """
+    tasks = []
+
+    if "devpost" in platforms:
+        tasks.append(scrape_devpost_api(limit=limit))
+
+    other = [p for p in platforms if p != "devpost"]
+    if other:
+        tasks.append(scrape_other_platforms(other, limit=limit))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    all_listings: list[dict] = []
+    for batch in results:
+        if isinstance(batch, list):
+            all_listings.extend(batch)
+        elif isinstance(batch, Exception):
+            logger.warning(f"[forge:scout] Platform scrape error: {batch}")
+
+    logger.info(f"[forge:scout] Total: {len(all_listings)} listings from {platforms}")
+    return all_listings
 
 
 async def call_browser_register(url: str, platform: str, dry_run: bool = False) -> bool:
@@ -628,7 +871,7 @@ async def run_scout(
 
     # ── Phase 1: Discover ────────────────────────────────────────────────────
     logger.info(f"[forge:scout] ═══ Phase 1: DISCOVER — scraping {platforms} ═══")
-    raw_listings = await call_browser_scrape(platforms, limit=5)
+    raw_listings = await call_browser_scrape(platforms, limit=20)
     logger.info(f"[forge:scout] Discovered {len(raw_listings)} raw listings")
 
     # Convert to HackathonBrief objects
@@ -675,6 +918,7 @@ async def run_scout(
                 registration_open=raw.get("registration_open", True),
                 total_participants=participants,
             )
+            brief._raw_listing = raw  # type: ignore[attr-defined]
             briefs.append(brief)
             logger.info(f"[forge:scout] #{i+1} {name[:60]} | {url[:70]}")
 
@@ -710,14 +954,24 @@ async def run_scout(
             scored_briefs.append(scored)
 
             prize_total = sum(p.amount or 0 for p in scored.prizes)
+            bd = scored.score_breakdown
+            extras = []
+            if bd.get("featured_bonus"):
+                extras.append(f"feat=+{bd['featured_bonus']}")
+            if bd.get("invite_only_penalty"):
+                extras.append(f"invite={bd['invite_only_penalty']}")
+            if bd.get("prize_diversity"):
+                extras.append(f"div=+{bd['prize_diversity']}")
+            extra_str = f" | {' '.join(extras)}" if extras else ""
             logger.info(
-                f"[forge:scout] {scored.name[:50]:50s} "
+                f"[forge:scout] {scored.name[:45]:45s} "
                 f"score={scored.score:3d}/100 "
-                f"(prize={scored.score_breakdown.get('prize_pool', 0)} "
-                f"sponsor={scored.score_breakdown.get('sponsor_prizes', 0)} "
-                f"deadline={scored.score_breakdown.get('deadline_buffer', 0)} "
-                f"theme={scored.score_breakdown.get('theme_match', 0)} "
-                f"comp={scored.score_breakdown.get('competition_size', 0)}) "
+                f"(prize={bd.get('prize_pool', 0)} "
+                f"sponsor={bd.get('sponsor_prizes', 0)} "
+                f"deadline={bd.get('deadline_buffer', 0)} "
+                f"theme={bd.get('theme_match', 0)} "
+                f"comp={bd.get('competition_size', 0)})"
+                f"{extra_str} "
                 f"${prize_total:,.0f} | {scored.days_until_deadline}d left"
             )
         except Exception as e:

@@ -68,14 +68,42 @@ def _print_hackathon_detail(h, verbose: bool = True):
     marker = f"{GREEN}✓ qualifies{RESET}" if qualifies else f"{DIM}below threshold{RESET}"
     deep_marker = f" {CYAN}[deep]{RESET}" if h.deep_scraped else ""
 
-    print(f"\n  {BOLD}{h.score:3d}/100{RESET}  {h.name}{deep_marker}")
-    print(f"         {DIM}prize={bd.get('prize_pool', 0)} "
-          f"sponsor={bd.get('sponsor_prizes', 0)} "
-          f"deadline={bd.get('deadline_buffer', 0)} "
-          f"theme={bd.get('theme_match', 0)} "
-          f"comp={bd.get('competition_size', 0)}{RESET}")
-    print(f"         {DIM}${prize_total:,.0f} · {h.days_until_deadline}d left · {h.platform} · {marker}{RESET}")
+    # Build modifier tags
+    raw = h._raw_listing if hasattr(h, '_raw_listing') else {}
+    tags = []
+    if raw.get("featured"):
+        tags.append(f"{GREEN}★ FEATURED{RESET}")
+    if raw.get("invite_only"):
+        tags.append(f"{YELLOW}🔒 INVITE ONLY{RESET}")
+    if raw.get("organization"):
+        tags.append(f"{DIM}by {raw['organization']}{RESET}")
+    tags_str = f"  {'  '.join(tags)}" if tags else ""
+
+    print(f"\n  {BOLD}{h.score:3d}/100{RESET}  {h.name}{deep_marker}{tags_str}")
+
+    # Score breakdown
+    parts = [f"prize={bd.get('prize_pool', 0)}", f"sponsor={bd.get('sponsor_prizes', 0)}",
+             f"deadline={bd.get('deadline_buffer', 0)}", f"theme={bd.get('theme_match', 0)}",
+             f"comp={bd.get('competition_size', 0)}"]
+    if bd.get("featured_bonus"):
+        parts.append(f"feat=+{bd['featured_bonus']}")
+    if bd.get("invite_only_penalty"):
+        parts.append(f"invite={bd['invite_only_penalty']}")
+    if bd.get("prize_diversity"):
+        parts.append(f"div=+{bd['prize_diversity']}")
+    print(f"         {DIM}{' '.join(parts)}{RESET}")
+
+    # Quick stats line
+    time_left = raw.get("time_left", f"{h.days_until_deadline}d left")
+    participants_str = f"{h.total_participants:,} registered" if h.total_participants else "? registered"
+    cash_str = f"{raw.get('prizes_cash_count', '?')} cash prizes" if raw.get('prizes_cash_count') else ""
+    stats_parts = [f"${prize_total:,.0f}", time_left, participants_str, h.platform, marker]
+    if cash_str:
+        stats_parts.insert(2, cash_str)
+    print(f"         {DIM}{' · '.join(stats_parts)}{RESET}")
     print(f"         {DIM}{h.url}{RESET}")
+    if raw.get("location") and raw["location"] != "Online":
+        print(f"         {DIM}📍 {raw['location']}{RESET}")
 
     if not verbose:
         return
@@ -84,12 +112,12 @@ def _print_hackathon_detail(h, verbose: bool = True):
     if h.theme:
         print(f"         {CYAN}Theme:{RESET} {h.theme[:120]}")
     if h.description and len(h.description) > 10:
-        print(f"         {CYAN}About:{RESET} {h.description[:200]}...")
+        print(f"         {CYAN}About:{RESET} {h.description[:250]}...")
 
     # Prizes breakdown
     if len(h.prizes) > 1:
         print(f"         {CYAN}Prizes ({len(h.prizes)}):{RESET}")
-        for p in h.prizes[:8]:
+        for p in h.prizes[:10]:
             amt = f"${p.amount:,.0f}" if p.amount else "TBD"
             sponsor = f" ({p.sponsor})" if p.sponsor else ""
             print(f"           · {p.name}: {amt}{sponsor}")
@@ -97,14 +125,14 @@ def _print_hackathon_detail(h, verbose: bool = True):
     # Tracks
     if h.tracks:
         print(f"         {CYAN}Tracks ({len(h.tracks)}):{RESET}")
-        for t in h.tracks[:6]:
+        for t in h.tracks[:8]:
             sponsor = f" [{t.sponsor}]" if t.sponsor else ""
             print(f"           · {t.name}{sponsor}")
 
     # Judges
     if h.judges:
         print(f"         {CYAN}Judges ({len(h.judges)}):{RESET}")
-        for j in h.judges[:6]:
+        for j in h.judges[:8]:
             role = f" — {j.title}, {j.company}" if j.title else ""
             print(f"           · {j.name}{role}")
 
@@ -115,15 +143,19 @@ def _print_hackathon_detail(h, verbose: bool = True):
     # Sponsor APIs
     if h.sponsor_techs:
         print(f"         {CYAN}Sponsor APIs:{RESET}")
-        for s in h.sponsor_techs[:6]:
+        for s in h.sponsor_techs[:8]:
             docs = f" → {s.docs_url}" if s.docs_url else ""
             print(f"           · {s.sponsor}: {s.api_name}{docs}")
 
     # Community links
     if h.community_links:
-        print(f"         {CYAN}Community:{RESET}")
-        for cl in h.community_links[:8]:
-            print(f"           · [{cl.platform}] {cl.url}")
+        grouped: dict[str, list[str]] = {}
+        for cl in h.community_links:
+            grouped.setdefault(cl.platform, []).append(cl.url)
+        print(f"         {CYAN}Community & Resources ({len(h.community_links)}):{RESET}")
+        for platform, urls in grouped.items():
+            for url in urls[:3]:
+                print(f"           · [{platform}] {url}")
 
     # Research
     if h.research:
@@ -131,13 +163,23 @@ def _print_hackathon_detail(h, verbose: bool = True):
         repos = [r for r in h.research if r.source == "github"]
         others = [r for r in h.research if r.source not in ("arxiv", "github")]
         print(f"         {CYAN}Research ({len(h.research)} items):{RESET}")
-        for r in (papers + repos + others)[:8]:
+        for r in (papers + repos + others)[:10]:
             print(f"           · [{r.source}] {r.title[:80]}")
             print(f"             {DIM}{r.url}{RESET}")
 
     # Rules snippet
     if h.rules:
-        print(f"         {CYAN}Rules:{RESET} {h.rules[:200]}...")
+        print(f"         {CYAN}Rules:{RESET} {h.rules[:250]}...")
+
+    # FAQs
+    if h.faqs:
+        print(f"         {CYAN}FAQs ({len(h.faqs)}):{RESET}")
+        for faq in h.faqs[:5]:
+            print(f"           · {faq[:120]}")
+
+    # Allowed technologies
+    if h.allowed_techs:
+        print(f"         {CYAN}Allowed Tech:{RESET} {', '.join(h.allowed_techs[:10])}")
 
 
 async def cmd_scout(args):

@@ -41,7 +41,7 @@ rsync -a --delete \
 
 # Fix line endings on anything that might have CRLF
 find "$DST" -maxdepth 1 -name "*.py" -exec sed -i 's/\r$//' {} + 2>/dev/null || true
-find "$DST/agents" "$DST/config" "$DST/scripts" -type f \( -name "*.py" -o -name "*.sh" \) -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+find "$DST/agents" "$DST/config" "$DST/scripts" "$DST/devpost_api" -type f \( -name "*.py" -o -name "*.sh" \) -exec sed -i 's/\r$//' {} + 2>/dev/null || true
 
 # Re-install in editable mode (picks up new deps in pyproject.toml, ~2s if nothing changed)
 cd "$DST"
