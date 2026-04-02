@@ -457,51 +457,125 @@ COMMUNITY_PATTERNS = {
 }
 
 
-async def _fast_searxng(query: str, max_results: int = 10) -> list[dict]:
-    """Direct SearXNG query — local Docker, ~1-2s, no rate limits."""
-    base_url = os.environ.get("SEARXNG_URL", "http://localhost:8081").rstrip("/")
+async def _fast_search(query: str, max_results: int = 10) -> list[dict]:
+    """
+    Fast search using best available provider.
+    Priority: Serper (~120ms) → Tavily (~1.7s) → Brave → SearXNG → ddgs.
+    Returns list of {"title": ..., "url": ...} dicts.
+    """
 
-    # Try multiple possible URLs in case of Docker networking differences
-    port = base_url.rsplit(":", 1)[-1] if ":" in base_url.split("//", 1)[-1] else "8081"
-    urls_to_try = list(dict.fromkeys([
-        base_url,
-        f"http://localhost:{port}",
-        f"http://127.0.0.1:{port}",
-    ]))
+    # ── 1. Serper.dev (fastest, Google results) ──
+    serper_key = os.environ.get("SERPER_API_KEY", "").strip()
+    if serper_key:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://google.serper.dev/search",
+                    json={"q": query, "num": max_results},
+                    headers={"X-API-KEY": serper_key, "Content-Type": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        results = [
+                            {"title": r.get("title", ""), "url": r.get("link", "")}
+                            for r in data.get("organic", [])[:max_results]
+                            if r.get("link")
+                        ]
+                        if results:
+                            return results
+        except Exception as e:
+            logger.debug(f"[forge:scout] Serper error: {e}")
 
-    for url in urls_to_try:
+    # ── 2. Tavily (AI-optimized, reliable — rotate across key pool) ──
+    try:
+        from config.web_search import _get_tavily_key, _mark_tavily_key_exhausted
+        for _tavily_attempt in range(3):
+            tavily_key = _get_tavily_key()
+            if not tavily_key:
+                break
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        "https://api.tavily.com/search",
+                        json={"query": query, "max_results": min(max_results, 20), "search_depth": "basic"},
+                        headers={"Authorization": f"Bearer {tavily_key}", "Content-Type": "application/json"},
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status in (429, 401, 403):
+                            _mark_tavily_key_exhausted(tavily_key)
+                            continue
+                        if resp.status == 200:
+                            data = await resp.json()
+                            results = [
+                                {"title": r.get("title", ""), "url": r.get("url", "")}
+                                for r in data.get("results", [])[:max_results]
+                                if r.get("url")
+                            ]
+                            if results:
+                                return results
+            except Exception as e:
+                logger.debug(f"[forge:scout] Tavily error: {e}")
+                break
+    except ImportError:
+        pass
+
+    # ── 3. Brave Search ──
+    brave_key = os.environ.get("BRAVE_SEARCH_API_KEY", "").strip()
+    if brave_key:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    f"{url}/search",
-                    params={
-                        "q": query,
-                        "format": "json",
-                        "engines": "google,bing,brave,startpage",
-                        "language": "en",
-                        "safesearch": "0",
-                    },
-                    headers={
-                        "Accept": "application/json",
-                        "X-Forwarded-For": "127.0.0.1",
-                        "X-Real-IP": "127.0.0.1",
-                    },
-                    timeout=aiohttp.ClientTimeout(total=15),
+                    "https://api.search.brave.com/res/v1/web/search",
+                    headers={"X-Subscription-Token": brave_key, "Accept": "application/json"},
+                    params={"q": query, "count": str(max_results)},
+                    timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
-                    if resp.status != 200:
-                        logger.debug(f"[forge:scout] SearXNG {url} returned {resp.status}")
-                        continue
-                    data = await resp.json()
-                    results = [
-                        {"title": r.get("title", ""), "url": r.get("url", "")}
-                        for r in data.get("results", [])[:max_results]
-                        if r.get("url")
-                    ]
-                    if results:
-                        return results
+                    if resp.status == 200:
+                        data = await resp.json()
+                        results = [
+                            {"title": r.get("title", ""), "url": r.get("url", "")}
+                            for r in data.get("web", {}).get("results", [])[:max_results]
+                            if r.get("url")
+                        ]
+                        if results:
+                            return results
         except Exception as e:
-            logger.debug(f"[forge:scout] SearXNG {url} error: {e}")
-            continue
+            logger.debug(f"[forge:scout] Brave error: {e}")
+
+    # ── 4. SearXNG (self-hosted, may be down) ──
+    base_url = os.environ.get("SEARXNG_URL", "").strip().rstrip("/")
+    if base_url:
+        port = base_url.rsplit(":", 1)[-1] if ":" in base_url.split("//", 1)[-1] else "8081"
+        for url in dict.fromkeys([base_url, f"http://localhost:{port}", f"http://127.0.0.1:{port}"]):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"{url}/search",
+                        params={"q": query, "format": "json", "engines": "google,bing,startpage", "language": "en"},
+                        headers={"Accept": "application/json"},
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            results = [
+                                {"title": r.get("title", ""), "url": r.get("url", "")}
+                                for r in data.get("results", [])[:max_results]
+                                if r.get("url")
+                            ]
+                            if results:
+                                return results
+            except Exception:
+                continue
+
+    # ── 5. ddgs fallback (slow but no API key needed) ──
+    try:
+        from config.web_search import web_search as _ws, SearchResult
+        ws_results = await _ws(query, max_results=max_results, timelimit="y")
+        return [{"title": r.title, "url": r.url} for r in ws_results if r.url]
+    except Exception as e:
+        logger.debug(f"[forge:scout] web_search fallback error: {e}")
+
     return []
 
 
@@ -518,23 +592,11 @@ async def discover_community(brief: HackathonBrief) -> HackathonBrief:
     query = f'"{brief.name}" discord OR reddit OR slack OR github OR twitter'
     logger.info(f"[forge:scout:community] {brief.name[:40]}: searching ({len(known_urls)} links from HTML)")
 
-    results: list[dict] = []
-
-    # Fast path: SearXNG (local, ~1-2s)
-    results = await _fast_searxng(query, max_results=15)
+    results = await _fast_search(query, max_results=15)
     if results:
-        logger.info(f"[forge:scout:community]   SearXNG: {len(results)} results")
+        logger.info(f"[forge:scout:community]   search: {len(results)} results")
     else:
-        # Fallback: use ddgs via web_search
-        logger.info(f"[forge:scout:community]   SearXNG unavailable, falling back to web search")
-        try:
-            from config.web_search import web_search, SearchResult
-            ws_results = await web_search(query, max_results=15, timelimit="y")
-            results = [{"title": r.title, "url": r.url} for r in ws_results]
-            if results:
-                logger.info(f"[forge:scout:community]   Web search fallback: {len(results)} results")
-        except Exception as e:
-            logger.warning(f"[forge:scout:community]   Web search fallback failed: {e}")
+        logger.info(f"[forge:scout:community]   no search results found")
 
     new_links = 0
     for r in results:
@@ -636,22 +698,10 @@ async def research_hackathon(brief: HackathonBrief) -> HackathonBrief:
             f"{brief.name} hackathon tutorial getting started",
         ]
 
-    # Fast path: SearXNG for all queries, fallback to web_search
+    # Fast search across all queries (Serper → Tavily → Brave → SearXNG → ddgs)
     try:
-        search_tasks = [_fast_searxng(q, max_results=8) for q in queries[:4]]
+        search_tasks = [_fast_search(q, max_results=8) for q in queries[:4]]
         results_batches = await asyncio.gather(*search_tasks, return_exceptions=True)
-
-        # If all SearXNG calls returned empty, fallback to web_search
-        has_results = any(isinstance(b, list) and len(b) > 0 for b in results_batches)
-        if not has_results:
-            logger.info(f"[forge:scout:research] SearXNG returned nothing, falling back to web search")
-            from config.web_search import web_search as _ws
-            ws_tasks = [_ws(q, max_results=8, timelimit="y") for q in queries[:4]]
-            ws_batches = await asyncio.gather(*ws_tasks, return_exceptions=True)
-            results_batches = [
-                [{"title": r.title, "url": r.url} for r in batch]
-                for batch in ws_batches if isinstance(batch, list)
-            ]
 
         known_urls = {r.url for r in brief.research}
         for batch in results_batches:

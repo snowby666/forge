@@ -17,13 +17,15 @@ ARCHITECTURE (4-stage pipeline)
   │ Result: +22% NDCG@5, +40% recall@10 vs single-query baseline   │
   └─────────────────────────────────────────────────────────────────┘
 
-  Stage 2 — PARALLEL RETRIEVAL (4 independent sources)
+  Stage 2 — PARALLEL RETRIEVAL (6 independent sources, priority order)
   ┌─────────────────────────────────────────────────────────────────┐
-  │ a) ddgs    — DuckDuckGo/Bing/Google metasearch. MIT. Free.     │
-  │ b) Brave   — Independent 30B-page index. ~1k free/mo.         │
-  │ c) Exa     — Neural semantic search. $7/1k reqs. Optional.    │
-  │ d) SearXNG — Self-hosted metasearch (Docker). Fully free.     │
-  │ All 4 run concurrently for each expanded sub-query            │
+  │ a) Serper  — Google results via REST. ~120ms. 2500 free.       │
+  │ b) Tavily  — AI-optimized search. ~1.7s. 1k free/mo.         │
+  │ c) Brave   — Independent 30B-page index. ~1k free/mo.         │
+  │ d) ddgs    — DuckDuckGo metasearch. MIT. Free. (fallback)     │
+  │ e) SearXNG — Self-hosted metasearch (Docker). Fully free.     │
+  │ f) Exa     — Neural semantic search. $7/1k reqs. Optional.    │
+  │ All sources run concurrently for each expanded sub-query       │
   └─────────────────────────────────────────────────────────────────┘
 
   Stage 3 — HYBRID FUSION (BM25 + dense + RRF)
@@ -50,20 +52,24 @@ CONTENT EXTRACTION
   Strips HTML, scripts, ads. Returns markdown-ready plain text.
 
 SEARCH MODES
-  search_and_synthesize(query)     — standard: ddgs + Brave + RRF
+  search_and_synthesize(query)     — standard: Serper + Tavily + Brave + ddgs
   deep_search(query)               — full pipeline: expansion + all
                                      sources + BM25/RRF + reranking
   semantic_search(query)           — Exa neural only (needs API key)
   fetch_full_content(urls)         — extract full text from URLs
 
 COST SUMMARY (per search)
-  Standard search:  $0.000  (ddgs + Brave free tier)
+  Standard search:  $0.000  (Serper free tier / ddgs fallback)
   Deep search:      $0.000  (+ local BM25 + reranker on GPU)
-  With Exa:         $0.007  (neural semantic results)
+  With Serper key:  ~$0.001 (2500 free, then $0.30-$1/1k)
+  With Tavily key:  ~$0.005 (1k free/mo, then $5/1k)
   With Brave key:   ~$0.000 (1k free/mo, then $0.005/req)
+  With Exa:         $0.007  (neural semantic results)
 
 SETUP
   Required:    pip install ddgs bm25s sentence-transformers aiohttp
+  Recommended: SERPER_API_KEY in forge.secrets  (2500 free, fastest)
+  Recommended: TAVILY_API_KEY in forge.secrets  (1k/mo free, AI-optimized)
   Optional:    BRAVE_SEARCH_API_KEY in forge.secrets  (free tier)
   Optional:    EXA_API_KEY in forge.secrets            ($7/1k)
   Optional:    SEARXNG_URL=http://localhost:8080       (Docker)
@@ -104,6 +110,32 @@ try:
 except (FileNotFoundError, OSError):
     os.chdir(os.path.expanduser("~"))
 
+# ── Tavily key pool (round-robin rotation across multiple free keys) ──────────
+# Supports both TAVILY_API_KEY (single) and TAVILY_API_KEYS (comma-separated).
+# Each free key gets 1,000 credits/month. With N keys → N×1,000 credits/month.
+_tavily_keys: list[str] = []
+_tavily_idx = 0
+
+def _get_tavily_key() -> str | None:
+    """Round-robin across all available Tavily API keys."""
+    global _tavily_keys, _tavily_idx
+    if not _tavily_keys:
+        raw = os.environ.get("TAVILY_API_KEYS") or os.environ.get("TAVILY_API_KEY", "")
+        _tavily_keys = [k.strip() for k in raw.split(",") if k.strip()]
+    if not _tavily_keys:
+        return None
+    key = _tavily_keys[_tavily_idx % len(_tavily_keys)]
+    _tavily_idx = (_tavily_idx + 1) % len(_tavily_keys)
+    return key
+
+def _mark_tavily_key_exhausted(key: str) -> None:
+    """Remove a key that returned 429 or 401 from the pool."""
+    global _tavily_keys
+    if key in _tavily_keys:
+        _tavily_keys.remove(key)
+        logger.debug(f"[forge:search] Tavily key ...{key[-6:]} removed from pool ({len(_tavily_keys)} left)")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # DATA MODELS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -113,7 +145,7 @@ class SearchResult:
     title: str
     url: str
     snippet: str
-    source: str           # "ddgs" | "brave" | "exa" | "searxng" | "ddgs_news"
+    source: str           # "serper" | "tavily" | "brave" | "ddgs" | "exa" | "searxng" | "ddgs_news"
     score: float = 0.0    # final RRF + reranker score
     full_text: str = ""   # populated by fetch_full_content()
     published: str = ""   # ISO date if available
@@ -320,7 +352,105 @@ async def _search_brave(query: str, max_results: int = 8) -> list[SearchResult]:
         return []
 
 
-# ── 2c. Exa neural search (optional, $7/1k requests with content) ───────────
+# ── 2c. Serper.dev (Google results, ~120ms, 2500 free credits) ────────────────
+
+async def _search_serper(query: str, max_results: int = 8) -> list[SearchResult]:
+    """
+    Serper.dev — real Google results via REST API.
+    Fastest SERP API (~120ms avg). 2,500 free one-time credits, no CC required.
+    Then $0.30-$1.00 per 1k queries.  Signup: https://serper.dev
+    Set SERPER_API_KEY in forge.secrets.
+    """
+    api_key = os.environ.get("SERPER_API_KEY", "").strip()
+    if not api_key:
+        return []
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://google.serper.dev/search",
+                json={"q": query, "num": max_results},
+                headers={
+                    "X-API-KEY": api_key,
+                    "Content-Type": "application/json",
+                },
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    logger.debug(f"[forge:search] Serper HTTP {resp.status}: {text[:120]}")
+                    return []
+                data = await resp.json()
+
+        return [
+            SearchResult(
+                title=r.get("title", ""), url=r.get("link", ""),
+                snippet=r.get("snippet", ""), source="serper",
+            )
+            for r in data.get("organic", [])[:max_results]
+            if r.get("title") and r.get("link")
+        ]
+    except Exception as e:
+        logger.debug(f"[forge:search] Serper error: {e}")
+        return []
+
+
+# ── 2d. Tavily Search (AI-optimized, ~1.7s, 1000/mo free) ───────────────────
+
+async def _search_tavily(query: str, max_results: int = 8) -> list[SearchResult]:
+    """
+    Tavily — AI-optimized search API with built-in relevance scoring.
+    Rotates across all keys in TAVILY_API_KEYS (comma-separated) or TAVILY_API_KEY.
+    Each free key = 1,000 credits/month. Dev keys: 100 RPM, prod keys: 1,000 RPM.
+    On 429/401, removes the exhausted key and retries with the next one.
+    """
+    max_attempts = min(len(_tavily_keys) if _tavily_keys else 3, 5)
+    for _attempt in range(max_attempts):
+        api_key = _get_tavily_key()
+        if not api_key:
+            return []
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "query": query,
+                        "max_results": min(max_results, 20),
+                        "search_depth": "basic",
+                        "include_answer": False,
+                        "include_raw_content": False,
+                    },
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status in (429, 401, 403):
+                        _mark_tavily_key_exhausted(api_key)
+                        continue
+                    if resp.status != 200:
+                        text = await resp.text()
+                        logger.debug(f"[forge:search] Tavily HTTP {resp.status}: {text[:120]}")
+                        return []
+                    data = await resp.json()
+
+            return [
+                SearchResult(
+                    title=r.get("title", ""), url=r.get("url", ""),
+                    snippet=r.get("content", ""), source="tavily",
+                    score=r.get("score", 0.0),
+                )
+                for r in data.get("results", [])[:max_results]
+                if r.get("title") and r.get("url")
+            ]
+        except Exception as e:
+            logger.debug(f"[forge:search] Tavily error: {e}")
+            return []
+    return []
+
+
+# ── 2e. Exa neural search (optional, $7/1k requests with content) ───────────
 
 async def _search_exa(
     query: str,
@@ -403,7 +533,7 @@ async def _search_exa_company(query: str, max_results: int = 5) -> list[SearchRe
     return await _search_exa(query, max_results, search_type="neural", category="company")
 
 
-# ── 2d. SearXNG (self-hosted metasearch, fully free) ────────────────────────
+# ── 2f. SearXNG (self-hosted metasearch, fully free) ────────────────────────
 
 async def _search_searxng(query: str, max_results: int = 8) -> list[SearchResult]:
     """
@@ -859,15 +989,27 @@ async def web_search(
     timelimit: str | None = "y",
 ) -> list[SearchResult]:
     """
-    Standard web search — ddgs + Brave + optional SearXNG.
-    No query expansion. No reranking. Fast (~300ms).
+    Standard web search — Serper → Tavily → Brave → ddgs (priority order).
+    No query expansion. No reranking. Fast (~200ms with Serper).
     Suitable for: quick inline lookups during build phase.
     """
-    tasks: list[Any] = [_search_ddgs(query, max_results, timelimit=timelimit)]
+    tasks: list[Any] = []
+
+    has_tavily = bool(os.environ.get("TAVILY_API_KEYS") or os.environ.get("TAVILY_API_KEY"))
+
+    # Fast cloud APIs first (Serper ~120ms, Tavily ~1.7s, Brave ~500ms)
+    if os.environ.get("SERPER_API_KEY"):
+        tasks.append(_search_serper(query, max_results))
+    if has_tavily:
+        tasks.append(_search_tavily(query, max_results))
     if os.environ.get("BRAVE_SEARCH_API_KEY"):
         tasks.append(_search_brave(query, max_results))
+
+    # Fallback: ddgs (slow, rate-limited) + self-hosted SearXNG
+    tasks.append(_search_ddgs(query, max_results, timelimit=timelimit))
     if os.environ.get("SEARXNG_URL"):
         tasks.append(_search_searxng(query, max_results))
+
     if include_news:
         tasks.append(_search_ddgs_news(query, max_results=5))
 
@@ -909,6 +1051,7 @@ async def deep_search(
     t0 = time.monotonic()
     stats = SearchStats(query=query)
     has_exa = bool(os.environ.get("EXA_API_KEY")) and use_exa
+    has_tavily = bool(os.environ.get("TAVILY_API_KEYS") or os.environ.get("TAVILY_API_KEY"))
 
     # ── Stage 1: Query Expansion ──────────────────────────────────────────────
     if expand_queries:
@@ -920,9 +1063,15 @@ async def deep_search(
     # ── Stage 2: Parallel Retrieval across all queries × all providers ────────
     retrieval_tasks = []
     for q in expanded:
-        retrieval_tasks.append(_search_ddgs(q, max_results=8))
+        # Fast cloud APIs first
+        if os.environ.get("SERPER_API_KEY"):
+            retrieval_tasks.append(_search_serper(q, max_results=8))
+        if has_tavily:
+            retrieval_tasks.append(_search_tavily(q, max_results=8))
         if os.environ.get("BRAVE_SEARCH_API_KEY"):
             retrieval_tasks.append(_search_brave(q, max_results=8))
+        # Fallbacks
+        retrieval_tasks.append(_search_ddgs(q, max_results=8))
         if os.environ.get("SEARXNG_URL"):
             retrieval_tasks.append(_search_searxng(q, max_results=8))
         if has_exa:
