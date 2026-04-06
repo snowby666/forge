@@ -42,14 +42,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -173,6 +165,7 @@ export default function HackathonDetailPage({
   const router = useRouter()
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [rerollOpen, setRerollOpen] = useState(false)
+  const [runMenuOpen, setRunMenuOpen] = useState(false)
   const [expandedArtifact, setExpandedArtifact] = useState<string | null>(null)
 
   const { data: hackathons } = useSWR<Hackathon[]>(
@@ -376,46 +369,48 @@ export default function HackathonDetailPage({
         </div>
 
         <div className="flex items-center gap-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button size="sm">
-                  <Play className="mr-1.5 size-3.5" />
-                  Run Pipeline
-                </Button>
-              }
-            />
-            <DropdownMenuContent align="end">
-              <DropdownMenuLabel>Run Options</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => handleRunPipeline()}>
-                Resume
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleRunPipeline({ restart: true })}>
-                Restart from scratch
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel>From Phase</DropdownMenuLabel>
-              {(
-                [
-                  "intelligence",
-                  "strategy",
-                  "design",
-                  "build",
-                  "verify",
-                  "polish",
-                  "submission",
-                ] as AgentPhaseName[]
-              ).map((phase) => (
-                <DropdownMenuItem
-                  key={phase}
-                  onClick={() => handleRunPipeline({ from_phase: phase })}
-                >
-                  <span className="capitalize">{phase}</span>
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <div className="relative">
+            <Button size="sm" onClick={() => setRunMenuOpen((v) => !v)}>
+              <Play className="mr-1.5 size-3.5" />
+              Run Pipeline
+            </Button>
+            {runMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setRunMenuOpen(false)} />
+                <div className="absolute right-0 top-full z-50 mt-1 w-48 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
+                  <p className="px-2 py-1 text-xs font-medium text-muted-foreground">Run Options</p>
+                  <div className="my-1 h-px bg-border" />
+                  <button className="flex w-full items-center rounded-md px-2 py-1.5 text-sm hover:bg-accent" onClick={() => { setRunMenuOpen(false); handleRunPipeline() }}>
+                    Resume
+                  </button>
+                  <button className="flex w-full items-center rounded-md px-2 py-1.5 text-sm hover:bg-accent" onClick={() => { setRunMenuOpen(false); handleRunPipeline({ restart: true }) }}>
+                    Restart from scratch
+                  </button>
+                  <div className="my-1 h-px bg-border" />
+                  <p className="px-2 py-1 text-xs font-medium text-muted-foreground">From Phase</p>
+                  {(
+                    [
+                      "intelligence",
+                      "strategy",
+                      "design",
+                      "build",
+                      "verify",
+                      "polish",
+                      "submission",
+                    ] as AgentPhaseName[]
+                  ).map((phase) => (
+                    <button
+                      key={phase}
+                      className="flex w-full items-center rounded-md px-2 py-1.5 text-sm capitalize hover:bg-accent"
+                      onClick={() => { setRunMenuOpen(false); handleRunPipeline({ from_phase: phase }) }}
+                    >
+                      {phase}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
           <Link href={`/hackathon/${id}/logs`}>
             <Button variant="outline" size="sm">
               <ScrollText className="mr-1.5 size-3.5" />

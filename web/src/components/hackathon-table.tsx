@@ -23,13 +23,6 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import {
   Table,
@@ -65,6 +58,34 @@ function deadlineLabel(days: number) {
   if (days === 0) return "Today"
   if (days === 1) return "Tomorrow"
   return `${days}d`
+}
+
+function ActionMenu({ row, onReroll, onDelete }: { row: { original: Hackathon }; onReroll: (id: string) => void; onDelete: (ids: string[]) => void }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="relative">
+      <Button variant="ghost" size="icon-xs" onClick={() => setOpen((v) => !v)}>
+        <MoreHorizontal className="size-4" />
+      </Button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full z-50 mt-1 w-36 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
+            <Link href={`/hackathon/${row.original.id}`} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent" onClick={() => setOpen(false)}>
+              <Eye className="size-4" /> View
+            </Link>
+            <button className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent" onClick={() => { setOpen(false); onReroll(row.original.id) }}>
+              <RefreshCw className="size-4" /> Reroll
+            </button>
+            <div className="my-1 h-px bg-border" />
+            <button className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-destructive hover:bg-destructive/10" onClick={() => { setOpen(false); onDelete([row.original.id]) }}>
+              <Trash2 className="size-4" /> Delete
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
 }
 
 interface HackathonTableProps {
@@ -209,39 +230,7 @@ export function HackathonTable({
       },
       {
         id: "actions",
-        cell: ({ row }) => (
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={<Button variant="ghost" size="icon-xs" />}
-            >
-              <MoreHorizontal className="size-4" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                render={
-                  <Link href={`/hackathon/${row.original.id}`} />
-                }
-              >
-                <Eye className="size-4" />
-                View
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => onReroll(row.original.id)}
-              >
-                <RefreshCw className="size-4" />
-                Reroll
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                variant="destructive"
-                onClick={() => onDelete([row.original.id])}
-              >
-                <Trash2 className="size-4" />
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ),
+        cell: ({ row }) => <ActionMenu row={row} onReroll={onReroll} onDelete={onDelete} />,
       },
     ],
     [onDelete, onReroll],
