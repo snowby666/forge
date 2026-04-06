@@ -100,14 +100,10 @@ Or download from:    https://ffmpeg.org/download.html#build-windows
 "@
 }
 
-# --- .env and forge.secrets --------------------------------------------------
+# --- .env -------------------------------------------------------------------
 if (-not (Test-Path ".env")) {
     Copy-Item ".env.example" ".env"
-    Write-Yellow ".env created -- fill in ELECTRONHUB_API_KEY"
-}
-if (-not (Test-Path "forge.secrets")) {
-    Copy-Item "forge.secrets.example" "forge.secrets"
-    Write-Yellow "forge.secrets created -- add your API keys (gitignored)"
+    Write-Yellow ".env created -- fill in ELECTRONHUB_API_KEY and other keys"
 }
 
 # --- Infrastructure directories ----------------------------------------------
@@ -291,7 +287,7 @@ Write-Host ""
 Write-Green "Setup complete!"
 Write-Host ""
 Write-Cyan "Next steps:"
-Write-Cyan "  1. Edit forge.secrets -- add your ELECTRONHUB_API_KEY"
+Write-Cyan "  1. Edit .env -- add your ELECTRONHUB_API_KEY"
 Write-Cyan "  2. Ensure Docker Desktop is running"
 Write-Cyan "  3. Start services: bash scripts/start.sh"
 Write-Cyan "     (or in PowerShell: docker compose up -d)"

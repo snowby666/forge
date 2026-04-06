@@ -214,7 +214,7 @@ TOKEN_COSTS: dict[str, dict[str, float]] = {
     "claude-opus-4-6":    {"input": 5.0,   "output": 25.0},
     "claude-sonnet-4-6":  {"input": 3.0,   "output": 15.0},
     "claude-haiku-4-5":   {"input": 0.25,  "output": 1.25},
-    # Anthropic (legacy — kept for forge.secrets users on older versions)
+    # Anthropic (legacy — kept for users on older model names)
     "claude-opus-4-5":    {"input": 5.0,   "output": 25.0},
     "claude-sonnet-4-5":  {"input": 3.0,   "output": 15.0},
     # OpenAI (current SOTA)

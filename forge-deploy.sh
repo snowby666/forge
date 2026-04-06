@@ -94,10 +94,6 @@ if [[ "$CURRENT_PG_PASS" == "change_this_strong_password" || "$CURRENT_PG_PASS" 
   log "Generated secure passwords in .env"
 fi
 
-if [ ! -f forge.secrets ]; then
-  cp forge.secrets.example forge.secrets 2>/dev/null || true
-fi
-
 # ── Step 6: Ensure forge.py exists (entry point for pip install) ──────────────
 if [ -f forge ] && [ ! -f forge.py ]; then
   cp forge forge.py
@@ -247,7 +243,7 @@ echo ""
 # ── Step 14: Start Forge web dashboard ────────────────────────────────────────
 FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
 log "Starting Forge web dashboard on port ${FORGE_WEB_PORT}..."
-set -a; source .env 2>/dev/null || true; [[ -f forge.secrets ]] && source forge.secrets 2>/dev/null || true; set +a
+set -a; source .env 2>/dev/null || true; set +a
 nohup python -m uvicorn forge_web:app --host 0.0.0.0 --port "$FORGE_WEB_PORT" --log-level warning > /tmp/forge-web.log 2>&1 &
 sleep 2
 if curl -sf "http://localhost:${FORGE_WEB_PORT}/health" &>/dev/null 2>&1; then
@@ -257,7 +253,7 @@ else
 fi
 
 info "Next:"
-info "  1. Edit forge.secrets — add ELECTRONHUB_API_KEY"
+info "  1. Edit .env — add ELECTRONHUB_API_KEY"
 info "  2. source .venv/bin/activate"
 info "  3. forge scout --dry-run"
 info "  4. forge test"

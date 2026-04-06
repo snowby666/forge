@@ -6,7 +6,7 @@ Base URL: https://api.electronhub.ai/v1 (OpenAI-compatible)
 NEVER instantiate AsyncOpenAI directly in agent code.
 ALWAYS import complete(), complete_json(), or embed() from here.
 
-Model overrides — set any of these in .env or forge.secrets:
+Model overrides — set any of these in .env:
   FORGE_MODEL_HEAVY    default: claude-opus-4-6
   FORGE_MODEL_STANDARD default: claude-sonnet-4-6
   FORGE_MODEL_DESIGN   default: claude-sonnet-4-6
@@ -43,7 +43,6 @@ import os
 import re
 import time as _t
 from enum import Enum
-from pathlib import Path
 from typing import Any, Type, TypeVar
 
 from openai import AsyncOpenAI, APIStatusError
@@ -51,29 +50,6 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-
-# ── Secrets file loader ───────────────────────────────────────────────────────
-# forge.secrets is gitignored. It holds model overrides and API keys.
-# env vars take precedence; secrets file fills in the rest.
-
-def _load_secrets() -> None:
-    secrets_file = Path(os.path.dirname(__file__)).parent / "forge.secrets"
-    if not secrets_file.exists():
-        return
-    try:
-        for line in secrets_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key   = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = value
-    except Exception as e:
-        logger.debug(f"[forge:llm] Could not load forge.secrets: {e}")
-
-_load_secrets()
 
 
 # ── Singleton client ──────────────────────────────────────────────────────────
@@ -87,7 +63,7 @@ def get_client() -> AsyncOpenAI:
         if not key:
             raise RuntimeError(
                 "ELECTRONHUB_API_KEY not set. "
-                "Add it to .env or forge.secrets: ELECTRONHUB_API_KEY=your_key"
+                "Add it to .env: ELECTRONHUB_API_KEY=your_key"
             )
         _client = AsyncOpenAI(
             api_key=key,
@@ -201,7 +177,7 @@ def _build_fallback() -> dict[str, str]:
     # Explicit terminal for standard → writing when same model
     if standard_m not in chain:
         chain[standard_m] = writing_m if writing_m != standard_m else bulk_m
-    # Legacy model names so old forge.secrets files still fall back correctly
+    # Legacy model names so old .env files still fall back correctly
     chain.update({
         "claude-opus-4-5":    standard_m,
         "claude-sonnet-4-5":  writing_m,

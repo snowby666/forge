@@ -85,7 +85,7 @@ bash scripts/setup.sh
 source .venv/bin/activate
 
 # 3. Add API keys
-nano forge.secrets        # Required: ELECTRONHUB_API_KEY
+nano .env                 # Required: ELECTRONHUB_API_KEY
 
 # 4. Start all services
 bash scripts/start.sh

@@ -109,13 +109,7 @@ graph TD
 
 ## Overriding models
 
-Any tier's model can be overridden without touching code. Create `forge.secrets` (gitignored):
-
-```bash
-cp forge.secrets.example forge.secrets
-```
-
-Then edit the file:
+Any tier's model can be overridden without touching code. Edit `.env` (gitignored):
 
 ```bash
 # Use a cheaper model for HEAVY during development
@@ -128,7 +122,7 @@ FORGE_MODEL_WRITING=gpt-4.1
 FORGE_MAX_TOKENS_STANDARD=32000
 ```
 
-All `FORGE_MODEL_*` and `FORGE_MAX_TOKENS_*` variables work in both `.env` and `forge.secrets`. Environment variables always win over `forge.secrets`.
+All `FORGE_MODEL_*` and `FORGE_MAX_TOKENS_*` variables are set in `.env`.
 
 ## Model catalog (2026-03-31)
 

@@ -7,7 +7,7 @@ __pycache__/
 
 # Secrets
 .env
-forge.secrets
+forge.secrets           # legacy — all config is in .env now
 config/*-service-account*.json
 config/forge-*.json
 

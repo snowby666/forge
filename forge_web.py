@@ -29,7 +29,7 @@ from config.redis_client import get_redis
 
 app = FastAPI(title="Forge Dashboard", docs_url=None, redoc_url=None)
 
-# Basic auth — set FORGE_WEB_TOKEN in .env/forge.secrets (or auto-generate)
+# Basic auth — set FORGE_WEB_TOKEN in .env (or auto-generate)
 WEB_TOKEN = os.environ.get("FORGE_WEB_TOKEN", "")
 
 # ─── Auth middleware ──────────────────────────────────────────────────────────

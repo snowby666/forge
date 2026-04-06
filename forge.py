@@ -29,9 +29,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config.redis_client import get_redis
 from dotenv import load_dotenv
 load_dotenv(encoding="utf-8-sig")
-_secrets = os.path.join(os.path.dirname(os.path.abspath(__file__)), "forge.secrets")
-if os.path.exists(_secrets):
-    load_dotenv(_secrets, override=False, encoding="utf-8-sig")
 
 # ── ANSI colors ───────────────────────────────────────────────────────────────
 
@@ -923,7 +920,7 @@ def main():
         if token:
             print(f"  Auth token set — append ?token={token} to login\n")
         else:
-            print(f"  {DIM}No FORGE_WEB_TOKEN set — dashboard is open (set one in forge.secrets){RESET}\n")
+            print(f"  {DIM}No FORGE_WEB_TOKEN set — dashboard is open (set one in .env){RESET}\n")
         start_web(args.host, args.port)
         return
 

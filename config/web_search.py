@@ -68,10 +68,10 @@ COST SUMMARY (per search)
 
 SETUP
   Required:    pip install ddgs bm25s sentence-transformers aiohttp
-  Recommended: SERPER_API_KEY in forge.secrets  (2500 free, fastest)
-  Recommended: TAVILY_API_KEY in forge.secrets  (1k/mo free, AI-optimized)
-  Optional:    BRAVE_SEARCH_API_KEY in forge.secrets  (free tier)
-  Optional:    EXA_API_KEY in forge.secrets            ($7/1k)
+  Recommended: SERPER_API_KEY in .env  (2500 free, fastest)
+  Recommended: TAVILY_API_KEY in .env  (1k/mo free, AI-optimized)
+  Optional:    BRAVE_SEARCH_API_KEY in .env  (free tier)
+  Optional:    EXA_API_KEY in .env            ($7/1k)
   Optional:    SEARXNG_URL=http://localhost:8080       (Docker)
 
 REFERENCES
@@ -312,7 +312,7 @@ async def _search_ddgs_news(query: str, max_results: int = 5) -> list[SearchResu
 async def _search_brave(query: str, max_results: int = 8) -> list[SearchResult]:
     """
     Brave Search: independent 30B-page index, best tech freshness.
-    Set BRAVE_SEARCH_API_KEY in forge.secrets. ~1k free queries/month.
+    Set BRAVE_SEARCH_API_KEY in .env. ~1k free queries/month.
     Leads AIMultiple agentic search benchmark (14.89/20).
     """
     api_key = os.environ.get("BRAVE_SEARCH_API_KEY", "").strip()
@@ -367,7 +367,7 @@ async def _search_serper(query: str, max_results: int = 8) -> list[SearchResult]
     Serper.dev — real Google results via REST API.
     Fastest SERP API (~120ms avg). 2,500 free one-time credits, no CC required.
     Then $0.30-$1.00 per 1k queries.  Signup: https://serper.dev
-    Set SERPER_API_KEY in forge.secrets.
+    Set SERPER_API_KEY in .env.
     """
     api_key = os.environ.get("SERPER_API_KEY", "").strip()
     if not api_key:
@@ -471,7 +471,7 @@ async def _search_exa(
     Trained on link-prediction: finds conceptually related content
     even without keyword overlap. 81% multi-hop accuracy vs Tavily 71%.
     $7/1k requests (content included) as of March 2026.
-    Set EXA_API_KEY in forge.secrets.
+    Set EXA_API_KEY in .env.
     """
     api_key = os.environ.get("EXA_API_KEY", "").strip()
     if not api_key:
@@ -547,7 +547,7 @@ async def _search_searxng(query: str, max_results: int = 8) -> list[SearchResult
     """
     SearXNG self-hosted instance — queries 70+ engines simultaneously
     (Google, Bing, DDG, Startpage, etc.) without tracking.
-    Set SEARXNG_URL in forge.secrets (e.g., http://localhost:8081).
+    Set SEARXNG_URL in .env (e.g., http://localhost:8081).
     Completely free. Add to docker-compose to enable.
     """
     base_url = os.environ.get("SEARXNG_URL", "").strip().rstrip("/")

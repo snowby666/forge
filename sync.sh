@@ -40,7 +40,6 @@ rsync -a --delete \
   --exclude='.ruff_cache/' \
   --exclude='*.egg-info/' \
   --exclude='.env' \
-  --exclude='forge.secrets' \
   "$SRC/" "$DST/"
 
 # Fix line endings on anything that might have CRLF
@@ -85,15 +84,6 @@ cd "$DST"
 if [[ -f "$DST/.env" ]]; then
   sed -i 's/\r$//' "$DST/.env" 2>/dev/null || true
   set -a; source "$DST/.env" 2>/dev/null || true; set +a
-fi
-if [[ -f "$DST/forge.secrets" ]]; then
-  sed -i 's/\r$//' "$DST/forge.secrets" 2>/dev/null || true
-  # Only source lines that look like KEY=VALUE (skip garbage/comments)
-  while IFS= read -r line; do
-    line="${line%%#*}"              # strip inline comments
-    [[ -z "$line" ]] && continue   # skip empty
-    [[ "$line" == *=* ]] && export "$line" 2>/dev/null || true
-  done < "$DST/forge.secrets"
 fi
 
 FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"

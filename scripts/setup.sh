@@ -104,17 +104,13 @@ if ! command -v ffmpeg &>/dev/null; then
   fi
 fi
 
-# --- .env and forge.secrets --------------------------------------------------
+# --- .env -------------------------------------------------------------------
 if [ ! -f .env ]; then
   cp .env.example .env
-  warn ".env created -- fill in ELECTRONHUB_API_KEY"
-fi
-if [ ! -f forge.secrets ]; then
-  cp forge.secrets.example forge.secrets
-  warn "forge.secrets created -- add your API keys (gitignored)"
+  warn ".env created -- fill in ELECTRONHUB_API_KEY and other keys"
 fi
 # Strip Windows CRLF from config files (NTFS /mnt/c/ + git autocrlf cause \r\n)
-sed -i 's/\r$//' .env forge.secrets 2>/dev/null || true
+sed -i 's/\r$//' .env 2>/dev/null || true
 
 # --- Infrastructure config files (inside config/ -- no separate infra/ dir) ----
 # Data volumes are Docker-managed named volumes (see docker-compose.yml).
@@ -368,7 +364,7 @@ echo ""
 info "Next steps:"
 if [[ "$OS_TYPE" == "windows" ]]; then
   info "  1. source .venv/Scripts/activate"
-  info "  2. Edit forge.secrets -- add your ELECTRONHUB_API_KEY"
+  info "  2. Edit .env -- add your ELECTRONHUB_API_KEY"
   info "  3. Ensure Docker Desktop is running"
   info "  4. bash scripts/start.sh"
   info "  5. python scripts/test_run.py --dry-run"
@@ -376,7 +372,7 @@ if [[ "$OS_TYPE" == "windows" ]]; then
   warn "Windows: For GPU access, Daytona, and full Linux tooling, use WSL2."
 else
   info "  1. source .venv/bin/activate"
-  info "  2. Edit forge.secrets -- add your ELECTRONHUB_API_KEY"
+  info "  2. Edit .env -- add your ELECTRONHUB_API_KEY"
   info "  3. bash scripts/start.sh"
   info "  4. python scripts/test_run.py --dry-run"
 fi

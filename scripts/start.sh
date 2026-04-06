@@ -60,7 +60,6 @@ PYTHON_CMD="${VENV_PYTHON:-python}"
 [[ -f .env ]] || err ".env not found -- run scripts/setup.sh first"
 # Strip Windows CRLF line endings (files on NTFS /mnt/c/ get \r\n from Windows editors/git)
 sed -i 's/\r$//' .env 2>/dev/null || true
-[[ -f forge.secrets ]] && { sed -i 's/\r$//' forge.secrets 2>/dev/null || true; }
 set -a; source .env; set +a
 
 # --- Validate .env has real passwords ----------------------------------------
@@ -68,7 +67,7 @@ ENV_OK=true
 for var in POSTGRES_PASSWORD REDIS_PASSWORD QDRANT_API_KEY; do
   val="${!var:-}"
   if [[ -z "$val" || "$val" == "change_me" || "$val" == "change_this_strong_password" || "$val" == "change_this_strong_key" ]]; then
-    warn "$var is not set or still uses a placeholder. Edit .env or forge.secrets."
+    warn "$var is not set or still uses a placeholder. Edit .env."
     ENV_OK=false
   fi
 done
