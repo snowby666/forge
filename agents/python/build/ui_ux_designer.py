@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from config.electronhub import complete, complete_json
 from config.redis_client import get_redis
@@ -69,8 +69,15 @@ class ComponentSpec(BaseModel):
     states: list[ComponentState]
     props_interface: str        # TypeScript interface as string
     default_props: dict[str, Any]
-    real_copy: dict[str, str]   # {"placeholder": "Search customers by name...", "label": "Customer"}
+    real_copy: dict[str, Any]   # {"placeholder": "Search customers by name...", "label": "Customer"}
     accessibility_notes: str
+
+    @field_validator("real_copy", mode="before")
+    @classmethod
+    def _coerce_copy_values(cls, v: Any) -> dict[str, Any]:
+        if not isinstance(v, dict):
+            return v
+        return {k: json.dumps(val) if not isinstance(val, str) else val for k, val in v.items()}
     is_demo_critical: bool      # must work perfectly for the demo path
     estimated_minutes: int      # honest estimate for frontend engineer
 

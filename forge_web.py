@@ -664,7 +664,7 @@ async def api_config_read():
             value = stored.get(key) or os.environ.get(key, "")
             entries.append({
                 "key": key,
-                "value": _redact(value) if item["secret"] and value else value,
+                "value": value,
                 "secret": item["secret"],
                 "description": item["description"],
             })
@@ -814,19 +814,17 @@ async def api_services_health():
     if db_url:
         t1 = time.monotonic()
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "python", "-c",
-                "import asyncio,sys;sys.path.insert(0,'.');from sqlalchemy.ext.asyncio import create_async_engine;"
-                f"e=create_async_engine('{db_url}');asyncio.run(e.dispose())",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            from urllib.parse import urlparse
+            parsed = urlparse(db_url)
+            host = parsed.hostname or "localhost"
+            port = parsed.port or 5432
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=5,
             )
-            await asyncio.wait_for(proc.wait(), timeout=5)
+            writer.close()
+            await writer.wait_closed()
             latency = round((time.monotonic() - t1) * 1000, 1)
-            if proc.returncode == 0:
-                services.append({"name": "postgresql", "status": "ok", "latency_ms": latency})
-            else:
-                stderr = (await proc.stderr.read()).decode() if proc.stderr else ""
-                services.append({"name": "postgresql", "status": "error", "error": stderr[:200]})
+            services.append({"name": "postgresql", "status": "ok", "latency_ms": latency})
         except Exception as exc:
             services.append({"name": "postgresql", "status": "error", "error": str(exc)})
     else:

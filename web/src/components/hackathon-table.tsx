@@ -118,7 +118,7 @@ export function HackathonTable({
         ),
         cell: ({ row }) => (
           <Link
-            href={`/hackathons/${row.original.id}`}
+            href={`/hackathon/${row.original.id}`}
             className="font-medium hover:underline"
           >
             {row.original.brief.name}
@@ -219,7 +219,7 @@ export function HackathonTable({
             <DropdownMenuContent align="end">
               <DropdownMenuItem
                 render={
-                  <Link href={`/hackathons/${row.original.id}`} />
+                  <Link href={`/hackathon/${row.original.id}`} />
                 }
               >
                 <Eye className="size-4" />

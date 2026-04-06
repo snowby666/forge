@@ -2,11 +2,13 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
+import useSWR from "swr"
 import {
   LayoutDashboard,
   Trophy,
   BarChart3,
   Settings,
+  Terminal,
   CircuitBoard,
 } from "lucide-react"
 
@@ -19,19 +21,43 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
+  SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
+import { Badge } from "@/components/ui/badge"
+import { fetchHackathons, fetchCheckpoints } from "@/lib/api"
+import type { Hackathon, Checkpoint } from "@/lib/types"
 
 const navItems = [
   { title: "Dashboard", path: "/", icon: LayoutDashboard },
   { title: "Hackathons", path: "/hackathons", icon: Trophy },
+  { title: "Live Logs", path: "/hackathon", icon: Terminal },
   { title: "Analytics", path: "/analytics", icon: BarChart3 },
   { title: "Settings", path: "/settings", icon: Settings },
 ]
 
 export function AppSidebar() {
   const pathname = usePathname()
+
+  const { data: hackathons } = useSWR<Hackathon[]>("hackathons", fetchHackathons, {
+    refreshInterval: 30_000,
+    fallbackData: [],
+  })
+
+  const { data: checkpoints } = useSWR<Checkpoint[]>("checkpoints", fetchCheckpoints, {
+    refreshInterval: 15_000,
+    fallbackData: [],
+  })
+
+  const pendingCount = checkpoints?.filter((c) => c.pending).length ?? 0
+  const activeCount = hackathons?.length ?? 0
+
+  function badgeFor(title: string) {
+    if (title === "Dashboard" && pendingCount > 0) return pendingCount
+    if (title === "Hackathons" && activeCount > 0) return activeCount
+    return null
+  }
 
   return (
     <Sidebar variant="sidebar" collapsible="icon">
@@ -57,6 +83,8 @@ export function AppSidebar() {
                     ? pathname === "/"
                     : pathname.startsWith(item.path)
 
+                const count = badgeFor(item.title)
+
                 return (
                   <SidebarMenuItem key={item.path}>
                     <SidebarMenuButton
@@ -67,6 +95,13 @@ export function AppSidebar() {
                       <item.icon />
                       <span>{item.title}</span>
                     </SidebarMenuButton>
+                    {count !== null && (
+                      <SidebarMenuBadge>
+                        <Badge variant="secondary" className="scale-90">
+                          {count}
+                        </Badge>
+                      </SidebarMenuBadge>
+                    )}
                   </SidebarMenuItem>
                 )
               })}
@@ -81,7 +116,7 @@ export function AppSidebar() {
             <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-75" />
             <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
           </span>
-          <span className="truncate">System Status</span>
+          <span className="truncate">Forge v2.0</span>
         </div>
       </SidebarFooter>
     </Sidebar>
