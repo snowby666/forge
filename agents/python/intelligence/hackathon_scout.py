@@ -1137,37 +1137,41 @@ async def run_scout(
 
     # ── Phase 5: Score (before community/research so we can prioritize) ─────
     logger.info(f"[forge:scout] ═══ Phase 5: SCORE — evaluating all hackathons ═══")
-    scored_briefs = []
-    for brief in briefs:
-        try:
-            scored = await score_hackathon(brief)
-            scored_briefs.append(scored)
-
-            prize_total = sum(p.amount or 0 for p in scored.prizes)
-            bd = scored.score_breakdown
-            extras = []
-            if bd.get("featured_bonus"):
-                extras.append(f"feat=+{bd['featured_bonus']}")
-            if bd.get("invite_only_penalty"):
-                extras.append(f"invite={bd['invite_only_penalty']}")
-            if bd.get("prize_diversity"):
-                extras.append(f"div=+{bd['prize_diversity']}")
-            extra_str = f" | {' '.join(extras)}" if extras else ""
-            logger.info(
-                f"[forge:scout] {scored.name[:45]:45s} "
-                f"score={scored.score:3d}/100 "
-                f"(prize={bd.get('prize_pool', 0)} "
-                f"sponsor={bd.get('sponsor_prizes', 0)} "
-                f"deadline={bd.get('deadline_buffer', 0)} "
-                f"theme={bd.get('theme_match', 0)} "
-                f"comp={bd.get('competition_size', 0)})"
-                f"{extra_str} "
-                f"${prize_total:,.0f} | {scored.days_until_deadline}d left"
-            )
-        except Exception as e:
-            logger.warning(f"[forge:scout] Scoring failed for {brief.name}: {e}")
-            brief.score = 0
-            scored_briefs.append(brief)
+    SCORE_BATCH = 10
+    scored_briefs: list[HackathonBrief] = []
+    for batch_start in range(0, len(briefs), SCORE_BATCH):
+        batch = briefs[batch_start:batch_start + SCORE_BATCH]
+        logger.info(f"[forge:scout] Score batch {batch_start // SCORE_BATCH + 1} ({len(batch)} hackathons)")
+        score_tasks = [asyncio.wait_for(score_hackathon(b), timeout=30.0) for b in batch]
+        results = await asyncio.gather(*score_tasks, return_exceptions=True)
+        for idx, r in enumerate(results):
+            if isinstance(r, HackathonBrief):
+                scored_briefs.append(r)
+                prize_total = sum(p.amount or 0 for p in r.prizes)
+                bd = r.score_breakdown
+                extras = []
+                if bd.get("featured_bonus"):
+                    extras.append(f"feat=+{bd['featured_bonus']}")
+                if bd.get("invite_only_penalty"):
+                    extras.append(f"invite={bd['invite_only_penalty']}")
+                if bd.get("prize_diversity"):
+                    extras.append(f"div=+{bd['prize_diversity']}")
+                extra_str = f" | {' '.join(extras)}" if extras else ""
+                logger.info(
+                    f"[forge:scout] {r.name[:45]:45s} "
+                    f"score={r.score:3d}/100 "
+                    f"(prize={bd.get('prize_pool', 0)} "
+                    f"sponsor={bd.get('sponsor_prizes', 0)} "
+                    f"deadline={bd.get('deadline_buffer', 0)} "
+                    f"theme={bd.get('theme_match', 0)} "
+                    f"comp={bd.get('competition_size', 0)})"
+                    f"{extra_str} "
+                    f"${prize_total:,.0f} | {r.days_until_deadline}d left"
+                )
+            else:
+                logger.warning(f"[forge:scout] Scoring failed for {batch[idx].name}: {r}")
+                batch[idx].score = 0
+                scored_briefs.append(batch[idx])
 
     briefs = scored_briefs
     briefs.sort(key=lambda b: b.score, reverse=True)
@@ -1216,13 +1220,14 @@ async def run_scout(
     # ── Dedup: check which hackathon URLs are already tracked in Redis ──
     existing_keys = await redis.keys("hackathon:*:brief")
     existing_urls: set[str] = set()
-    for key in existing_keys:
-        raw_brief = await redis.get(key)
-        if raw_brief:
-            try:
-                existing_urls.add(json.loads(raw_brief).get("url", ""))
-            except Exception:
-                pass
+    if existing_keys:
+        raw_briefs = await asyncio.gather(*(redis.get(k) for k in existing_keys))
+        for raw_brief in raw_briefs:
+            if raw_brief:
+                try:
+                    existing_urls.add(json.loads(raw_brief).get("url", ""))
+                except Exception:
+                    pass
 
     new_qualified: list[HackathonBrief] = []
     for brief in qualified:

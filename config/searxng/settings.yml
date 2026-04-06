@@ -75,5 +75,5 @@ engines:
     timeout: 15.0
   - name: startpage
     engine: startpage
-    disabled: false
+    disabled: true
     timeout: 15.0
