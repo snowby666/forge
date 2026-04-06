@@ -123,7 +123,31 @@ services:
     depends_on:
       - temporal
 
-  # ── Forge web dashboard (sentinelhive.dev) ─────────────────────────────────
+  # ── Forge API backend (FastAPI) ──────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: forge-api
+    restart: unless-stopped
+    environment:
+      REDIS_URL: "redis://:${REDIS_PASSWORD:-change_me}@redis:6379/0"
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-backbone}:${POSTGRES_PASSWORD:-change_me}@postgres:5432/backbone"
+      FORGE_WEB_TOKEN: "${FORGE_WEB_TOKEN:-}"
+      QDRANT_URL: "http://qdrant:6333"
+      SEARXNG_URL: "http://searxng:8080"
+    expose:
+      - "3001"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:3001/health')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ── Forge web dashboard — Next.js (sentinelhive.dev) ───────────────────────
   web:
     build:
       context: .
@@ -131,17 +155,17 @@ services:
     container_name: forge-web
     restart: unless-stopped
     environment:
-      REDIS_URL: "redis://:${REDIS_PASSWORD:-change_me}@redis:6379/0"
+      NEXT_PUBLIC_API_URL: "http://api:3001"
       FORGE_WEB_TOKEN: "${FORGE_WEB_TOKEN:-}"
     ports:
       - "3000:3000"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:3000/health')\""]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
     depends_on:
-      redis:
+      api:
         condition: service_healthy
 
   # ── SearXNG self-hosted metasearch (ForgeSearch) ──────────────────────────

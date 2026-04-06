@@ -1,64 +1,132 @@
 #!/usr/bin/env python3
 """
-forge_web — Lightweight web dashboard for remote Forge approval & monitoring.
+forge_web — API backend for the Forge dashboard.
 
-Start (pick one):
-    docker compose up -d web       # recommended — auto-restarts, Redis-networked
-    forge web                      # bare-metal, defaults to 0.0.0.0:3000
+Start:
+    docker compose up -d web
+    forge web
     uvicorn forge_web:app --host 0.0.0.0 --port 3000
-
-Point sentinelhive.dev (or any domain) at this server.
-Access from phone/laptop to approve checkpoints without SSH.
 """
 
 from __future__ import annotations
 
-import html as _html
+import asyncio
 import json
 import logging
 import os
 import sys
-import traceback
+import time
 from datetime import datetime, timezone
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from dotenv import load_dotenv
+
 load_dotenv(encoding="utf-8-sig")
 
-from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
 from config.redis_client import get_redis
 
 logger = logging.getLogger("forge.web")
 
-app = FastAPI(title="Forge Dashboard", docs_url=None, redoc_url=None)
+app = FastAPI(title="Forge API", docs_url=None, redoc_url=None)
 
-# Basic auth — set FORGE_WEB_TOKEN in .env (or auto-generate)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 WEB_TOKEN = os.environ.get("FORGE_WEB_TOKEN", "")
 
-# ─── Auth middleware ──────────────────────────────────────────────────────────
+LAYER_AGENTS: dict[str, list[str]] = {
+    "intelligence": ["hackathon_scout", "competitor_analyst", "judge_profiler", "sponsor_researcher"],
+    "strategy": ["strategy_director", "pm", "tech_architect"],
+    "design": ["ui_ux_designer"],
+    "build": ["frontend_engineer", "backend_engineer", "integration_engineer", "test_engineer", "devops", "security"],
+    "verify": ["code_reviewer", "ux_auditor", "performance"],
+    "polish": ["polish", "copy_writer", "data_seeder", "brand"],
+    "submission": ["demo_producer", "pitch_writer", "submission"],
+    "infra": ["memory_keeper", "monitor", "calendar", "knowledge_updater", "outcome_tracker"],
+}
+
+_AGENT_TO_PHASE: dict[str, str] = {}
+for _phase, _agents in LAYER_AGENTS.items():
+    for _a in _agents:
+        _AGENT_TO_PHASE[_a] = _phase
+
+CHECKPOINT_LABELS = {
+    "concept_approval": "Concept Approval",
+    "design_approval": "Design Approval",
+    "quality_review": "Quality Review",
+    "submission_approval": "Submission Approval",
+}
+
+CONFIG_KEYS: list[dict[str, Any]] = [
+    {"key": "ELECTRONHUB_API_KEY", "secret": True, "description": "ElectronHub LLM provider key"},
+    {"key": "SERPER_API_KEY", "secret": True, "description": "Serper search API key"},
+    {"key": "TAVILY_API_KEY", "secret": True, "description": "Tavily search API key"},
+    {"key": "BRAVE_API_KEY", "secret": True, "description": "Brave search API key"},
+    {"key": "EXA_API_KEY", "secret": True, "description": "Exa search API key"},
+    {"key": "FIRECRAWL_API_KEY", "secret": True, "description": "Firecrawl scraping API key"},
+    {"key": "STITCH_API_KEY", "secret": True, "description": "Stitch API key"},
+    {"key": "REDIS_URL", "secret": True, "description": "Redis connection URL"},
+    {"key": "DATABASE_URL", "secret": True, "description": "PostgreSQL connection URL"},
+]
+
+
+# ── Request models ────────────────────────────────────────────────────────────
+
+class ConfigUpdateRequest(BaseModel):
+    entries: list[dict[str, str]]
+
+
+class BatchRequest(BaseModel):
+    action: str
+    ids: list[str]
+
+
+# ── Auth middleware ───────────────────────────────────────────────────────────
 
 def _check_auth(request: Request) -> bool:
     if not WEB_TOKEN:
         return True
-    token = request.query_params.get("token") or request.cookies.get("forge_token")
+    token = (
+        request.query_params.get("token")
+        or request.cookies.get("forge_token")
+        or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    )
     return token == WEB_TOKEN
 
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    public = ("/login", "/health")
-    if request.url.path in public:
+    if request.url.path in ("/health", "/api/ws"):
         return await call_next(request)
     if not _check_auth(request):
-        if request.url.path.startswith("/api/"):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-        return RedirectResponse("/login")
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     return await call_next(request)
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# ── Exception handler ─────────────────────────────────────────────────────────
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled %s on %s: %s", type(exc).__name__, request.url.path, exc)
+    return JSONResponse(
+        {"error": type(exc).__name__, "detail": str(exc)},
+        status_code=500,
+    )
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def _get_hackathons(redis) -> list[dict]:
     keys = await redis.keys("hackathon:*:brief")
@@ -97,167 +165,73 @@ async def _get_checkpoints(redis) -> list[dict]:
     return checkpoints
 
 
-CHECKPOINT_LABELS = {
-    "concept_approval": "Concept Approval",
-    "design_approval": "Design Approval",
-    "quality_review": "Quality Review",
-    "submission_approval": "Submission Approval",
-}
+def _redact(value: str) -> str:
+    if not value or len(value) <= 4:
+        return "***"
+    return value[:4] + "..."
 
 
-# ─── HTML templates ───────────────────────────────────────────────────────────
+async def _delete_hackathon(redis, hackathon_id: str) -> dict:
+    brief_raw = await redis.get(f"hackathon:{hackathon_id}:brief")
+    if not brief_raw:
+        return {"id": hackathon_id, "success": False, "error": "not found"}
 
-def _base(title: str, body: str) -> str:
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title} — Forge</title>
-<style>
-  :root {{
-    --bg: #0d1117; --surface: #161b22; --border: #30363d;
-    --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff;
-    --green: #3fb950; --yellow: #d29922; --red: #f85149;
-    --radius: 12px;
-  }}
-  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-    background: var(--bg); color: var(--text);
-    min-height: 100vh; padding: 16px;
-    -webkit-font-smoothing: antialiased;
-  }}
-  .container {{ max-width: 640px; margin: 0 auto; }}
-  h1 {{ font-size: 1.5rem; margin-bottom: 4px; }}
-  h2 {{ font-size: 1.1rem; color: var(--dim); margin-bottom: 16px; font-weight: 400; }}
-  .card {{
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 16px; margin-bottom: 12px;
-    transition: border-color 0.2s;
-  }}
-  .card:hover {{ border-color: var(--accent); }}
-  .card-title {{ font-weight: 600; font-size: 1rem; margin-bottom: 6px; }}
-  .card-meta {{ color: var(--dim); font-size: 0.85rem; }}
-  .badge {{
-    display: inline-block; padding: 2px 10px; border-radius: 20px;
-    font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
-  }}
-  .badge-pending {{ background: rgba(210,153,34,0.15); color: var(--yellow); }}
-  .badge-approved {{ background: rgba(63,185,80,0.15); color: var(--green); }}
-  .badge-phase {{ background: rgba(88,166,255,0.15); color: var(--accent); }}
-  .btn {{
-    display: inline-block; padding: 12px 24px; border-radius: var(--radius);
-    font-size: 1rem; font-weight: 600; text-decoration: none; cursor: pointer;
-    border: none; text-align: center; width: 100%; margin-top: 12px;
-    transition: opacity 0.2s;
-  }}
-  .btn:hover {{ opacity: 0.85; }}
-  .btn-primary {{ background: var(--accent); color: #fff; }}
-  .btn-green {{ background: var(--green); color: #fff; }}
-  .btn-red {{ background: var(--red); color: #fff; }}
-  .btn-outline {{
-    background: transparent; color: var(--accent);
-    border: 1px solid var(--accent);
-  }}
-  a {{ color: var(--accent); text-decoration: none; }}
-  a:hover {{ text-decoration: underline; }}
-  .concept {{
-    background: var(--bg); border: 1px solid var(--border);
-    border-radius: 8px; padding: 12px; margin-bottom: 8px;
-    cursor: pointer; transition: border-color 0.2s;
-  }}
-  .concept:hover, .concept.selected {{ border-color: var(--green); }}
-  .concept-rank {{ color: var(--accent); font-weight: 700; }}
-  .concept-name {{ font-weight: 600; }}
-  .concept-score {{ color: var(--dim); float: right; }}
-  .concept-tagline {{ color: var(--dim); font-size: 0.85rem; margin-top: 4px; }}
-  .empty {{ text-align: center; padding: 40px 16px; color: var(--dim); }}
-  .btn-sm {{
-    display: inline-block; padding: 6px 14px; border-radius: 8px;
-    font-size: 0.8rem; font-weight: 600; cursor: pointer; border: none;
-    text-decoration: none; transition: opacity 0.2s;
-  }}
-  .btn-sm:hover {{ opacity: 0.85; }}
-  .actions {{ display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }}
-  .confirm-overlay {{
-    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.7); display: flex; align-items: center;
-    justify-content: center; z-index: 100; display: none;
-  }}
-  .confirm-box {{
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 24px; max-width: 400px; width: 90%;
-  }}
-  .confirm-box h3 {{ margin-bottom: 8px; }}
-  .confirm-box p {{ color: var(--dim); margin-bottom: 16px; font-size: 0.9rem; }}
-  .confirm-btns {{ display: flex; gap: 8px; }}
-  .confirm-btns .btn {{ flex: 1; margin-top: 0; }}
-  .topbar {{
-    display: flex; justify-content: space-between; align-items: center;
-    margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--border);
-  }}
-  .topbar-logo {{ font-weight: 700; font-size: 1.2rem; }}
-  input[type=text], input[type=password] {{
-    width: 100%; padding: 12px; background: var(--bg); color: var(--text);
-    border: 1px solid var(--border); border-radius: 8px; font-size: 1rem;
-    margin-bottom: 12px;
-  }}
-  .flash {{
-    padding: 12px 16px; border-radius: 8px; margin-bottom: 16px;
-    font-weight: 500;
-  }}
-  .flash-ok {{ background: rgba(63,185,80,0.15); color: var(--green); }}
-  .flash-err {{ background: rgba(248,81,73,0.15); color: var(--red); }}
-</style>
-</head>
-<body>
-<div class="container">
-  <div class="topbar">
-    <a href="/" class="topbar-logo">Forge</a>
-    <span style="color:var(--dim);font-size:0.85rem">{datetime.now(timezone.utc).strftime('%H:%M UTC')}</span>
-  </div>
-  {body}
-</div>
-</body>
-</html>"""
+    name = "?"
+    try:
+        name = json.loads(brief_raw).get("name", "?")
+    except Exception:
+        pass
+
+    deleted = 0
+    for pattern in [
+        f"hackathon:{hackathon_id}:*",
+        f"task:{hackathon_id}:*",
+        f"checkpoint:{hackathon_id}:*",
+        f"logs:{hackathon_id}",
+    ]:
+        keys = await redis.keys(pattern)
+        if keys:
+            deleted += await redis.delete(*keys)
+    return {"id": hackathon_id, "success": True, "name": name, "keys_deleted": deleted}
 
 
-# ─── Error handling ────────────────────────────────────────────────────────────
+async def _reroll_hackathon(redis, hackathon_id: str) -> dict:
+    brief_raw = await redis.get(f"hackathon:{hackathon_id}:brief")
+    if not brief_raw:
+        return {"id": hackathon_id, "success": False, "error": "not found"}
 
-def _error_page(title: str, detail: str) -> HTMLResponse:
-    """Render a user-friendly error page instead of a bare 500."""
-    safe_title = _html.escape(title)
-    safe_detail = _html.escape(detail)
-    body = f"""
-    <h1 style="color:var(--red)">{safe_title}</h1>
-    <div class="card" style="margin-top:16px">
-      <pre style="white-space:pre-wrap;word-break:break-all;color:var(--dim);font-size:0.85rem">{safe_detail}</pre>
-    </div>
-    <a href="/health" class="btn btn-outline" style="margin-top:16px">Check health</a>
-    """
-    return HTMLResponse(_base("Error", body), status_code=500)
+    name = json.loads(brief_raw).get("name", "?")
+    agents_to_clear = [
+        "strategy_director", "pm", "tech_architect", "ui_ux_designer",
+        "frontend_engineer", "backend_engineer", "integration_engineer",
+        "test_engineer", "devops", "security_agent",
+    ]
+    checkpoints_to_clear = ["concept_approval", "design_approval", "quality_review"]
+
+    cleared = 0
+    for agent in agents_to_clear:
+        key = f"task:{hackathon_id}:{agent}"
+        if await redis.exists(key):
+            await redis.delete(key)
+            cleared += 1
+    for cp in checkpoints_to_clear:
+        key = f"checkpoint:{hackathon_id}:{cp}"
+        if await redis.exists(key):
+            await redis.delete(key)
+            cleared += 1
+
+    concepts_key = f"hackathon:{hackathon_id}:concepts"
+    if await redis.exists(concepts_key):
+        await redis.delete(concepts_key)
+        cleared += 1
+
+    return {"id": hackathon_id, "success": True, "name": name, "keys_cleared": cleared}
 
 
-@app.exception_handler(Exception)
-async def _global_exception_handler(request: Request, exc: Exception):
-    logger.error("Unhandled %s on %s: %s", type(exc).__name__, request.url.path, exc)
-    if request.url.path.startswith("/api/"):
-        return JSONResponse(
-            {"error": type(exc).__name__, "detail": str(exc)},
-            status_code=500,
-        )
-    return _error_page(
-        "Something went wrong",
-        f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
-    )
-
-
-# ─── Routes ───────────────────────────────────────────────────────────────────
+# ── Existing routes ───────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
-    """Deep health check — verifies Redis is reachable."""
     checks: dict = {"redis": "fail"}
     try:
         redis = get_redis()
@@ -275,362 +249,6 @@ async def health():
         status_code=200 if ok else 503,
     )
 
-
-@app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request):
-    if not WEB_TOKEN:
-        return RedirectResponse("/")
-    body = """
-    <h1>Forge Dashboard</h1>
-    <h2>Enter access token</h2>
-    <form method="get" action="/">
-      <input type="password" name="token" placeholder="Access token" autofocus>
-      <button type="submit" class="btn btn-primary">Login</button>
-    </form>
-    """
-    return HTMLResponse(_base("Login", body))
-
-
-@app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request, token: str | None = None):
-    response = HTMLResponse("")
-    if token and token == WEB_TOKEN:
-        response = RedirectResponse("/")
-        response.set_cookie("forge_token", token, httponly=True, max_age=86400 * 30)
-        return response
-
-    redis = get_redis()
-    try:
-        checkpoints = await _get_checkpoints(redis)
-        hackathons = await _get_hackathons(redis)
-    finally:
-        await redis.aclose()
-
-    pending = [c for c in checkpoints if c["pending"]]
-    approved = [c for c in checkpoints if not c["pending"] and c["data"].get("approved")]
-
-    body = "<h1>Dashboard</h1>"
-
-    if pending:
-        body += f'<h2>{len(pending)} pending approval{"s" if len(pending) != 1 else ""}</h2>'
-        for cp in pending:
-            label = CHECKPOINT_LABELS.get(cp["checkpoint"], cp["checkpoint"])
-            token_param = f"?token={WEB_TOKEN}" if WEB_TOKEN else ""
-            body += f"""
-            <a href="/approve/{cp['hackathon_id']}/{cp['checkpoint']}{token_param}" style="text-decoration:none;color:inherit">
-              <div class="card">
-                <div class="card-title">{label} <span class="badge badge-pending">pending</span></div>
-                <div class="card-meta">{cp['hackathon_id']}</div>
-              </div>
-            </a>"""
-    else:
-        body += '<div class="empty">No pending approvals</div>'
-
-    if approved:
-        body += "<h2 style='margin-top:20px'>Recent approvals</h2>"
-        for cp in approved[-5:]:
-            label = CHECKPOINT_LABELS.get(cp["checkpoint"], cp["checkpoint"])
-            at = cp["data"].get("approved_at", "")[:16]
-            body += f"""
-            <div class="card" style="opacity:0.6">
-              <div class="card-title">{label} <span class="badge badge-approved">approved</span></div>
-              <div class="card-meta">{cp['hackathon_id']} &middot; {at}</div>
-            </div>"""
-
-    if hackathons:
-        body += f"<h2 style='margin-top:20px'>{len(hackathons)} hackathons</h2>"
-        for h in hackathons[:10]:
-            name = h["brief"].get("name", h["id"])[:60]
-            safe_name = name.replace("'", "\\'").replace('"', "&quot;")
-            score = h["brief"].get("score", "?")
-            days = h["brief"].get("days_until_deadline", "?")
-            prize = h["brief"].get("prizes", [])
-            prize_total = sum(p.get("amount") or 0 for p in prize if isinstance(p, dict))
-            prize_str = f"${prize_total:,.0f}" if prize_total else ""
-            hid = h["id"]
-            token_qs = f"?token={WEB_TOKEN}" if WEB_TOKEN else ""
-            body += f"""
-            <div class="card" id="hack-{hid}">
-              <div class="card-title">{name}</div>
-              <div class="card-meta">
-                <span class="badge badge-phase">{h['phase']}</span>
-                score: {score} &middot; {days}d left{(' &middot; ' + prize_str) if prize_str else ''}
-              </div>
-              <div class="actions">
-                <a href="/hackathon/{hid}{token_qs}" class="btn-sm btn-primary" style="background:var(--accent);color:#fff">Details</a>
-                <button class="btn-sm" style="background:var(--yellow);color:#000"
-                  onclick="confirmAction('Reroll concepts for {safe_name[:40]}?', 'This clears strategy &amp; design progress and re-generates concepts.', () => doReroll('{hid}'))">
-                  Reroll
-                </button>
-                <button class="btn-sm" style="background:var(--red);color:#fff"
-                  onclick="confirmAction('Delete {safe_name[:40]}?', 'This removes all data, tasks, and checkpoints for this hackathon.', () => doDelete('{hid}'))">
-                  Delete
-                </button>
-              </div>
-            </div>"""
-
-    body += """
-    <div class="confirm-overlay" id="confirm-overlay" onclick="if(event.target===this)closeConfirm()">
-      <div class="confirm-box">
-        <h3 id="confirm-title"></h3>
-        <p id="confirm-desc"></p>
-        <div class="confirm-btns">
-          <button class="btn btn-outline" onclick="closeConfirm()">Cancel</button>
-          <button class="btn btn-red" id="confirm-yes" onclick="">Confirm</button>
-        </div>
-      </div>
-    </div>
-    <script>
-      let _confirmCb = null;
-      function confirmAction(title, desc, cb) {
-        document.getElementById('confirm-title').textContent = title;
-        document.getElementById('confirm-desc').textContent = desc;
-        _confirmCb = cb;
-        document.getElementById('confirm-yes').onclick = () => { closeConfirm(); cb(); };
-        document.getElementById('confirm-overlay').style.display = 'flex';
-      }
-      function closeConfirm() {
-        document.getElementById('confirm-overlay').style.display = 'none';
-      }
-      async function doDelete(hid) {
-        const resp = await fetch('/api/hackathon/' + hid, { method: 'DELETE' });
-        if (resp.ok) {
-          const el = document.getElementById('hack-' + hid);
-          if (el) el.style.display = 'none';
-        } else {
-          alert('Error: ' + (await resp.json()).error);
-        }
-      }
-      async function doReroll(hid) {
-        const resp = await fetch('/api/hackathon/' + hid + '/reroll', { method: 'POST' });
-        const data = await resp.json();
-        if (resp.ok) {
-          alert('Concepts cleared. Run: forge run --id ' + hid + ' to regenerate.');
-          location.reload();
-        } else {
-          alert('Error: ' + (data.error || 'unknown'));
-        }
-      }
-    </script>"""
-
-    return HTMLResponse(_base("Dashboard", body))
-
-
-@app.get("/hackathon/{hackathon_id}", response_class=HTMLResponse)
-async def hackathon_detail(hackathon_id: str, request: Request):
-    redis = get_redis()
-    name = hackathon_id
-    try:
-        brief_raw = await redis.get(f"hackathon:{hackathon_id}:brief")
-        if not brief_raw:
-            raise HTTPException(404, "Hackathon not found")
-        brief = json.loads(brief_raw)
-        name = brief.get("name", hackathon_id)
-
-        task_keys = await redis.keys(f"task:{hackathon_id}:*")
-        agents = {}
-        for tk in sorted(task_keys):
-            agent = tk.split(":")[-1]
-            raw = await redis.get(tk)
-            if raw:
-                try:
-                    agents[agent] = json.loads(raw).get("status", "?")
-                except Exception:
-                    agents[agent] = "?"
-
-        cp_keys = await redis.keys(f"checkpoint:{hackathon_id}:*")
-        checkpoints = {}
-        for ck in sorted(cp_keys):
-            cp_name = ck.split(":")[-1]
-            raw = await redis.get(ck)
-            if raw == "pending":
-                checkpoints[cp_name] = "pending"
-            elif raw:
-                try:
-                    checkpoints[cp_name] = "approved" if json.loads(raw).get("approved") else "?"
-                except Exception:
-                    checkpoints[cp_name] = "?"
-
-        score = brief.get("score", "?")
-        days = brief.get("days_until_deadline", "?")
-        theme = brief.get("theme", "")
-        url = brief.get("url", "")
-        token_qs = f"?token={WEB_TOKEN}" if WEB_TOKEN else ""
-
-        body = f"<h1>{name}</h1>"
-        body += f'<h2>Score: {score}/100 &middot; {days}d left</h2>'
-        if url:
-            body += f'<p><a href="{url}" target="_blank">{url}</a></p>'
-        if theme:
-            body += f'<p style="color:var(--dim);margin:8px 0">{theme[:200]}</p>'
-
-        body += f'<p style="margin:8px 0;color:var(--dim)"><code>{hackathon_id}</code></p>'
-
-        if checkpoints:
-            body += "<h2 style='margin-top:20px'>Checkpoints</h2>"
-            for cp_name, status in checkpoints.items():
-                label = CHECKPOINT_LABELS.get(cp_name, cp_name)
-                badge_cls = "badge-pending" if status == "pending" else "badge-approved"
-                body += f"""
-                <div class="card" style="padding:12px">
-                  <span>{label}</span>
-                  <span class="badge {badge_cls}" style="float:right">{status}</span>
-                </div>"""
-                if status == "pending":
-                    body += f'<a href="/approve/{hackathon_id}/{cp_name}{token_qs}" class="btn btn-green" style="margin-bottom:12px">Approve</a>'
-
-        if agents:
-            body += "<h2 style='margin-top:20px'>Agents</h2>"
-            for agent, status in agents.items():
-                icon = "✓" if status == "done" else "⟳" if status == "pending" else "✗" if status == "failed" else "·"
-                color = "var(--green)" if status == "done" else "var(--yellow)" if status == "pending" else "var(--red)" if status == "failed" else "var(--dim)"
-                body += f'<div style="padding:4px 0;font-size:0.9rem"><span style="color:{color}">{icon}</span> {agent} <span style="color:var(--dim);font-size:0.8rem">({status})</span></div>'
-
-        body += f"""
-        <div class="actions" style="margin-top:24px">
-          <button class="btn" style="background:var(--yellow);color:#000;flex:1"
-            onclick="confirmAction('Reroll concepts?', 'Clears strategy & design, re-generates concepts.', () => doReroll('{hackathon_id}'))">
-            Reroll Concepts
-          </button>
-          <button class="btn btn-red" style="flex:1"
-            onclick="confirmAction('Delete this hackathon?', 'Removes all data, tasks, and checkpoints.', () => doDelete('{hackathon_id}'))">
-            Delete
-          </button>
-        </div>
-        <a href="/" class="btn btn-outline" style="margin-top:8px">Back to dashboard</a>
-
-        <div class="confirm-overlay" id="confirm-overlay" onclick="if(event.target===this)closeConfirm()">
-          <div class="confirm-box">
-            <h3 id="confirm-title"></h3>
-            <p id="confirm-desc"></p>
-            <div class="confirm-btns">
-              <button class="btn btn-outline" onclick="closeConfirm()">Cancel</button>
-              <button class="btn btn-red" id="confirm-yes">Confirm</button>
-            </div>
-          </div>
-        </div>
-        <script>
-          function confirmAction(title, desc, cb) {{
-            document.getElementById('confirm-title').textContent = title;
-            document.getElementById('confirm-desc').textContent = desc;
-            document.getElementById('confirm-yes').onclick = () => {{ closeConfirm(); cb(); }};
-            document.getElementById('confirm-overlay').style.display = 'flex';
-          }}
-          function closeConfirm() {{ document.getElementById('confirm-overlay').style.display = 'none'; }}
-          async function doDelete(hid) {{
-            const resp = await fetch('/api/hackathon/' + hid, {{ method: 'DELETE' }});
-            if (resp.ok) window.location.href = '/';
-            else alert('Error: ' + (await resp.json()).error);
-          }}
-          async function doReroll(hid) {{
-            const resp = await fetch('/api/hackathon/' + hid + '/reroll', {{ method: 'POST' }});
-            if (resp.ok) {{ alert('Concepts cleared. Run forge to regenerate.'); location.reload(); }}
-            else alert('Error: ' + ((await resp.json()).error || 'unknown'));
-          }}
-        </script>"""
-
-    finally:
-        await redis.aclose()
-
-    return HTMLResponse(_base(name, body))
-
-
-@app.get("/approve/{hackathon_id}/{checkpoint}", response_class=HTMLResponse)
-async def approve_page(hackathon_id: str, checkpoint: str, request: Request):
-    redis = get_redis()
-    label = CHECKPOINT_LABELS.get(checkpoint, checkpoint)
-    body = ""
-    try:
-        raw = await redis.get(f"checkpoint:{hackathon_id}:{checkpoint}")
-        if not raw:
-            raise HTTPException(404, "Checkpoint not found")
-
-        if raw != "pending":
-            data = json.loads(raw) if raw else {}
-            if data.get("approved"):
-                body = f"""
-                <h1>Already Approved</h1>
-                <div class="flash flash-ok">
-                  {CHECKPOINT_LABELS.get(checkpoint, checkpoint)} was approved
-                  {data.get('approved_at', '')[:16]} by {data.get('approved_by', 'unknown')}
-                </div>
-                <a href="/" class="btn btn-outline">Back to dashboard</a>
-                """
-                return HTMLResponse(_base("Approved", body))
-
-        body = f"<h1>{label}</h1><h2>{hackathon_id}</h2>"
-
-        if checkpoint == "concept_approval":
-            concepts_raw = await redis.get(f"hackathon:{hackathon_id}:concepts")
-            if concepts_raw:
-                concepts_data = json.loads(concepts_raw)
-                concepts = concepts_data.get("concepts", [])
-                recommended = concepts_data.get("recommended_concept", 1)
-
-                body += '<div id="concepts">'
-                for i, c in enumerate(concepts):
-                    rec = " (recommended)" if (i + 1) == recommended else ""
-                    body += f"""
-                    <div class="concept" onclick="selectConcept({i})" id="c-{i}">
-                      <div>
-                        <span class="concept-rank">#{c.get('rank', i+1)}</span>
-                        <span class="concept-name">{c.get('project_name', 'Untitled')}</span>
-                        <span class="concept-score">{c.get('total_score', '?')}/100{rec}</span>
-                      </div>
-                      <div class="concept-tagline">{c.get('tagline', '')}</div>
-                    </div>"""
-                body += "</div>"
-
-                body += f"""
-                <input type="hidden" id="selected-concept" value="{recommended - 1}">
-                <button class="btn btn-green" onclick="approveConcept()">
-                  Approve Selected Concept
-                </button>
-                <script>
-                  let selected = {recommended - 1};
-                  document.getElementById('c-' + selected).classList.add('selected');
-                  function selectConcept(i) {{
-                    document.querySelectorAll('.concept').forEach(el => el.classList.remove('selected'));
-                    document.getElementById('c-' + i).classList.add('selected');
-                    selected = i;
-                  }}
-                  async function approveConcept() {{
-                    const resp = await fetch('/api/approve/{hackathon_id}/{checkpoint}', {{
-                      method: 'POST',
-                      headers: {{'Content-Type': 'application/json'}},
-                      body: JSON.stringify({{concept_index: selected}})
-                    }});
-                    if (resp.ok) window.location.href = '/?approved=1';
-                    else alert('Error: ' + (await resp.json()).error);
-                  }}
-                </script>"""
-            else:
-                body += '<div class="empty">No concepts data found</div>'
-
-        else:
-            body += f"""
-            <button class="btn btn-green" onclick="approveCheckpoint()">Approve</button>
-            <a href="/" class="btn btn-outline" style="margin-top:8px">Cancel</a>
-            <script>
-              async function approveCheckpoint() {{
-                const resp = await fetch('/api/approve/{hackathon_id}/{checkpoint}', {{
-                  method: 'POST',
-                  headers: {{'Content-Type': 'application/json'}},
-                  body: '{{}}'
-                }});
-                if (resp.ok) window.location.href = '/?approved=1';
-                else alert('Error: ' + (await resp.json()).error);
-              }}
-            </script>"""
-
-        body += '<a href="/" class="btn btn-outline" style="margin-top:8px">Back</a>'
-    finally:
-        await redis.aclose()
-
-    return HTMLResponse(_base(label, body))
-
-
-# ─── API ──────────────────────────────────────────────────────────────────────
 
 @app.get("/api/checkpoints")
 async def api_checkpoints():
@@ -652,7 +270,6 @@ async def api_hackathons():
 
 @app.delete("/api/hackathon/{hackathon_id}")
 async def api_delete_hackathon(hackathon_id: str):
-    """Delete a hackathon and all its Redis keys."""
     redis = get_redis()
     try:
         brief_raw = await redis.get(f"hackathon:{hackathon_id}:brief")
@@ -666,7 +283,12 @@ async def api_delete_hackathon(hackathon_id: str):
             pass
 
         deleted = 0
-        for pattern in [f"hackathon:{hackathon_id}:*", f"task:{hackathon_id}:*", f"checkpoint:{hackathon_id}:*"]:
+        for pattern in [
+            f"hackathon:{hackathon_id}:*",
+            f"task:{hackathon_id}:*",
+            f"checkpoint:{hackathon_id}:*",
+            f"logs:{hackathon_id}",
+        ]:
             keys = await redis.keys(pattern)
             if keys:
                 deleted += await redis.delete(*keys)
@@ -678,7 +300,6 @@ async def api_delete_hackathon(hackathon_id: str):
 
 @app.post("/api/hackathon/{hackathon_id}/reroll")
 async def api_reroll(hackathon_id: str):
-    """Clear strategy/design agent tasks and approvals so concepts can be regenerated."""
     redis = get_redis()
     try:
         brief_raw = await redis.get(f"hackathon:{hackathon_id}:brief")
@@ -686,7 +307,6 @@ async def api_reroll(hackathon_id: str):
             raise HTTPException(404, detail="Hackathon not found")
 
         name = json.loads(brief_raw).get("name", "?")
-
         agents_to_clear = [
             "strategy_director", "pm", "tech_architect", "ui_ux_designer",
             "frontend_engineer", "backend_engineer", "integration_engineer",
@@ -706,7 +326,6 @@ async def api_reroll(hackathon_id: str):
                 await redis.delete(key)
                 cleared += 1
 
-        # Clear stored concepts
         concepts_key = f"hackathon:{hackathon_id}:concepts"
         if await redis.exists(concepts_key):
             await redis.delete(concepts_key)
@@ -742,7 +361,6 @@ async def api_approve(hackathon_id: str, checkpoint: str, request: Request):
             "approved_at": datetime.now(timezone.utc).isoformat(),
             "approved_by": "web",
         }
-
         if checkpoint == "concept_approval":
             approval["concept_index"] = body.get("concept_index", 0)
 
@@ -752,9 +370,474 @@ async def api_approve(hackathon_id: str, checkpoint: str, request: Request):
         await redis.aclose()
 
 
-# ─── Standalone run ───────────────────────────────────────────────────────────
+# ── WebSocket ─────────────────────────────────────────────────────────────────
 
-def start(host: str = "0.0.0.0", port: int = 3000):
+@app.websocket("/api/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    redis = get_redis()
+    pubsub = redis.pubsub()
+    try:
+        await pubsub.subscribe("forge:agent_updates")
+        last_snapshot: dict[str, str] = {}
+
+        async def _relay_pubsub():
+            while True:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+                if msg and msg["type"] == "message":
+                    try:
+                        data = json.loads(msg["data"])
+                        await websocket.send_json(data)
+                    except Exception:
+                        await websocket.send_json({"type": "raw", "data": str(msg["data"])})
+                await asyncio.sleep(0.05)
+
+        async def _poll_tasks():
+            nonlocal last_snapshot
+            while True:
+                try:
+                    poll_redis = get_redis()
+                    try:
+                        keys = await poll_redis.keys("task:*:*")
+                        current: dict[str, str] = {}
+                        for k in keys:
+                            raw = await poll_redis.get(k)
+                            current[k] = raw or ""
+
+                        for k, v in current.items():
+                            if k not in last_snapshot or last_snapshot[k] != v:
+                                parts = k.split(":")
+                                if len(parts) >= 3:
+                                    hid, agent_id = parts[1], parts[2]
+                                    status = "unknown"
+                                    data = None
+                                    try:
+                                        parsed = json.loads(v)
+                                        status = parsed.get("status", "unknown")
+                                        data = parsed
+                                    except Exception:
+                                        status = v if v else "unknown"
+                                    await websocket.send_json({
+                                        "type": "agent_status",
+                                        "hackathon_id": hid,
+                                        "agent_id": agent_id,
+                                        "status": status,
+                                        "data": data,
+                                    })
+                        last_snapshot = current
+                    finally:
+                        await poll_redis.aclose()
+                except WebSocketDisconnect:
+                    raise
+                except Exception:
+                    pass
+                await asyncio.sleep(2)
+
+        await asyncio.gather(_relay_pubsub(), _poll_tasks())
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        try:
+            await pubsub.unsubscribe("forge:agent_updates")
+            await pubsub.aclose()
+        except Exception:
+            pass
+        try:
+            await redis.aclose()
+        except Exception:
+            pass
+
+
+# ── Agent status ──────────────────────────────────────────────────────────────
+
+@app.get("/api/hackathon/{hackathon_id}/agents")
+async def api_agents(hackathon_id: str):
+    redis = get_redis()
+    try:
+        keys = await redis.keys(f"task:{hackathon_id}:*")
+        agents = []
+        for key in sorted(keys):
+            agent_id = key.split(":")[-1]
+            raw = await redis.get(key)
+            status = "unknown"
+            phase = _AGENT_TO_PHASE.get(agent_id, "unknown")
+            elapsed = None
+            data = None
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    status = parsed.get("status", "unknown")
+                    data = parsed
+                    started = parsed.get("started_at")
+                    finished = parsed.get("finished_at")
+                    if started:
+                        end = finished or datetime.now(timezone.utc).isoformat()
+                        try:
+                            t0 = datetime.fromisoformat(started)
+                            t1 = datetime.fromisoformat(end)
+                            elapsed = round((t1 - t0).total_seconds(), 1)
+                        except Exception:
+                            pass
+                except Exception:
+                    status = raw
+            agents.append({
+                "agent_id": agent_id,
+                "status": status,
+                "phase": phase,
+                "elapsed": elapsed,
+                "data": data,
+            })
+        return agents
+    finally:
+        await redis.aclose()
+
+
+# ── Trigger / restart agents ──────────────────────────────────────────────────
+
+@app.post("/api/hackathon/{hackathon_id}/agent/{agent_id}/trigger")
+async def api_trigger_agent(hackathon_id: str, agent_id: str):
+    redis = get_redis()
+    try:
+        await redis.publish("agent:trigger", json.dumps({
+            "hackathon_id": hackathon_id,
+            "agent": agent_id,
+            "input": {},
+        }))
+        return {"ok": True}
+    finally:
+        await redis.aclose()
+
+
+@app.post("/api/hackathon/{hackathon_id}/agent/{agent_id}/restart")
+async def api_restart_agent(hackathon_id: str, agent_id: str):
+    redis = get_redis()
+    try:
+        await redis.delete(f"task:{hackathon_id}:{agent_id}")
+        await redis.publish("agent:trigger", json.dumps({
+            "hackathon_id": hackathon_id,
+            "agent": agent_id,
+            "input": {},
+        }))
+        return {"ok": True}
+    finally:
+        await redis.aclose()
+
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+
+@app.get("/api/hackathon/{hackathon_id}/logs")
+async def api_logs(
+    hackathon_id: str,
+    agent: str | None = Query(None),
+    level: str | None = Query(None),
+):
+    redis = get_redis()
+    try:
+        raw_entries = await redis.lrange(f"logs:{hackathon_id}", -500, -1)
+        logs = []
+        for entry in raw_entries:
+            try:
+                parsed = json.loads(entry)
+            except Exception:
+                continue
+            if agent and parsed.get("agent_id") != agent:
+                continue
+            if level and parsed.get("level") != level:
+                continue
+            logs.append(parsed)
+        return logs
+    finally:
+        await redis.aclose()
+
+
+# ── Analytics ─────────────────────────────────────────────────────────────────
+
+async def _build_analytics(redis, hackathon_filter: str | None = None) -> dict:
+    if hackathon_filter:
+        brief_keys = [f"hackathon:{hackathon_filter}:brief"]
+    else:
+        brief_keys = sorted(await redis.keys("hackathon:*:brief"))
+
+    cost_by_hackathon = []
+    daily_runs: dict[str, int] = {}
+    for bk in brief_keys:
+        raw = await redis.get(bk)
+        if not raw:
+            continue
+        try:
+            brief = json.loads(raw)
+        except Exception:
+            continue
+        hid = bk.split(":")[1]
+        cost = brief.get("cost_usd") or brief.get("total_cost") or 0
+        cost_by_hackathon.append({"name": brief.get("name", hid), "cost_usd": cost})
+        created = brief.get("created_at") or brief.get("started_at") or ""
+        if created:
+            day = created[:10]
+            daily_runs[day] = daily_runs.get(day, 0) + 1
+
+    if hackathon_filter:
+        task_keys = sorted(await redis.keys(f"task:{hackathon_filter}:*"))
+    else:
+        task_keys = sorted(await redis.keys("task:*:*"))
+
+    agent_times: dict[str, list[float]] = {}
+    agent_success: dict[str, dict[str, int]] = {}
+    for tk in task_keys:
+        agent_id = tk.split(":")[-1]
+        raw = await redis.get(tk)
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            continue
+
+        status = parsed.get("status", "")
+        if agent_id not in agent_success:
+            agent_success[agent_id] = {"success": 0, "total": 0}
+        agent_success[agent_id]["total"] += 1
+        if status == "done":
+            agent_success[agent_id]["success"] += 1
+
+        started = parsed.get("started_at")
+        finished = parsed.get("finished_at")
+        if started and finished:
+            try:
+                dt = (datetime.fromisoformat(finished) - datetime.fromisoformat(started)).total_seconds()
+                agent_times.setdefault(agent_id, []).append(dt)
+            except Exception:
+                pass
+
+    agent_timing = []
+    for aid, times in sorted(agent_times.items()):
+        agent_timing.append({"agent_id": aid, "avg_seconds": round(sum(times) / len(times), 1)})
+
+    success_rates = []
+    for aid, counts in sorted(agent_success.items()):
+        total = counts["total"]
+        pct = round(counts["success"] / total * 100, 1) if total else 0
+        success_rates.append({"agent_id": aid, "success_pct": pct, "total_runs": total})
+
+    daily_list = [{"date": d, "count": c} for d, c in sorted(daily_runs.items())]
+
+    return {
+        "cost_by_hackathon": cost_by_hackathon,
+        "agent_timing": agent_timing,
+        "success_rates": success_rates,
+        "daily_runs": daily_list,
+    }
+
+
+@app.get("/api/analytics")
+async def api_analytics():
+    redis = get_redis()
+    try:
+        return await _build_analytics(redis)
+    finally:
+        await redis.aclose()
+
+
+@app.get("/api/analytics/{hackathon_id}")
+async def api_analytics_hackathon(hackathon_id: str):
+    redis = get_redis()
+    try:
+        return await _build_analytics(redis, hackathon_filter=hackathon_id)
+    finally:
+        await redis.aclose()
+
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+@app.get("/api/config")
+async def api_config_read():
+    redis = get_redis()
+    try:
+        stored = await redis.hgetall("forge:config")
+        entries = []
+        seen_keys = set()
+        for item in CONFIG_KEYS:
+            key = item["key"]
+            seen_keys.add(key)
+            value = stored.get(key) or os.environ.get(key, "")
+            entries.append({
+                "key": key,
+                "value": _redact(value) if item["secret"] and value else value,
+                "secret": item["secret"],
+                "description": item["description"],
+            })
+        for key, value in sorted(stored.items()):
+            if key not in seen_keys:
+                entries.append({
+                    "key": key,
+                    "value": value,
+                    "secret": False,
+                    "description": "",
+                })
+        return entries
+    finally:
+        await redis.aclose()
+
+
+@app.put("/api/config")
+async def api_config_update(body: ConfigUpdateRequest):
+    redis = get_redis()
+    try:
+        updated = 0
+        for entry in body.entries:
+            key = entry.get("key")
+            value = entry.get("value")
+            if key and value is not None:
+                await redis.hset("forge:config", key, value)
+                updated += 1
+        return {"ok": True, "updated": updated}
+    finally:
+        await redis.aclose()
+
+
+# ── Design / artifacts ────────────────────────────────────────────────────────
+
+@app.get("/api/hackathon/{hackathon_id}/design")
+async def api_design(hackathon_id: str):
+    redis = get_redis()
+    try:
+        raw = await redis.get(f"hackathon:{hackathon_id}:design_spec")
+        if not raw:
+            return {"design_md": "", "screenshots": [], "tokens": [], "components": []}
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return {"design_md": raw, "screenshots": [], "tokens": [], "components": []}
+        return {
+            "design_md": data.get("design_md", data.get("markdown", "")),
+            "screenshots": data.get("screenshots", []),
+            "tokens": data.get("tokens", []),
+            "components": data.get("components", []),
+        }
+    finally:
+        await redis.aclose()
+
+
+@app.get("/api/hackathon/{hackathon_id}/artifacts")
+async def api_artifacts(hackathon_id: str):
+    redis = get_redis()
+    try:
+        keys = await redis.keys(f"hackathon:{hackathon_id}:*")
+        artifacts = []
+        for key in sorted(keys):
+            if key.endswith(":brief"):
+                continue
+            raw = await redis.get(key)
+            data: Any = None
+            if raw:
+                try:
+                    data = json.loads(raw)
+                except Exception:
+                    data = raw
+            artifacts.append({"key": key, "data": data})
+        return artifacts
+    finally:
+        await redis.aclose()
+
+
+# ── Batch operations ──────────────────────────────────────────────────────────
+
+@app.post("/api/hackathon/batch")
+async def api_batch(body: BatchRequest):
+    if body.action not in ("delete", "reroll"):
+        raise HTTPException(400, detail=f"Unknown action: {body.action}")
+
+    redis = get_redis()
+    try:
+        results = []
+        for hid in body.ids:
+            try:
+                if body.action == "delete":
+                    result = await _delete_hackathon(redis, hid)
+                else:
+                    result = await _reroll_hackathon(redis, hid)
+                results.append(result)
+            except Exception as exc:
+                results.append({"id": hid, "success": False, "error": str(exc)})
+        return {"ok": True, "results": results}
+    finally:
+        await redis.aclose()
+
+
+# ── Services health ───────────────────────────────────────────────────────────
+
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
+SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://localhost:8081")
+
+
+@app.get("/api/services/health")
+async def api_services_health():
+    import urllib.request
+
+    services = []
+
+    t0 = time.monotonic()
+    try:
+        redis = get_redis()
+        try:
+            await redis.ping()
+            services.append({"name": "redis", "status": "ok", "latency_ms": round((time.monotonic() - t0) * 1000, 1)})
+        finally:
+            await redis.aclose()
+    except Exception as exc:
+        services.append({"name": "redis", "status": "error", "error": str(exc)})
+
+    async def _check_http(name: str, url: str):
+        t = time.monotonic()
+        try:
+            loop = asyncio.get_event_loop()
+            req = urllib.request.Request(url, method="GET")
+            await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=5)),
+                timeout=6,
+            )
+            latency = round((time.monotonic() - t) * 1000, 1)
+            return {"name": name, "status": "ok", "latency_ms": latency}
+        except Exception as exc:
+            return {"name": name, "status": "error", "error": str(exc)}
+
+    qdrant_check, searxng_check = await asyncio.gather(
+        _check_http("qdrant", f"{QDRANT_URL}/readyz"),
+        _check_http("searxng", f"{SEARXNG_URL}/healthz"),
+    )
+    services.append(qdrant_check)
+    services.append(searxng_check)
+
+    db_url = os.environ.get("DATABASE_URL", "")
+    if db_url:
+        t1 = time.monotonic()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "python", "-c",
+                "import asyncio,sys;sys.path.insert(0,'.');from sqlalchemy.ext.asyncio import create_async_engine;"
+                f"e=create_async_engine('{db_url}');asyncio.run(e.dispose())",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=5)
+            latency = round((time.monotonic() - t1) * 1000, 1)
+            if proc.returncode == 0:
+                services.append({"name": "postgresql", "status": "ok", "latency_ms": latency})
+            else:
+                stderr = (await proc.stderr.read()).decode() if proc.stderr else ""
+                services.append({"name": "postgresql", "status": "error", "error": stderr[:200]})
+        except Exception as exc:
+            services.append({"name": "postgresql", "status": "error", "error": str(exc)})
+    else:
+        services.append({"name": "postgresql", "status": "error", "error": "DATABASE_URL not set"})
+
+    return {"services": services}
+
+
+# ── Standalone run ────────────────────────────────────────────────────────────
+
+def start(host: str = "0.0.0.0", port: int = 3001):
     import uvicorn
     uvicorn.run("forge_web:app", host=host, port=port, reload=False, log_level="info")
 
@@ -763,6 +846,6 @@ if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument("--host", default="0.0.0.0")
-    p.add_argument("--port", type=int, default=3000)
+    p.add_argument("--port", type=int, default=3001)
     args = p.parse_args()
     start(args.host, args.port)

@@ -111,22 +111,27 @@ MODELS = get_models()
 # Raised from legacy 4096/8192.
 # Sonnet 4.6 → 64k output; Opus 4.6 → 128k output; GPT-4.1 → 32k output.
 
-_DEFAULT_MAX_TOKENS: dict[Tier, int] = {
-    Tier.HEAVY:    96_000,  # Opus 4.6 supports 128k output — leave some headroom
-    Tier.STANDARD: 64_000,  # Sonnet 4.6 supports 64k output — no artificial cap
-    Tier.DESIGN:   64_000,  # Component specs + design tokens can be large
+_DEFAULT_MAX_TOKENS: dict[Tier, int | None] = {
+    Tier.HEAVY:    None,    # Opus 4.6 — let the API use the model's full output limit
+    Tier.STANDARD: None,    # Sonnet 4.6 — no artificial cap
+    Tier.DESIGN:   None,    # Component specs can be 100k+ chars, never truncate
     Tier.WRITING:  32_000,  # READMEs, pitch decks, demo scripts
     Tier.BULK:     16_000,  # Tests + boilerplate
     Tier.FAST:     8_000,   # Classification/scoring outputs
     Tier.VISION:   32_000,  # Screenshot audit reports
 }
 
-def _get_max_tokens(tier: Tier) -> int:
-    """Return max_tokens for tier, honouring FORGE_MAX_TOKENS_<TIER> env override."""
+def _get_max_tokens(tier: Tier) -> int | None:
+    """Return max_tokens for tier, honouring FORGE_MAX_TOKENS_<TIER> env override.
+
+    Returns None for tiers where we don't want to cap output — the API will use
+    the model's native maximum, and our stream timeouts act as the safety net.
+    """
     raw = os.environ.get(f"FORGE_MAX_TOKENS_{tier.value.upper()}")
     if raw:
         try:
-            return int(raw)
+            val = int(raw)
+            return val if val > 0 else None
         except ValueError:
             logger.warning(
                 f"[forge:llm] Invalid FORGE_MAX_TOKENS_{tier.value.upper()}='{raw}', "
@@ -330,20 +335,22 @@ async def complete(
         try:
             logger.info(
                 f"[forge:llm] → {current_model} | task={task} | attempt={attempt+1}/{max_retries} "
-                f"| max_tokens={max_tok}"
+                f"| max_tokens={max_tok or 'unlimited'}"
             )
             t0 = _t.monotonic()
 
             # Stream to avoid Cloudflare 504 timeouts on long generations
             chunks: list[str] = []
             chunk_count = 0
-            stream = await client.chat.completions.create(
+            create_kwargs: dict[str, Any] = dict(
                 model=current_model,
                 messages=full_messages,  # type: ignore[arg-type]
-                max_tokens=max_tok,
                 temperature=temp,
                 stream=True,
             )
+            if max_tok is not None:
+                create_kwargs["max_tokens"] = max_tok
+            stream = await client.chat.completions.create(**create_kwargs)
 
             STREAM_TIMEOUT = 600  # 10 min total ceiling
             STALL_TIMEOUT = 120  # kill only if no new chunk for 2 full minutes
@@ -474,6 +481,36 @@ async def complete(
     raise RuntimeError(f"[forge:llm] exhausted {max_retries} retries for task={task}")
 
 
+def _repair_truncated_json(s: str) -> str:
+    """Best-effort repair of truncated JSON by closing open strings/brackets."""
+    in_string = False
+    escaped = False
+    stack: list[str] = []
+    for ch in s:
+        if escaped:
+            escaped = False
+            continue
+        if ch == '\\' and in_string:
+            escaped = True
+            continue
+        if ch == '"' and not escaped:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in ('{', '['):
+            stack.append('}' if ch == '{' else ']')
+        elif ch in ('}', ']') and stack:
+            stack.pop()
+
+    repaired = s
+    if in_string:
+        repaired += '"'
+    while stack:
+        repaired += stack.pop()
+    return repaired
+
+
 async def complete_json(
     *,
     task: str,
@@ -498,22 +535,39 @@ async def complete_json(
         cleaned = raw.strip()
         if cleaned.startswith("```"):
             cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        # Strip leading non-JSON garbage (some models emit prose before JSON)
         if cleaned and not cleaned.startswith(("{", "[")):
             brace = cleaned.find("{")
             bracket = cleaned.find("[")
             start = min(p for p in (brace, bracket) if p >= 0) if max(brace, bracket) >= 0 else -1
             if start > 0:
                 cleaned = cleaned[start:]
-        # Strip control characters that break json.loads (LLMs sometimes emit
-        # raw \x00-\x1f inside JSON strings — keep \n, \r, \t which are valid)
+        # Strip NUL and other non-printable control chars (keep \t \n \r)
         cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', cleaned)
         try:
-            return response_model.model_validate(json.loads(cleaned))
-        except (json.JSONDecodeError, Exception) as e:
+            # strict=False allows literal control characters (\n, \t) inside
+            # JSON string values — LLMs frequently emit these unescaped.
+            return response_model.model_validate(json.loads(cleaned, strict=False))
+        except json.JSONDecodeError as e:
+            # Attempt repair on truncated output (stream stall / max_tokens)
+            if "Unterminated" in str(e) or "Expecting" in str(e) or "end of" in str(e).lower():
+                try:
+                    repaired = _repair_truncated_json(cleaned)
+                    logger.info(f"[forge:llm] Attempting JSON repair for task={task} (+{len(repaired)-len(cleaned)} chars)")
+                    return response_model.model_validate(json.loads(repaired, strict=False))
+                except Exception:
+                    pass
             last_error = e
             logger.warning(
                 f"[forge:llm] JSON parse failed for task={task} (attempt {attempt+1}/{max_json_retries}): "
+                f"{type(e).__name__}: {e}\n"
+                f"  Response preview: {cleaned[:200]!r}"
+            )
+            if attempt < max_json_retries - 1:
+                await asyncio.sleep(1)
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                f"[forge:llm] JSON validation failed for task={task} (attempt {attempt+1}/{max_json_retries}): "
                 f"{type(e).__name__}: {e}\n"
                 f"  Response preview: {cleaned[:200]!r}"
             )

@@ -1,0 +1,33 @@
+# FastAPI API backend for the Forge admin dashboard.
+# Serves /api/* endpoints consumed by the Next.js frontend.
+#
+#   docker build -f Dockerfile.api -t forge-api .
+#   docker run -p 3001:3001 --env-file .env forge-api
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+    "fastapi>=0.115.0" \
+    "uvicorn[standard]>=0.32.0" \
+    "redis[asyncio]>=5.2.0" \
+    "python-dotenv>=1.0.0" \
+    "websockets>=14.0" \
+    "httpx>=0.28.0" \
+    "pydantic>=2.0.0"
+
+RUN mkdir -p config && touch config/__init__.py
+
+COPY config/redis_client.py config/redis_client.py
+COPY forge_web.py .
+
+ENV QDRANT_URL=http://qdrant:6333
+ENV SEARXNG_URL=http://searxng:8080
+
+EXPOSE 3001
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:3001/health')" || exit 1
+
+CMD ["uvicorn", "forge_web:app", "--host", "0.0.0.0", "--port", "3001", "--log-level", "info"]

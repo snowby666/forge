@@ -797,7 +797,7 @@ async def run_worker() -> None:
         hackathon_id = payload["hackathon_id"]
         inp = payload["input"]
 
-        await redis.set(f"task:{hackathon_id}:ui_ux", json.dumps({"status": "in-progress"}), ex=604800)
+        await redis.set(f"task:{hackathon_id}:ui_ux_designer", json.dumps({"status": "in-progress"}), ex=604800)
 
         try:
             output_dir = f"/tmp/hackathon-{hackathon_id}"
@@ -809,14 +809,14 @@ async def run_worker() -> None:
                 output_dir=output_dir,
             )
             await redis.set(
-                f"task:{hackathon_id}:ui_ux",
+                f"task:{hackathon_id}:ui_ux_designer",
                 json.dumps({"status": "done", "data": result}),
                 ex=604800,
             )
         except Exception as e:
             logger.error(f"[forge:design] Failed: {e}", exc_info=True)
             await redis.set(
-                f"task:{hackathon_id}:ui_ux",
+                f"task:{hackathon_id}:ui_ux_designer",
                 json.dumps({"status": "failed", "error": str(e)}),
                 ex=604800,
             )

@@ -82,17 +82,17 @@ log "Done. $(date +%H:%M:%S)"
 cd "$DST"
 FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
 if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
-  log "Rebuilding forge-web container..."
-  docker compose up -d --build --no-deps web 2>&1 | tail -3
-  sleep 3
-  if curl -sf "http://localhost:${FORGE_WEB_PORT}/health" &>/dev/null 2>&1; then
+  log "Rebuilding forge-api + forge-web containers..."
+  docker compose up -d --build --no-deps api web 2>&1 | tail -5
+  sleep 5
+  if curl -sf "http://localhost:${FORGE_WEB_PORT}/" &>/dev/null 2>&1; then
     log "Web dashboard running on port ${FORGE_WEB_PORT}"
   else
     log "${DIM}Web dashboard may still be starting (check: docker logs forge-web)${NC}"
   fi
 else
   log "${DIM}Docker not available — skipping web container rebuild${NC}"
-  log "${DIM}Run manually: docker compose up -d --build web${NC}"
+  log "${DIM}Run manually: docker compose up -d --build api web${NC}"
 fi
 
 # Auto-run forge if arguments were passed (e.g. bash sync.sh scout --shallow)

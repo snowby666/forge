@@ -244,7 +244,7 @@ echo ""
 # The web dashboard runs as the forge-web Docker container (started in Step 12).
 FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
 WAITED=0
-until curl -sf "http://localhost:${FORGE_WEB_PORT}/health" &>/dev/null 2>&1; do
+until curl -sf "http://localhost:${FORGE_WEB_PORT}/" &>/dev/null 2>&1; do
   sleep 2; WAITED=$((WAITED+2))
   [[ $WAITED -ge 30 ]] && { warn "Web dashboard health check timed out — check: docker logs forge-web"; break; }
 done

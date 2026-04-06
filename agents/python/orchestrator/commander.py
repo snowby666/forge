@@ -533,7 +533,7 @@ async def run_design(state: HackathonState) -> dict:
         "judge_profile": state["intel"].get("judge_profile", {}),
     })
 
-    design_data = await wait_for_agent(redis, state["hackathon_id"], "ui_ux_designer", timeout_sec=900)
+    design_data = await wait_for_agent(redis, state["hackathon_id"], "ui_ux_designer", timeout_sec=2700)
 
     if not design_data:
         await redis.aclose()
