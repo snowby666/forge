@@ -345,7 +345,7 @@ async def dashboard(request: Request, token: str | None = None):
             score = h["brief"].get("score", "?")
             days = h["brief"].get("days_until_deadline", "?")
             prize = h["brief"].get("prizes", [])
-            prize_total = sum(p.get("amount", 0) for p in prize if isinstance(p, dict))
+            prize_total = sum(p.get("amount") or 0 for p in prize if isinstance(p, dict))
             prize_str = f"${prize_total:,.0f}" if prize_total else ""
             hid = h["id"]
             token_qs = f"?token={WEB_TOKEN}" if WEB_TOKEN else ""
