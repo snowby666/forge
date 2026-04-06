@@ -61,7 +61,7 @@ export function ConfigEditor({ entries: initial, onSave }: ConfigEditorProps) {
 
   const editingEntry = entries.find((e) => e.key === editingKey)
   const hasEmptyRequired = entries.some(
-    (e) => !e.value && e.value !== false && e.value !== 0,
+    (e) => !e.value,
   )
 
   return (

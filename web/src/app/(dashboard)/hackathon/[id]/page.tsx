@@ -275,38 +275,37 @@ export default function HackathonDetailPage({
         <TabsContent value="artifacts" className="mt-4">
           {artifacts && artifacts.length > 0 ? (
             <div className="grid gap-3 sm:grid-cols-2">
-              {artifacts.map((a) => (
-                <Card key={a.id}>
+              {artifacts.map((a) => {
+                const label = a.key.split(":").pop() ?? a.key
+                return (
+                <Card key={a.key}>
                   <CardHeader className="flex flex-row items-center justify-between pb-2">
                     <CardTitle className="truncate text-sm">
                       <FileText className="mr-1.5 inline size-3.5" />
-                      {a.name}
+                      {label}
                     </CardTitle>
-                    <Badge variant="outline" className="text-[10px]">
-                      {a.type}
-                    </Badge>
                   </CardHeader>
                   <CardContent>
                     <button
                       className="w-full text-left"
                       onClick={() =>
-                        setExpandedArtifact(expandedArtifact === a.id ? null : a.id)
+                        setExpandedArtifact(expandedArtifact === a.key ? null : a.key)
                       }
                     >
-                      {expandedArtifact === a.id ? (
+                      {expandedArtifact === a.key ? (
                         <pre className="max-h-64 overflow-auto rounded bg-zinc-950 p-3 font-mono text-xs text-zinc-300">
-                          {JSON.stringify(a, null, 2)}
+                          {JSON.stringify(a.data, null, 2)}
                         </pre>
                       ) : (
                         <p className="text-xs text-muted-foreground">
-                          {a.path ?? a.url ?? "Click to expand"}
-                          {a.size != null && ` · ${(a.size / 1024).toFixed(1)}KB`}
+                          Click to expand
                         </p>
                       )}
                     </button>
                   </CardContent>
                 </Card>
-              ))}
+                )
+              })}
             </div>
           ) : (
             <p className="py-12 text-center text-sm text-muted-foreground">

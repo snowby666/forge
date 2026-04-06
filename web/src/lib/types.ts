@@ -102,18 +102,20 @@ export interface AnalyticsData {
 
 export interface ConfigEntry {
   key: string;
-  value: unknown;
-  type: string;
-  secret?: boolean;
+  value: string;
+  secret: boolean;
   description?: string;
 }
 
 export interface ServiceHealth {
-  service: string;
-  status: "healthy" | "degraded" | "down";
+  name: string;
+  status: "ok" | "error";
   latency_ms?: number;
-  last_check?: string;
-  details?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface ServiceHealthResponse {
+  services: ServiceHealth[];
 }
 
 export interface LogEntry {
@@ -124,37 +126,26 @@ export interface LogEntry {
   data?: Record<string, unknown>;
 }
 
-export interface DesignArtifact {
-  id: string;
-  hackathon_id: string;
-  type: string;
-  name: string;
-  url?: string;
-  content?: string;
-  created_at: string;
+export interface DesignData {
+  design_md: string;
+  screenshots: string[];
+  tokens: Record<string, unknown>;
+  components: Array<{ name: string; description?: string; demo_critical?: boolean }>;
 }
 
 export interface Artifact {
-  id: string;
-  hackathon_id: string;
-  type: string;
-  name: string;
-  path?: string;
-  url?: string;
-  size?: number;
-  created_at: string;
+  key: string;
+  data: unknown;
 }
 
 export interface BatchOperation {
-  action: string;
-  hackathon_ids: string[];
-  params?: Record<string, unknown>;
+  action: "delete" | "reroll";
+  ids: string[];
 }
 
 export interface BatchResult {
-  hackathon_id: string;
-  success: boolean;
-  error?: string;
+  ok: boolean;
+  results: Array<{ id: string; success: boolean; error?: string }>;
 }
 
 export interface WsAgentStatusMessage {

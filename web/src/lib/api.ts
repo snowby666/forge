@@ -5,8 +5,9 @@ import type {
   AnalyticsData,
   ConfigEntry,
   ServiceHealth,
+  ServiceHealthResponse,
   LogEntry,
-  DesignArtifact,
+  DesignData,
   Artifact,
   BatchOperation,
   BatchResult,
@@ -99,7 +100,7 @@ export function fetchLogs(hackathonId: string) {
 }
 
 export function fetchDesignArtifacts(hackathonId: string) {
-  return apiFetch<DesignArtifact[]>(`/api/hackathon/${hackathonId}/design`);
+  return apiFetch<DesignData>(`/api/hackathon/${hackathonId}/design`);
 }
 
 export function fetchArtifacts(hackathonId: string) {
@@ -122,16 +123,17 @@ export function fetchConfig() {
 }
 
 export function updateConfig(entries: ConfigEntry[]) {
-  return apiFetch<ConfigEntry[]>("/api/config", {
+  return apiFetch<{ ok: boolean; updated: number }>("/api/config", {
     method: "PUT",
-    body: JSON.stringify(entries),
+    body: JSON.stringify({ entries: entries.map((e) => ({ key: e.key, value: e.value })) }),
   });
 }
 
 // ── Services ────────────────────────────────────────────────
 
-export function fetchServiceHealth() {
-  return apiFetch<ServiceHealth[]>("/api/services/health");
+export async function fetchServiceHealth(): Promise<ServiceHealth[]> {
+  const res = await apiFetch<ServiceHealthResponse>("/api/services/health");
+  return res.services;
 }
 
 export function fetchHealth() {
@@ -141,7 +143,7 @@ export function fetchHealth() {
 // ── Batch ───────────────────────────────────────────────────
 
 export function batchOperation(op: BatchOperation) {
-  return apiFetch<BatchResult[]>("/api/hackathon/batch", {
+  return apiFetch<BatchResult>("/api/hackathon/batch", {
     method: "POST",
     body: JSON.stringify(op),
   });

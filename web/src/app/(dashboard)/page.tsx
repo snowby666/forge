@@ -48,13 +48,13 @@ const PHASE_BADGE: Record<string, string> = {
 }
 
 function ServiceDot({ service }: { service: ServiceHealth }) {
-  const ok = service.status === "healthy"
+  const ok = service.status === "ok"
   return (
     <div className="flex items-center gap-2">
       <span
         className={`inline-block size-2.5 rounded-full ${ok ? "bg-emerald-500" : "bg-red-500"}`}
       />
-      <span className="text-sm capitalize">{service.service}</span>
+      <span className="text-sm capitalize">{service.name}</span>
       {service.latency_ms != null && (
         <span className="text-xs text-muted-foreground">
           {service.latency_ms}ms
@@ -239,7 +239,7 @@ export default function DashboardPage() {
           <Card>
             <CardContent className="flex flex-wrap gap-6 pt-6">
               {health.map((s) => (
-                <ServiceDot key={s.service} service={s} />
+                <ServiceDot key={s.name} service={s} />
               ))}
             </CardContent>
           </Card>

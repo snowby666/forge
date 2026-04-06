@@ -21,8 +21,8 @@ interface DesignPreviewProps {
   tokens?: Record<string, unknown>
   components?: Array<{
     name: string
-    description: string
-    demo_critical: boolean
+    description?: string
+    demo_critical?: boolean
   }>
 }
 

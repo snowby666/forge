@@ -15,18 +15,12 @@ import { fetchConfig, fetchServiceHealth, updateConfig } from "@/lib/api"
 import type { ConfigEntry, ServiceHealth } from "@/lib/types"
 
 function statusColor(status: ServiceHealth["status"]) {
-  switch (status) {
-    case "healthy":
-      return "border-emerald-500/30 bg-emerald-500/5"
-    case "degraded":
-      return "border-yellow-500/30 bg-yellow-500/5"
-    case "down":
-      return "border-red-500/30 bg-red-500/5"
-  }
+  if (status === "ok") return "border-emerald-500/30 bg-emerald-500/5"
+  return "border-red-500/30 bg-red-500/5"
 }
 
 function StatusIcon({ status }: { status: ServiceHealth["status"] }) {
-  if (status === "healthy")
+  if (status === "ok")
     return <CheckCircle2 className="size-4 text-emerald-500" />
   return <XCircle className="size-4 text-red-500" />
 }
@@ -118,23 +112,25 @@ export default function SettingsPage() {
         ) : health && health.length > 0 ? (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {health.map((s) => (
-              <Card key={s.service} className={statusColor(s.status)}>
+              <Card key={s.name} className={statusColor(s.status)}>
                 <CardHeader className="flex flex-row items-center justify-between pb-2">
                   <CardTitle className="text-sm capitalize">
-                    {s.service}
+                    {s.name}
                   </CardTitle>
                   <StatusIcon status={s.status} />
                 </CardHeader>
                 <CardContent>
-                  <Badge
-                    variant="outline"
-                    className="capitalize"
-                  >
+                  <Badge variant="outline" className="capitalize">
                     {s.status}
                   </Badge>
                   {s.latency_ms != null && (
                     <p className="mt-1 text-xs text-muted-foreground">
                       {s.latency_ms}ms latency
+                    </p>
+                  )}
+                  {s.error && (
+                    <p className="mt-1 truncate text-xs text-red-400">
+                      {s.error}
                     </p>
                   )}
                 </CardContent>
