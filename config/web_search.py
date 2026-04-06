@@ -17,14 +17,13 @@ ARCHITECTURE (4-stage pipeline)
   │ Result: +22% NDCG@5, +40% recall@10 vs single-query baseline   │
   └─────────────────────────────────────────────────────────────────┘
 
-  Stage 2 — PARALLEL RETRIEVAL (6 independent sources, priority order)
+  Stage 2 — PARALLEL RETRIEVAL (5 independent sources, priority order)
   ┌─────────────────────────────────────────────────────────────────┐
   │ a) Serper  — Google results via REST. ~120ms. 2500 free.       │
   │ b) Tavily  — AI-optimized search. ~1.7s. 1k free/mo.         │
   │ c) Brave   — Independent 30B-page index. ~1k free/mo.         │
-  │ d) ddgs    — DuckDuckGo metasearch. MIT. Free. (fallback)     │
-  │ e) SearXNG — Self-hosted metasearch (Docker). Fully free.     │
-  │ f) Exa     — Neural semantic search. $7/1k reqs. Optional.    │
+  │ d) SearXNG — Self-hosted metasearch (Docker). Fully free.     │
+  │ e) Exa     — Neural semantic search. $7/1k reqs. Optional.    │
   │ All sources run concurrently for each expanded sub-query       │
   └─────────────────────────────────────────────────────────────────┘
 
@@ -52,14 +51,14 @@ CONTENT EXTRACTION
   Strips HTML, scripts, ads. Returns markdown-ready plain text.
 
 SEARCH MODES
-  search_and_synthesize(query)     — standard: Serper + Tavily + Brave + ddgs
+  search_and_synthesize(query)     — standard: Serper + Tavily + Brave + SearXNG
   deep_search(query)               — full pipeline: expansion + all
                                      sources + BM25/RRF + reranking
   semantic_search(query)           — Exa neural only (needs API key)
   fetch_full_content(urls)         — extract full text from URLs
 
 COST SUMMARY (per search)
-  Standard search:  $0.000  (Serper free tier / ddgs fallback)
+  Standard search:  $0.000  (Serper free tier)
   Deep search:      $0.000  (+ local BM25 + reranker on GPU)
   With Serper key:  ~$0.001 (2500 free, then $0.30-$1/1k)
   With Tavily key:  ~$0.005 (1k free/mo, then $5/1k)
@@ -67,7 +66,7 @@ COST SUMMARY (per search)
   With Exa:         $0.007  (neural semantic results)
 
 SETUP
-  Required:    pip install ddgs bm25s sentence-transformers aiohttp
+  Required:    pip install bm25s sentence-transformers aiohttp
   Recommended: SERPER_API_KEY in .env  (2500 free, fastest)
   Recommended: TAVILY_API_KEY in .env  (1k/mo free, AI-optimized)
   Optional:    BRAVE_SEARCH_API_KEY in .env  (free tier)
@@ -145,7 +144,7 @@ class SearchResult:
     title: str
     url: str
     snippet: str
-    source: str           # "serper" | "tavily" | "brave" | "ddgs" | "exa" | "searxng" | "ddgs_news"
+    source: str           # "serper" | "tavily" | "brave" | "exa" | "searxng"
     score: float = 0.0    # final RRF + reranker score
     full_text: str = ""   # populated by fetch_full_content()
     published: str = ""   # ISO date if available
@@ -232,82 +231,7 @@ async def expand_query(query: str, n: int = 3) -> list[str]:
 # STAGE 2: PARALLEL RETRIEVAL
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ── 2a. ddgs (free, no API key) ───────────────────────────────────────────────
-
-async def _search_ddgs(
-    query: str,
-    max_results: int = 8,
-    timelimit: str | None = "y",
-) -> list[SearchResult]:
-    """
-    DuckDuckGo/Bing/Google metasearch via ddgs.
-    MIT licence. No API key. No rate-limit hard cap. ~200ms/query.
-    """
-    try:
-        from ddgs import DDGS  # type: ignore[import]
-    except ImportError:
-        logger.warning("[forge:search] ddgs not installed. Run: pip install ddgs")
-        return []
-
-    def _sync() -> list[dict]:
-        try:
-            return DDGS().text(
-                query,
-                region="us-en",
-                safesearch="off",
-                timelimit=timelimit,
-                max_results=max_results,
-                backend="auto",
-            ) or []
-        except Exception as e:
-            logger.debug(f"[forge:search] ddgs error: {e}")
-            return []
-
-    try:
-        raw = await asyncio.wait_for(asyncio.shield(asyncio.to_thread(_sync)), timeout=6.0)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
-        logger.debug("[forge:search] ddgs timed out (6s)")
-        raw = []
-    return [
-        SearchResult(title=r.get("title", ""), url=r.get("href", ""),
-                     snippet=r.get("body", ""), source="ddgs")
-        for r in raw if r.get("title") and r.get("href")
-    ]
-
-
-async def _search_ddgs_news(query: str, max_results: int = 5) -> list[SearchResult]:
-    """Recent tech news — ddgs news endpoint."""
-    try:
-        from ddgs import DDGS  # type: ignore[import]
-    except ImportError:
-        return []
-
-    def _sync() -> list[dict]:
-        try:
-            return DDGS().news(
-                query, region="us-en", safesearch="off",
-                timelimit="m", max_results=max_results,
-            ) or []
-        except Exception as e:
-            logger.debug(f"[forge:search] ddgs_news error: {e}")
-            return []
-
-    try:
-        raw = await asyncio.wait_for(asyncio.shield(asyncio.to_thread(_sync)), timeout=6.0)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
-        logger.debug("[forge:search] ddgs_news timed out (6s)")
-        raw = []
-    return [
-        SearchResult(
-            title=r.get("title", ""), url=r.get("url", ""),
-            snippet=r.get("body", r.get("excerpt", "")),
-            source="ddgs_news", published=r.get("date", ""),
-        )
-        for r in raw if r.get("title") and r.get("url")
-    ]
-
-
-# ── 2b. Brave Search API (optional, ~1k free/mo) ────────────────────────────
+# ── 2a. Brave Search API (optional, ~1k free/mo) ────────────────────────────
 
 async def _search_brave(query: str, max_results: int = 8) -> list[SearchResult]:
     """
@@ -997,7 +921,7 @@ async def web_search(
     timelimit: str | None = "y",
 ) -> list[SearchResult]:
     """
-    Standard web search — Serper → Tavily → Brave → ddgs (priority order).
+    Standard web search — Serper → Tavily → Brave → SearXNG (priority order).
     No query expansion. No reranking. Fast (~200ms with Serper).
     Suitable for: quick inline lookups during build phase.
     """
@@ -1013,13 +937,9 @@ async def web_search(
     if os.environ.get("BRAVE_SEARCH_API_KEY"):
         tasks.append(_search_brave(query, max_results))
 
-    # Fallback: ddgs (slow, rate-limited) + self-hosted SearXNG
-    tasks.append(_search_ddgs(query, max_results, timelimit=timelimit))
+    # Self-hosted SearXNG fallback
     if os.environ.get("SEARXNG_URL"):
         tasks.append(_search_searxng(query, max_results))
-
-    if include_news:
-        tasks.append(_search_ddgs_news(query, max_results=5))
 
     all_batches = await asyncio.gather(*tasks, return_exceptions=True)
     all_results: list[SearchResult] = []
@@ -1078,8 +998,7 @@ async def deep_search(
             retrieval_tasks.append(_search_tavily(q, max_results=8))
         if os.environ.get("BRAVE_SEARCH_API_KEY"):
             retrieval_tasks.append(_search_brave(q, max_results=8))
-        # Fallbacks
-        retrieval_tasks.append(_search_ddgs(q, max_results=8))
+        # Self-hosted SearXNG fallback
         if os.environ.get("SEARXNG_URL"):
             retrieval_tasks.append(_search_searxng(q, max_results=8))
         if has_exa:

@@ -29,7 +29,6 @@ dependencies = [
     "asyncpg>=0.30.0",
     "psycopg[binary]>=3.2.0",
     # ── ForgeSearch dependencies ──────────────────────────────────────────────
-    "ddgs>=8.0.0",                        # Free metasearch (DDG/Bing/Google)
     "bm25s>=0.2.0",                        # Fast BM25 keyword retrieval
     # NOTE: sentence-transformers (+ PyTorch ~2GB) installed separately by setup.sh
     # with graceful BM25 fallback. Kept out of core deps to avoid 10+ min installs.

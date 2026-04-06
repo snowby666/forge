@@ -463,16 +463,15 @@ async def _fast_search(query: str, max_results: int = 10) -> list[dict]:
 
     Uses asyncio.wait(FIRST_COMPLETED) with a hard wall-clock deadline.
     IMPORTANT: does NOT use asyncio.wait_for inside the race — wait_for
-    blocks on cancellation of asyncio.to_thread (threads can't be interrupted)
-    and aiohttp cleanup (waits for server). asyncio.wait returns immediately
-    on timeout regardless of task state.
+    blocks on cancellation of aiohttp cleanup (waits for server).
+    asyncio.wait returns immediately on timeout regardless of task state.
 
     Returns list of {"title": ..., "url": ...} dicts.
     """
     import time as _time
     from config.web_search import (
         _search_serper, _search_tavily, _search_brave,
-        _search_searxng, _search_ddgs,
+        _search_searxng,
     )
 
     def _to_dicts(results: list) -> list[dict]:
@@ -487,7 +486,6 @@ async def _fast_search(query: str, max_results: int = 10) -> list[dict]:
         providers.append(("brave", _search_brave(query, max_results)))
     if os.environ.get("SEARXNG_URL", "").strip():
         providers.append(("searxng", _search_searxng(query, max_results)))
-    providers.append(("ddgs", _search_ddgs(query, max_results)))
 
     provider_names = [n for n, _ in providers]
     logger.info(f"[forge:scout:search] Racing {len(providers)} providers [{', '.join(provider_names)}] for '{query[:50]}'")
@@ -554,8 +552,7 @@ async def discover_community(brief: HackathonBrief) -> HackathonBrief:
 
     Strategy (fast path first):
       1. Links already extracted from HTML in Phase 2 — free, instant
-      2. Single SearXNG query (local Docker, ~1-2s) — covers Google/Bing/DDG
-      3. Only if SearXNG unavailable: fall back to ddgs (slow)
+      2. _fast_search races all configured providers (Serper/Tavily/Brave/SearXNG)
     """
     known_urls = {cl.url for cl in brief.community_links}
     query = f'"{brief.name}" discord OR reddit OR slack OR github OR twitter'
@@ -667,7 +664,7 @@ async def research_hackathon(brief: HackathonBrief) -> HackathonBrief:
             f"{brief.name} hackathon tutorial getting started",
         ]
 
-    # Fast search across all queries (Serper → Tavily → Brave → SearXNG → ddgs)
+    # Fast search across all queries (Serper → Tavily → Brave → SearXNG)
     try:
         search_tasks = [_fast_search(q, max_results=8) for q in queries[:4]]
         results_batches = await asyncio.gather(*search_tasks, return_exceptions=True)

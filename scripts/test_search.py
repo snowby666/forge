@@ -5,7 +5,6 @@ import asyncio
 import os
 import sys
 import time
-import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
@@ -49,7 +48,7 @@ async def main():
 
     from config.web_search import (
         _search_serper, _search_tavily, _search_brave,
-        _search_searxng, _search_ddgs,
+        _search_searxng,
     )
 
     # --- Individual providers ---
@@ -61,7 +60,6 @@ async def main():
         await test_provider("brave", _search_brave(QUERY, 10))
     if keys["SEARXNG"]:
         await test_provider("searxng", _search_searxng(QUERY, 10))
-    await test_provider("ddgs", _search_ddgs(QUERY, 10))
 
     # --- Full race ---
     print(f"\n{'='*50}")
@@ -102,20 +100,6 @@ async def main():
     except asyncio.TimeoutError:
         print(f"  GLOBAL TIMEOUT at {(time.monotonic()-t0)*1000:.0f}ms -- DEADLOCK")
 
-    # --- Deadlock regression test ---
-    print(f"\n{'='*50}")
-    print("wait_for + to_thread deadlock test (must not hang)")
-    print(f"{'='*50}")
-    def _block():
-        import time as t; t.sleep(30); return []
-    t0 = time.monotonic()
-    try:
-        await asyncio.wait_for(asyncio.shield(asyncio.to_thread(_block)), timeout=2.0)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
-        ms = (time.monotonic() - t0) * 1000
-        print(f"  Timeout in {ms:.0f}ms (expected ~2000) -- OK")
-
-    print(f"\n  Threads alive: {threading.active_count()}")
     print("DONE")
 
 

@@ -123,7 +123,7 @@ async def _call_with_web_search(query: str, **_kwargs) -> str:
 
     Replaces the broken ElectronHub web_search_20250305 approach.
     ElectronHub is an OpenAI-compatible proxy — Anthropic tool types
-    are not forwarded. This function uses the ddgs/Brave waterfall instead.
+    are not forwarded. This function uses the Serper/Tavily/Brave/SearXNG pipeline.
 
     The search happens here. Synthesis happens in the caller via complete_json().
     """
@@ -162,7 +162,6 @@ async def research_trending_libraries() -> TrendingLibraries:
     year  = datetime.now().year
     month = datetime.now().strftime("%B %Y")
 
-    # Short keyword query for ddgs — the full research prompt is in the LLM call below
     search_query = f"best React UI component libraries developer tools {year}"
 
     raw = ""
@@ -195,7 +194,6 @@ async def research_winning_concepts() -> WinningConcepts:
     year  = datetime.now().year
     month = datetime.now().strftime("%B %Y")
 
-    # Short keyword query for ddgs
     search_query = f"winning AI hackathon projects {month} Devpost MLH"
     raw = ""
     try:
