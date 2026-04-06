@@ -459,123 +459,73 @@ COMMUNITY_PATTERNS = {
 
 async def _fast_search(query: str, max_results: int = 10) -> list[dict]:
     """
-    Fast search using best available provider.
-    Priority: Serper (~120ms) → Tavily (~1.7s) → Brave → SearXNG → ddgs.
+    Race all available search providers concurrently — first success wins.
+
+    Old approach: sequential fallback chain (Serper → Tavily → Brave → SearXNG → ddgs).
+    Problem: if early providers are unconfigured the chain falls through to slow/broken
+    backends, taking 30-60s+ per query.
+
+    New approach: fire every available provider simultaneously via asyncio.wait
+    with FIRST_COMPLETED. The fastest provider to return results wins; all others
+    are cancelled immediately. Hard 8s global timeout as a safety net.
+
     Returns list of {"title": ..., "url": ...} dicts.
     """
+    from config.web_search import (
+        _search_serper, _search_tavily, _search_brave,
+        _search_searxng, _search_ddgs,
+    )
 
-    # ── 1. Serper.dev (fastest, Google results) ──
-    serper_key = os.environ.get("SERPER_API_KEY", "").strip()
-    if serper_key:
+    def _to_dicts(results: list) -> list[dict]:
+        return [{"title": r.title, "url": r.url} for r in results if r.url]
+
+    async def _run_provider(name: str, coro) -> tuple[str, list[dict]]:
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://google.serper.dev/search",
-                    json={"q": query, "num": max_results},
-                    headers={"X-API-KEY": serper_key, "Content-Type": "application/json"},
-                    timeout=aiohttp.ClientTimeout(total=8),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        results = [
-                            {"title": r.get("title", ""), "url": r.get("link", "")}
-                            for r in data.get("organic", [])[:max_results]
-                            if r.get("link")
-                        ]
-                        if results:
-                            return results
+            result = await asyncio.wait_for(coro, timeout=6.0)
+            return (name, _to_dicts(result) if result else [])
+        except asyncio.TimeoutError:
+            return (name, [])
         except Exception as e:
-            logger.debug(f"[forge:scout] Serper error: {e}")
+            logger.debug(f"[forge:scout] search provider {name}: {e}")
+            return (name, [])
 
-    # ── 2. Tavily (AI-optimized, reliable — rotate across key pool) ──
+    providers: list[tuple[str, Any]] = []
+    if os.environ.get("SERPER_API_KEY", "").strip():
+        providers.append(("serper", _search_serper(query, max_results)))
+    if os.environ.get("TAVILY_API_KEYS") or os.environ.get("TAVILY_API_KEY", "").strip():
+        providers.append(("tavily", _search_tavily(query, max_results)))
+    if os.environ.get("BRAVE_SEARCH_API_KEY", "").strip():
+        providers.append(("brave", _search_brave(query, max_results)))
+    if os.environ.get("SEARXNG_URL", "").strip():
+        providers.append(("searxng", _search_searxng(query, max_results)))
+    providers.append(("ddgs", _search_ddgs(query, max_results)))
+
+    tasks = {
+        asyncio.create_task(_run_provider(name, coro), name=name): name
+        for name, coro in providers
+    }
+
     try:
-        from config.web_search import _get_tavily_key, _mark_tavily_key_exhausted
-        for _tavily_attempt in range(3):
-            tavily_key = _get_tavily_key()
-            if not tavily_key:
+        remaining = set(tasks.keys())
+        while remaining:
+            done, remaining = await asyncio.wait(
+                remaining, timeout=8.0, return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
                 break
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        "https://api.tavily.com/search",
-                        json={"query": query, "max_results": min(max_results, 20), "search_depth": "basic"},
-                        headers={"Authorization": f"Bearer {tavily_key}", "Content-Type": "application/json"},
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as resp:
-                        if resp.status in (429, 401, 403):
-                            _mark_tavily_key_exhausted(tavily_key)
-                            continue
-                        if resp.status == 200:
-                            data = await resp.json()
-                            results = [
-                                {"title": r.get("title", ""), "url": r.get("url", "")}
-                                for r in data.get("results", [])[:max_results]
-                                if r.get("url")
-                            ]
-                            if results:
-                                return results
-            except Exception as e:
-                logger.debug(f"[forge:scout] Tavily error: {e}")
-                break
-    except ImportError:
-        pass
+            for task in done:
+                name, results = task.result()
+                if results:
+                    logger.info(f"[forge:scout] search won by {name}: {len(results)} results for '{query[:40]}'")
+                    for t in remaining:
+                        t.cancel()
+                    return results
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
 
-    # ── 3. Brave Search ──
-    brave_key = os.environ.get("BRAVE_SEARCH_API_KEY", "").strip()
-    if brave_key:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    "https://api.search.brave.com/res/v1/web/search",
-                    headers={"X-Subscription-Token": brave_key, "Accept": "application/json"},
-                    params={"q": query, "count": str(max_results)},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        results = [
-                            {"title": r.get("title", ""), "url": r.get("url", "")}
-                            for r in data.get("web", {}).get("results", [])[:max_results]
-                            if r.get("url")
-                        ]
-                        if results:
-                            return results
-        except Exception as e:
-            logger.debug(f"[forge:scout] Brave error: {e}")
-
-    # ── 4. SearXNG (self-hosted, may be down) ──
-    base_url = os.environ.get("SEARXNG_URL", "").strip().rstrip("/")
-    if base_url:
-        port = base_url.rsplit(":", 1)[-1] if ":" in base_url.split("//", 1)[-1] else "8081"
-        for url in dict.fromkeys([base_url, f"http://localhost:{port}", f"http://127.0.0.1:{port}"]):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        f"{url}/search",
-                        params={"q": query, "format": "json", "engines": "google,bing,startpage", "language": "en"},
-                        headers={"Accept": "application/json"},
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            results = [
-                                {"title": r.get("title", ""), "url": r.get("url", "")}
-                                for r in data.get("results", [])[:max_results]
-                                if r.get("url")
-                            ]
-                            if results:
-                                return results
-            except Exception:
-                continue
-
-    # ── 5. ddgs fallback (slow but no API key needed) ──
-    try:
-        from config.web_search import web_search as _ws, SearchResult
-        ws_results = await _ws(query, max_results=max_results, timelimit="y")
-        return [{"title": r.title, "url": r.url} for r in ws_results if r.url]
-    except Exception as e:
-        logger.debug(f"[forge:scout] web_search fallback error: {e}")
-
+    logger.warning(f"[forge:scout] all search providers failed for '{query[:50]}'")
     return []
 
 
@@ -1181,29 +1131,49 @@ async def run_scout(
     if deep:
         top_for_deep = briefs[:5]
 
-        # Phase 3: Community — 90s hard timeout for the entire phase
+        # Phase 3: Community — per-hackathon 15s timeout, 30s global
         logger.info(f"[forge:scout] ═══ Phase 3: COMMUNITY INTEL — searching {len(top_for_deep)} hackathons ═══")
         try:
-            community_tasks = [discover_community(b) for b in top_for_deep]
+            community_tasks = [
+                asyncio.wait_for(discover_community(b), timeout=15.0)
+                for b in top_for_deep
+            ]
             results = await asyncio.wait_for(
-                asyncio.gather(*community_tasks, return_exceptions=True), timeout=90.0,
+                asyncio.gather(*community_tasks, return_exceptions=True), timeout=30.0,
             )
-            top_for_deep = [r for r in results if isinstance(r, HackathonBrief)]
+            enriched = []
+            for idx, r in enumerate(results):
+                if isinstance(r, HackathonBrief):
+                    enriched.append(r)
+                else:
+                    logger.warning(f"[forge:scout] Community failed for {top_for_deep[idx].name[:40]}: {r}")
+                    enriched.append(top_for_deep[idx])
+            top_for_deep = enriched
             logger.info(f"[forge:scout] Phase 3 complete: {len(top_for_deep)} enriched")
         except asyncio.TimeoutError:
-            logger.warning("[forge:scout] Phase 3 TIMED OUT (90s) — continuing with what we have")
+            logger.warning("[forge:scout] Phase 3 TIMED OUT (30s) — continuing with what we have")
 
-        # Phase 4: Research — 120s hard timeout
+        # Phase 4: Research — per-hackathon 20s timeout, 45s global
         logger.info(f"[forge:scout] ═══ Phase 4: RESEARCH — finding papers/repos/tutorials ═══")
         try:
-            research_tasks = [research_hackathon(b) for b in top_for_deep]
+            research_tasks = [
+                asyncio.wait_for(research_hackathon(b), timeout=20.0)
+                for b in top_for_deep
+            ]
             results = await asyncio.wait_for(
-                asyncio.gather(*research_tasks, return_exceptions=True), timeout=120.0,
+                asyncio.gather(*research_tasks, return_exceptions=True), timeout=45.0,
             )
-            top_for_deep = [r for r in results if isinstance(r, HackathonBrief)]
+            enriched = []
+            for idx, r in enumerate(results):
+                if isinstance(r, HackathonBrief):
+                    enriched.append(r)
+                else:
+                    logger.warning(f"[forge:scout] Research failed for {top_for_deep[idx].name[:40]}: {r}")
+                    enriched.append(top_for_deep[idx])
+            top_for_deep = enriched
             logger.info(f"[forge:scout] Phase 4 complete: {len(top_for_deep)} researched")
         except asyncio.TimeoutError:
-            logger.warning("[forge:scout] Phase 4 TIMED OUT (120s) — continuing with what we have")
+            logger.warning("[forge:scout] Phase 4 TIMED OUT (45s) — continuing with what we have")
 
         # Merge enriched data back into briefs
         enriched_ids = {b.hackathon_id for b in top_for_deep}

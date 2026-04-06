@@ -263,7 +263,11 @@ async def _search_ddgs(
             logger.debug(f"[forge:search] ddgs error: {e}")
             return []
 
-    raw = await asyncio.to_thread(_sync)
+    try:
+        raw = await asyncio.wait_for(asyncio.to_thread(_sync), timeout=10.0)
+    except asyncio.TimeoutError:
+        logger.debug("[forge:search] ddgs timed out (10s)")
+        raw = []
     return [
         SearchResult(title=r.get("title", ""), url=r.get("href", ""),
                      snippet=r.get("body", ""), source="ddgs")
@@ -288,7 +292,11 @@ async def _search_ddgs_news(query: str, max_results: int = 5) -> list[SearchResu
             logger.debug(f"[forge:search] ddgs_news error: {e}")
             return []
 
-    raw = await asyncio.to_thread(_sync)
+    try:
+        raw = await asyncio.wait_for(asyncio.to_thread(_sync), timeout=10.0)
+    except asyncio.TimeoutError:
+        logger.debug("[forge:search] ddgs_news timed out (10s)")
+        raw = []
     return [
         SearchResult(
             title=r.get("title", ""), url=r.get("url", ""),
@@ -563,13 +571,13 @@ async def _search_searxng(query: str, max_results: int = 8) -> list[SearchResult
                     params={
                         "q": query,
                         "format": "json",
-                        "engines": "google,bing,brave,startpage",
+                        "engines": "google,bing,brave",
                         "language": "en",
                         "time_range": "year",
                         "safesearch": "0",
                     },
                     headers={"Accept": "application/json"},
-                    timeout=aiohttp.ClientTimeout(total=20),
+                    timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status != 200:
                         logger.debug(f"[forge:search] SearXNG {url} returned {resp.status}")
