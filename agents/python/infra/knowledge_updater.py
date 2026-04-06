@@ -129,7 +129,7 @@ async def _call_with_web_search(query: str, **_kwargs) -> str:
     """
     from config.web_search import search_and_synthesize
     # Deep search: query expansion + all providers + BM25/RRF + neural reranking
-    return await search_and_synthesize(query, max_results=10, include_news=True, deep=True)
+    return await search_and_synthesize(query, max_results=10, deep=True)
 
 
 async def _adaptive_crawl_docs(start_url: str, query: str, max_pages: int = 15) -> str:

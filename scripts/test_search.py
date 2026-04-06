@@ -19,12 +19,16 @@ async def test_provider(name, coro, timeout=8.0):
     try:
         result = await asyncio.wait_for(asyncio.shield(coro), timeout=timeout)
         ms = (time.monotonic() - t0) * 1000
-        n = len(result) if result else 0
-        print(f"  {n} results in {ms:.0f}ms")
-        for r in (result or [])[:3]:
-            t = r.title if hasattr(r, 'title') else r.get('title', '')
-            u = r.url if hasattr(r, 'url') else r.get('url', '')
-            print(f"    {t[:55]} | {u[:55]}")
+        if isinstance(result, str):
+            print(f"  {len(result)} chars in {ms:.0f}ms")
+            print(f"    {result[:120]}...")
+        else:
+            n = len(result) if result else 0
+            print(f"  {n} results in {ms:.0f}ms")
+            for r in (result or [])[:3]:
+                t = r.title if hasattr(r, 'title') else r.get('title', '')
+                u = r.url if hasattr(r, 'url') else r.get('url', '')
+                print(f"    {t[:55]} | {u[:55]}")
     except asyncio.TimeoutError:
         print(f"  TIMEOUT after {(time.monotonic()-t0)*1000:.0f}ms")
     except asyncio.CancelledError:
@@ -38,17 +42,20 @@ async def main():
     print(f"Query: {QUERY}\n")
 
     keys = {
-        "SERPER":  bool(os.environ.get("SERPER_API_KEY", "").strip()),
-        "TAVILY":  bool(os.environ.get("TAVILY_API_KEYS") or os.environ.get("TAVILY_API_KEY", "").strip()),
-        "BRAVE":   bool(os.environ.get("BRAVE_SEARCH_API_KEY", "").strip()),
-        "SEARXNG": bool(os.environ.get("SEARXNG_URL", "").strip()),
+        "SERPER":     bool(os.environ.get("SERPER_API_KEY", "").strip()),
+        "TAVILY":     bool(os.environ.get("TAVILY_API_KEYS") or os.environ.get("TAVILY_API_KEY", "").strip()),
+        "BRAVE":      bool(os.environ.get("BRAVE_SEARCH_API_KEY", "").strip()),
+        "SEARXNG":    bool(os.environ.get("SEARXNG_URL", "").strip()),
+        "FIRECRAWL":  bool(os.environ.get("FIRECRAWL_API_KEY", "").strip()),
+        "AGENTPICK":  bool(os.environ.get("AGENTPICK_API_KEY", "").strip()),
     }
     for k, v in keys.items():
         print(f"  {k}: {'YES' if v else 'no'}")
 
     from config.web_search import (
         _search_serper, _search_tavily, _search_brave,
-        _search_searxng,
+        _search_searxng, _search_firecrawl, _search_agentpick,
+        tavily_research,
     )
 
     # --- Individual providers ---
@@ -60,6 +67,20 @@ async def main():
         await test_provider("brave", _search_brave(QUERY, 10))
     if keys["SEARXNG"]:
         await test_provider("searxng", _search_searxng(QUERY, 10))
+    if keys["FIRECRAWL"]:
+        await test_provider("firecrawl", _search_firecrawl(QUERY, 10))
+    if keys["AGENTPICK"]:
+        await test_provider("agentpick", _search_agentpick(QUERY, 10))
+
+    # --- Tavily Research (deep) ---
+    if keys["TAVILY"]:
+        print(f"\n{'='*50}")
+        print("Tavily /research (deep research, ~30-60s)")
+        print(f"{'='*50}")
+        await test_provider("tavily_research", tavily_research(
+            "Find AI agent frameworks, arxiv papers, and winning strategies "
+            "for hackathons about healthcare AI agents", model="mini",
+        ), timeout=90.0)
 
     # --- Full race ---
     print(f"\n{'='*50}")

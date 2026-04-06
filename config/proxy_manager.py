@@ -39,12 +39,7 @@ _PROXY_LOADED = False
 _PROXY_LOCK = asyncio.Lock()
 _PROXY_INDEX = 0
 
-WEBSHARE_PROXY_URL = os.environ.get(
-    "WEBSHARE_PROXY_URL",
-    "https://proxy.webshare.io/api/v2/proxy/list/download/"
-    "ieqahpqdemgttqvflbxkdbmwkhpkfygvrqyliyhq/-/any/username/direct/-/"
-    "?plan_id=11737780",
-)
+WEBSHARE_PROXY_URL = os.environ.get("WEBSHARE_PROXY_URL", "")
 
 
 async def load_proxies() -> None:
@@ -53,6 +48,11 @@ async def load_proxies() -> None:
 
     async with _PROXY_LOCK:
         if _PROXY_LOADED:
+            return
+
+        if not WEBSHARE_PROXY_URL:
+            logger.debug("[proxy] WEBSHARE_PROXY_URL not set — proxies disabled")
+            _PROXY_LOADED = True
             return
 
         for attempt in range(4):

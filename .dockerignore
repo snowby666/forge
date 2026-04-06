@@ -1,0 +1,16 @@
+# Keep the Docker build context small — Dockerfile.web only copies 2 files.
+__pycache__
+*.pyc
+.env
+.env.*
+!.env.example
+.git
+.vscode
+.cursor
+node_modules
+*.egg-info
+dist
+build
+.mypy_cache
+.pytest_cache
+.ruff_cache

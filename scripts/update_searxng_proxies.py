@@ -11,20 +11,20 @@ After running, restart SearXNG:
 """
 
 import argparse
+import os
 import random
 import sys
 from pathlib import Path
 from urllib.request import urlopen
 
-WEBSHARE_URL = (
-    "https://proxy.webshare.io/api/v2/proxy/list/download/"
-    "ieqahpqdemgttqvflbxkdbmwkhpkfygvrqyliyhq/-/any/username/direct/-/"
-    "?plan_id=11737780"
-)
+WEBSHARE_URL = os.environ.get("WEBSHARE_PROXY_URL", "")
 SETTINGS_PATH = Path(__file__).resolve().parent.parent / "config" / "searxng" / "settings.yml"
 
 
 def download_proxies(count: int) -> list[str]:
+    if not WEBSHARE_URL:
+        print("ERROR: WEBSHARE_PROXY_URL not set. Add it to .env or pass via environment.")
+        sys.exit(1)
     print(f"Downloading proxies from webshare.io...")
     resp = urlopen(WEBSHARE_URL, timeout=15)
     raw = resp.read().decode("utf-8")

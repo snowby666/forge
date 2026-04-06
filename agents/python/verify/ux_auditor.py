@@ -27,6 +27,7 @@ from config.design_constitution import DESIGN_CRITIQUE_RUBRIC, ANTI_SLOP_RULES
 
 logger = logging.getLogger(__name__)
 AGENT = ALL_AGENTS["ux_auditor"]
+UX_MIN_SCORE = float(os.environ.get("UX_AUDIT_MIN_SCORE", "7.0"))
 
 BROWSER_URL = os.environ.get("BROWSER_SERVER_URL", "http://localhost:3100")
 
@@ -174,7 +175,7 @@ SCORING NOTES:
 - Score each dimension 1-10 with specific observations
 - For anti_slop_violations: list ONLY actual violations found (not potential ones)
 - For blockers: only issues that would fail the "first 30 seconds" test
-- approved=true ONLY if overall_score >= 7.0 AND anti_slop_violations is empty AND blockers is empty
+- approved=true ONLY if overall_score >= {UX_MIN_SCORE} AND anti_slop_violations is empty AND blockers is empty
 - If not approved: iteration_instructions must be SPECIFIC (file paths, element names, exact fixes)
 
 VETO CRITERIA (auto-blocked):
@@ -212,7 +213,7 @@ VETO CRITERIA (auto-blocked):
     ) / 8.5  # weighted average
 
     report.approved = (
-        report.overall_score >= 7.0
+        report.overall_score >= UX_MIN_SCORE
         and len(report.anti_slop_violations) == 0
         and len(report.blockers) == 0
     )

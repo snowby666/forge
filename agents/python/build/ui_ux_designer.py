@@ -118,64 +118,176 @@ class DesignTokensOutput(BaseModel):
     css_variables: str          # :root CSS variables
 
 
-# ── Google Stitch integration ─────────────────────────────────────────────────
+# ── Google Stitch integration (MCP protocol) ──────────────────────────────────
+# Stitch uses MCP at stitch.googleapis.com/mcp, auth via x-goog-api-key header.
+# Keys from https://stitch.withgoogle.com/settings — set STITCH_API_KEY in .env.
+# Not all keys support tool calls; we probe at startup and keep only valid ones.
 
-_stitch_tokens: list[str] = []
+STITCH_MCP_URL = "https://stitch.googleapis.com/mcp"
+
+_stitch_keys: list[str] = []
 _stitch_idx = 0
+_stitch_validated = False
 
-def _get_stitch_token() -> str | None:
-    """Round-robin across all available Stitch tokens."""
-    global _stitch_tokens, _stitch_idx
-    if not _stitch_tokens:
-        raw = os.environ.get("GOOGLE_STITCH_TOKENS") or os.environ.get("GOOGLE_STITCH_TOKEN", "")
-        _stitch_tokens = [t.strip() for t in raw.split(",") if t.strip()]
-    if not _stitch_tokens:
+
+def _load_stitch_keys() -> list[str]:
+    raw = (
+        os.environ.get("STITCH_API_KEY")
+        or os.environ.get("GOOGLE_STITCH_TOKENS")
+        or ""
+    )
+    return [k.strip() for k in raw.split(",") if k.strip()]
+
+
+def _get_stitch_key() -> str | None:
+    """Round-robin across validated Stitch API keys."""
+    global _stitch_keys, _stitch_idx, _stitch_validated
+    if not _stitch_validated:
+        _stitch_keys = _load_stitch_keys()
+        _stitch_validated = True
+    if not _stitch_keys:
         return None
-    token = _stitch_tokens[_stitch_idx % len(_stitch_tokens)]
-    _stitch_idx = (_stitch_idx + 1) % len(_stitch_tokens)
-    return token
+    key = _stitch_keys[_stitch_idx % len(_stitch_keys)]
+    _stitch_idx = (_stitch_idx + 1) % len(_stitch_keys)
+    return key
+
+
+def _remove_stitch_key(bad_key: str) -> None:
+    """Remove a key that returned 401 so we don't retry it."""
+    global _stitch_keys
+    _stitch_keys = [k for k in _stitch_keys if k != bad_key]
+
 
 async def call_google_stitch(prompt: str, personality: str) -> list[dict]:
-    """Generate design directions via Google Stitch API with token rotation."""
-    token = _get_stitch_token()
-    if not token:
-        logger.warning("[forge:design] No GOOGLE_STITCH_TOKENS set — using ElectronHub fallback")
+    """Generate a design screen via Google Stitch MCP API with key rotation.
+
+    Performs the full flow in a single MCP session: create_project →
+    generate_screen_from_text. Rotates to the next key on 401 errors.
+    """
+    try:
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+        import httpx
+    except ImportError:
+        logger.info("[forge:design] `mcp` package not installed — skipping Stitch")
+        return []
+
+    api_key = _get_stitch_key()
+    if not api_key:
+        logger.info("[forge:design] No STITCH_API_KEY set — skipping Stitch, using LLM fallback")
         return []
 
     personality_data = DESIGN_PERSONALITIES.get(personality, {})
-    max_attempts = min(len(_stitch_tokens), 3)
+    full_prompt = (
+        f"{prompt}. "
+        f"Aesthetic: {personality_data.get('description', '')}. "
+        f"Background: {personality_data.get('background_base', '#ffffff')}. "
+        f"IMPORTANT: {personality_data.get('accent_style', 'clean and professional')}. "
+        f"AVOID: {', '.join(personality_data.get('anti_patterns', []))}."
+    )
+
+    max_attempts = min(len(_stitch_keys), 5)
 
     for attempt in range(max_attempts):
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://stitch.google.com/api/generate",
-                    headers={"Authorization": f"Bearer {token}"},
-                    json={
-                        "prompt": f"{prompt}. "
-                                  f"Aesthetic: {personality_data.get('description', '')}. "
-                                  f"Background: {personality_data.get('background_base', '#ffffff')}. "
-                                  f"IMPORTANT: {personality_data.get('accent_style', 'clean and professional')}. "
-                                  f"AVOID: {', '.join(personality_data.get('anti_patterns', []))}.",
-                        "screens": 5,
-                        "platform": "web",
-                        "style": personality,
-                    },
-                    timeout=aiohttp.ClientTimeout(total=120),
-                ) as resp:
-                    if resp.status == 429:
-                        logger.warning(f"[forge:design] Stitch token rate-limited, rotating")
-                        token = _get_stitch_token()
+            http = httpx.AsyncClient(
+                headers={"x-goog-api-key": api_key},
+                timeout=httpx.Timeout(300.0, connect=15.0),
+            )
+            async with streamable_http_client(STITCH_MCP_URL, http_client=http) as (
+                read_stream, write_stream, _get_sid,
+            ):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+
+                    # Create a temporary project
+                    proj_result = await session.call_tool(
+                        "create_project", {"title": f"forge-{os.getpid()}"}
+                    )
+                    if proj_result.isError:
+                        logger.warning("[forge:design] Stitch create_project error: %s", proj_result.content)
+                        api_key = _get_stitch_key() or api_key
                         continue
-                    if resp.status != 200:
-                        logger.warning(f"[forge:design] Stitch API returned {resp.status}")
+
+                    project_id = ""
+                    for block in proj_result.content:
+                        if hasattr(block, "text"):
+                            data = json.loads(block.text)
+                            project_id = str(
+                                data.get("projectId")
+                                or data.get("id")
+                                or data.get("name", "").split("/")[-1]
+                            )
+
+                    if not project_id:
+                        logger.warning("[forge:design] Stitch: no project ID returned")
+                        api_key = _get_stitch_key() or api_key
+                        continue
+
+                    logger.info("[forge:design] Stitch project created: %s", project_id)
+
+                    # Generate screen (takes 1-3 min server-side)
+                    screen_result = await session.call_tool(
+                        "generate_screen_from_text",
+                        {
+                            "projectId": project_id,
+                            "prompt": full_prompt,
+                            "deviceType": "DESKTOP",
+                        },
+                    )
+
+                    if screen_result.isError:
+                        logger.warning("[forge:design] Stitch generate_screen error: %s", screen_result.content)
                         return []
-                    data = await resp.json()
-                    return data.get("screens", [])
+
+                    screens = []
+                    for block in screen_result.content:
+                        if not hasattr(block, "text"):
+                            continue
+                        try:
+                            data = json.loads(block.text)
+                        except json.JSONDecodeError:
+                            continue
+                        # Extract design system and screen info from the response
+                        components = data.get("outputComponents", [])
+                        for comp in components:
+                            screen_data = comp.get("screen", {})
+                            if not screen_data:
+                                continue
+                            screens.append({
+                                "id": screen_data.get("name", "").split("/")[-1],
+                                "html_url": screen_data.get("htmlCode", {}).get("downloadUrl", ""),
+                                "image_url": screen_data.get("screenshot", {}).get("downloadUrl", ""),
+                                "prompt": full_prompt,
+                            })
+                        # Also capture the design system for downstream use
+                        for comp in components:
+                            ds = comp.get("designSystem", {}).get("designSystem", {})
+                            if ds:
+                                screens.append({"_design_system": ds})
+
+                    logger.info("[forge:design] Google Stitch generated %d screens", len(screens))
+                    return screens
+
+        except (ExceptionGroup, BaseExceptionGroup) as eg:
+            is_401 = any("401" in str(exc) for exc in (eg.exceptions if hasattr(eg, "exceptions") else [eg]))
+            if is_401:
+                logger.debug("[forge:design] Stitch key %s...%s returned 401, rotating", api_key[:8], api_key[-4:])
+                _remove_stitch_key(api_key)
+                api_key = _get_stitch_key()
+                if not api_key:
+                    logger.warning("[forge:design] All Stitch keys exhausted (401)")
+                    return []
+                continue
+            logger.warning("[forge:design] Stitch ExceptionGroup: %s", eg)
+            return []
+        except asyncio.TimeoutError:
+            logger.warning("[forge:design] Stitch timed out (attempt %d/%d)", attempt + 1, max_attempts)
+            api_key = _get_stitch_key() or api_key
         except Exception as e:
-            logger.warning(f"[forge:design] Stitch API error: {e}")
-            token = _get_stitch_token()
-            continue
+            logger.warning("[forge:design] Stitch error: %s", e)
+            api_key = _get_stitch_key() or api_key
+
     return []
 
 

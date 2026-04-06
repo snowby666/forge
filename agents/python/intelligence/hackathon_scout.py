@@ -24,7 +24,7 @@ from typing import Any
 import aiohttp
 from pydantic import BaseModel, Field
 from config.agents_config import ALL_AGENTS
-from config.electronhub import complete, complete_json
+from config.electronhub import complete_json
 from config.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
@@ -471,7 +471,7 @@ async def _fast_search(query: str, max_results: int = 10) -> list[dict]:
     import time as _time
     from config.web_search import (
         _search_serper, _search_tavily, _search_brave,
-        _search_searxng,
+        _search_searxng, _search_firecrawl, _search_agentpick,
     )
 
     def _to_dicts(results: list) -> list[dict]:
@@ -484,6 +484,10 @@ async def _fast_search(query: str, max_results: int = 10) -> list[dict]:
         providers.append(("tavily", _search_tavily(query, max_results)))
     if os.environ.get("BRAVE_SEARCH_API_KEY", "").strip():
         providers.append(("brave", _search_brave(query, max_results)))
+    if os.environ.get("AGENTPICK_API_KEY", "").strip():
+        providers.append(("agentpick", _search_agentpick(query, max_results)))
+    if os.environ.get("FIRECRAWL_API_KEY", "").strip():
+        providers.append(("firecrawl", _search_firecrawl(query, max_results)))
     if os.environ.get("SEARXNG_URL", "").strip():
         providers.append(("searxng", _search_searxng(query, max_results)))
 
@@ -664,9 +668,39 @@ async def research_hackathon(brief: HackathonBrief) -> HackathonBrief:
             f"{brief.name} hackathon tutorial getting started",
         ]
 
+    # Tavily Deep Research: single call that does multi-query analysis
+    has_tavily = bool(os.environ.get("TAVILY_API_KEYS") or os.environ.get("TAVILY_API_KEY", "").strip())
+    tavily_research_done = False
+    if has_tavily:
+        try:
+            from config.web_search import tavily_research
+            research_query = (
+                f"Research for hackathon '{brief.name}': "
+                f"theme={brief.theme or 'general'}. "
+                f"Find: 1) relevant arxiv papers, 2) GitHub repos/starter kits, "
+                f"3) tutorials and frameworks, 4) winning strategies for similar hackathons. "
+                f"Technologies: {', '.join(s.api_name for s in brief.sponsor_techs[:3]) or 'any AI/ML'}"
+            )
+            report = await asyncio.wait_for(tavily_research(research_query, model="mini"), timeout=60.0)
+            if report and len(report) > 100:
+                brief.research.append(ResearchItem(
+                    title=f"Deep research report: {brief.name}",
+                    url=brief.url or "",
+                    source="tavily_research",
+                    relevance=report[:500],
+                    snippet=report[:2000],
+                ))
+                tavily_research_done = True
+                logger.info(f"[forge:scout:research] Tavily research: {len(report)} chars for {brief.name[:40]}")
+        except asyncio.TimeoutError:
+            logger.warning(f"[forge:scout:research] Tavily research timed out for {brief.name[:40]}")
+        except Exception as e:
+            logger.debug(f"[forge:scout:research] Tavily research failed: {e}")
+
     # Fast search across all queries (Serper → Tavily → Brave → SearXNG)
     try:
-        search_tasks = [_fast_search(q, max_results=8) for q in queries[:4]]
+        max_queries = 2 if tavily_research_done else 4
+        search_tasks = [_fast_search(q, max_results=8) for q in queries[:max_queries]]
         results_batches = await asyncio.gather(*search_tasks, return_exceptions=True)
 
         known_urls = {r.url for r in brief.research}

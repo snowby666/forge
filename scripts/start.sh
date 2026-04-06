@@ -144,17 +144,15 @@ else
 fi
 
 # --- Forge web dashboard (sentinelhive.dev) ----------------------------------
+# The web dashboard runs as the forge-web Docker container (see docker-compose.yml).
+# 'docker compose up -d' above already started it; verify it's healthy.
 FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
-log "Starting Forge web dashboard on port ${FORGE_WEB_PORT}..."
-$PYTHON_CMD -m uvicorn forge_web:app --host 0.0.0.0 --port "$FORGE_WEB_PORT" --log-level warning &
-WEB_PID=$!
-sleep 2
-
-if curl -sf "http://localhost:${FORGE_WEB_PORT}/health" &>/dev/null 2>&1; then
-  log "Web dashboard ready (port ${FORGE_WEB_PORT})"
-else
-  warn "Web dashboard health check failed (PID ${WEB_PID})"
-fi
+WAITED=0
+until curl -sf "http://localhost:${FORGE_WEB_PORT}/health" &>/dev/null 2>&1; do
+  sleep 2; WAITED=$((WAITED+2))
+  [[ $WAITED -ge 30 ]] && { warn "Web dashboard health check timed out — check: docker logs forge-web"; break; }
+done
+[[ $WAITED -lt 30 ]] && log "Web dashboard ready (port ${FORGE_WEB_PORT})"
 
 echo ""
 log "All services running:"

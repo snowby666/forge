@@ -17,13 +17,15 @@ ARCHITECTURE (4-stage pipeline)
   │ Result: +22% NDCG@5, +40% recall@10 vs single-query baseline   │
   └─────────────────────────────────────────────────────────────────┘
 
-  Stage 2 — PARALLEL RETRIEVAL (5 independent sources, priority order)
+  Stage 2 — PARALLEL RETRIEVAL (7 independent sources, priority order)
   ┌─────────────────────────────────────────────────────────────────┐
-  │ a) Serper  — Google results via REST. ~120ms. 2500 free.       │
-  │ b) Tavily  — AI-optimized search. ~1.7s. 1k free/mo.         │
-  │ c) Brave   — Independent 30B-page index. ~1k free/mo.         │
-  │ d) SearXNG — Self-hosted metasearch (Docker). Fully free.     │
-  │ e) Exa     — Neural semantic search. $7/1k reqs. Optional.    │
+  │ a) Serper    — Google results via REST. ~120ms. 2500 free.     │
+  │ b) Tavily    — AI-optimized search. ~1.7s. 1k free/mo.       │
+  │ c) Brave     — Independent 30B-page index. ~1k free/mo.       │
+  │ d) AgentPick — AI-routed across 26 APIs. 3k free/mo.         │
+  │ e) Firecrawl — Search + scrape in one call. 500 free credits. │
+  │ f) SearXNG   — Self-hosted metasearch (Docker). Fully free.   │
+  │ g) Exa       — Neural semantic search. $7/1k reqs. Optional.  │
   │ All sources run concurrently for each expanded sub-query       │
   └─────────────────────────────────────────────────────────────────┘
 
@@ -144,7 +146,7 @@ class SearchResult:
     title: str
     url: str
     snippet: str
-    source: str           # "serper" | "tavily" | "brave" | "exa" | "searxng"
+    source: str           # "serper" | "tavily" | "brave" | "exa" | "searxng" | "firecrawl" | "agentpick"
     score: float = 0.0    # final RRF + reranker score
     full_text: str = ""   # populated by fetch_full_content()
     published: str = ""   # ISO date if available
@@ -527,6 +529,161 @@ async def _search_searxng(query: str, max_results: int = 8) -> list[SearchResult
     return []
 
 
+# ── 2g. Firecrawl (optional — search + scrape in one call) ───────────────
+
+async def _search_firecrawl(
+    query: str, max_results: int = 8, scrape_content: bool = False,
+) -> list[SearchResult]:
+    """
+    Firecrawl: search + optional content extraction in a single API call.
+    Set FIRECRAWL_API_KEY in .env. Free: 500 credits. Standard: $83/mo.
+    2 credits per 10 results. When scrape_content=True, returns markdown.
+    """
+    api_key = os.environ.get("FIRECRAWL_API_KEY", "").strip()
+    if not api_key:
+        return []
+
+    try:
+        body: dict[str, Any] = {
+            "query": query,
+            "limit": min(max_results, 10),
+        }
+        if scrape_content:
+            body["scrapeOptions"] = {"formats": ["markdown"]}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.firecrawl.dev/v1/search",
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    logger.debug(f"[forge:search] Firecrawl HTTP {resp.status}")
+                    return []
+                data = await resp.json()
+
+        results = []
+        for r in data.get("data", [])[:max_results]:
+            full_text = ""
+            if scrape_content and r.get("markdown"):
+                full_text = r["markdown"][:3000]
+            results.append(SearchResult(
+                title=r.get("title", "") or r.get("metadata", {}).get("title", ""),
+                url=r.get("url", ""),
+                snippet=r.get("description", "") or r.get("excerpt", ""),
+                source="firecrawl",
+                full_text=full_text,
+            ))
+        return [r for r in results if r.title and r.url]
+    except Exception as e:
+        logger.debug(f"[forge:search] Firecrawl error: {e}")
+        return []
+
+
+# ── 2h. AgentPick (optional — AI-routed search across 26 APIs) ──────────
+
+async def _search_agentpick(query: str, max_results: int = 8) -> list[SearchResult]:
+    """
+    AgentPick: intelligent routing layer that picks the optimal search API
+    per query (Exa for deep research, Serper for real-time, etc.).
+    Set AGENTPICK_API_KEY in .env. Free: 3,000 routed calls/month.
+    """
+    api_key = os.environ.get("AGENTPICK_API_KEY", "").strip()
+    if not api_key:
+        return []
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.agentpick.dev/v1/search",
+                json={
+                    "query": query,
+                    "num_results": min(max_results, 10),
+                    "strategy": "balanced",
+                },
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as resp:
+                if resp.status != 200:
+                    logger.debug(f"[forge:search] AgentPick HTTP {resp.status}")
+                    return []
+                data = await resp.json()
+
+        results = []
+        for r in data.get("results", [])[:max_results]:
+            results.append(SearchResult(
+                title=r.get("title", ""),
+                url=r.get("url", ""),
+                snippet=r.get("snippet", "") or r.get("description", ""),
+                source="agentpick",
+                published=r.get("published", ""),
+            ))
+        return [r for r in results if r.title and r.url]
+    except Exception as e:
+        logger.debug(f"[forge:search] AgentPick error: {e}")
+        return []
+
+
+# ── Tavily Deep Research (comprehensive multi-search report) ─────────────
+
+async def tavily_research(
+    query: str,
+    model: str = "mini",
+) -> str:
+    """
+    Tavily /research endpoint — conducts multiple searches, analyzes sources,
+    and returns a detailed research report. 30-120s per call.
+    model: "mini" (fast, scoped), "pro" (comprehensive), "auto".
+    Uses the same TAVILY_API_KEY pool. Returns raw report text.
+    """
+    api_key = _get_tavily_key()
+    if not api_key:
+        return ""
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.tavily.com/research",
+                json={
+                    "input": query,
+                    "model": model,
+                    "stream": False,
+                    "citation_format": "numbered",
+                },
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                if resp.status in (429, 401, 432, 433):
+                    _mark_tavily_key_exhausted(api_key)
+                    logger.debug(f"[forge:search] Tavily research HTTP {resp.status} — key rotated")
+                    return ""
+                if resp.status != 200 and resp.status != 201:
+                    logger.debug(f"[forge:search] Tavily research HTTP {resp.status}")
+                    return ""
+                data = await resp.json()
+
+        report = data.get("output", "") or data.get("report", "") or data.get("result", "")
+        if report:
+            logger.info(f"[forge:search] Tavily research: {len(report)} chars ({model})")
+        return report
+    except asyncio.TimeoutError:
+        logger.warning("[forge:search] Tavily research timed out (120s)")
+        return ""
+    except Exception as e:
+        logger.debug(f"[forge:search] Tavily research error: {e}")
+        return ""
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONTENT EXTRACTION
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -546,6 +703,18 @@ _WHITESPACE = re.compile(r"\s+")
 
 _c4a_crawler: Any = None
 _c4a_lock = asyncio.Lock()
+
+
+async def shutdown_c4a_crawler() -> None:
+    """Close the Crawl4AI singleton browser so Playwright subprocesses exit cleanly."""
+    global _c4a_crawler
+    if _c4a_crawler is not None:
+        try:
+            await _c4a_crawler.__aexit__(None, None, None)
+            logger.debug("[forge:search] Crawl4AI browser pool closed")
+        except Exception:
+            pass
+        _c4a_crawler = None
 
 
 async def _get_c4a_crawler():
@@ -793,14 +962,14 @@ def _dedup_by_url(results: list[SearchResult]) -> list[SearchResult]:
     return list(seen.values())
 
 
-def _qdrant_semantic_score(
+def _semantic_cosine_score(
     query: str,
     results: list[SearchResult],
 ) -> list[tuple[SearchResult, float]]:
     """
-    Semantic scoring via Qdrant + local embedding model.
+    Semantic scoring via local SentenceTransformer embedding model.
     Uses all-MiniLM-L6-v2 (384-dim, free, fast on CPU).
-    If Qdrant is unavailable, returns empty — caller falls back to BM25 only.
+    Returns (result, cosine_similarity) pairs. Falls back to empty on failure.
     """
     try:
         from sentence_transformers import SentenceTransformer  # type: ignore[import]
@@ -834,7 +1003,7 @@ def _hybrid_score_and_rank(
     No extra API calls, notable improvement in MRR vs either alone.
     """
     bm25_scored = _bm25_score(query, results)
-    semantic_scored = _qdrant_semantic_score(query, results)
+    semantic_scored = _semantic_cosine_score(query, results)
 
     # Build ranked lists for RRF
     bm25_ranked = [r for r, _ in sorted(bm25_scored, key=lambda x: x[1], reverse=True)]
@@ -917,8 +1086,6 @@ def _neural_rerank(
 async def web_search(
     query: str,
     max_results: int = 8,
-    include_news: bool = False,
-    timelimit: str | None = "y",
 ) -> list[SearchResult]:
     """
     Standard web search — Serper → Tavily → Brave → SearXNG (priority order).
@@ -936,6 +1103,12 @@ async def web_search(
         tasks.append(_search_tavily(query, max_results))
     if os.environ.get("BRAVE_SEARCH_API_KEY"):
         tasks.append(_search_brave(query, max_results))
+
+    # Additional providers (optional)
+    if os.environ.get("AGENTPICK_API_KEY"):
+        tasks.append(_search_agentpick(query, max_results))
+    if os.environ.get("FIRECRAWL_API_KEY"):
+        tasks.append(_search_firecrawl(query, max_results))
 
     # Self-hosted SearXNG fallback
     if os.environ.get("SEARXNG_URL"):
@@ -998,6 +1171,11 @@ async def deep_search(
             retrieval_tasks.append(_search_tavily(q, max_results=8))
         if os.environ.get("BRAVE_SEARCH_API_KEY"):
             retrieval_tasks.append(_search_brave(q, max_results=8))
+        # Additional providers
+        if os.environ.get("AGENTPICK_API_KEY"):
+            retrieval_tasks.append(_search_agentpick(q, max_results=8))
+        if os.environ.get("FIRECRAWL_API_KEY"):
+            retrieval_tasks.append(_search_firecrawl(q, max_results=8))
         # Self-hosted SearXNG fallback
         if os.environ.get("SEARXNG_URL"):
             retrieval_tasks.append(_search_searxng(q, max_results=8))
@@ -1114,7 +1292,6 @@ def format_results_for_llm(
 async def search_and_synthesize(
     query: str,
     max_results: int = 8,
-    include_news: bool = False,
     deep: bool = False,
 ) -> str:
     """
@@ -1146,7 +1323,6 @@ async def search_and_synthesize(
         results = await web_search(
             query,
             max_results=max_results,
-            include_news=include_news,
         )
 
     return format_results_for_llm(results)
@@ -1322,12 +1498,6 @@ async def _fetch_lablab_aiohttp(limit: int = 20) -> list[dict]:
                     logger.debug(f"[forge:search] Lablab HTTP {resp.status}")
                     return []
                 html = await resp.text()
-
-        hackathon_pattern = re.compile(
-            r'href="(/ai-hackathons/[^"]+)"[^>]*>.*?'
-            r'(?:<h[23][^>]*>([^<]+)</h[23]>)?',
-            re.DOTALL,
-        )
 
         link_pattern = re.compile(
             r'href="(https://lablab\.ai/ai-hackathons/([^"]+))"',

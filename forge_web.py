@@ -2,10 +2,10 @@
 """
 forge_web — Lightweight web dashboard for remote Forge approval & monitoring.
 
-Start:
-    forge web                      # defaults to 0.0.0.0:9090
-    forge web --port 8888
-    uvicorn forge_web:app --host 0.0.0.0 --port 9090
+Start (pick one):
+    docker compose up -d web       # recommended — auto-restarts, Redis-networked
+    forge web                      # bare-metal, defaults to 0.0.0.0:3000
+    uvicorn forge_web:app --host 0.0.0.0 --port 3000
 
 Point sentinelhive.dev (or any domain) at this server.
 Access from phone/laptop to approve checkpoints without SSH.
@@ -14,8 +14,10 @@ Access from phone/laptop to approve checkpoints without SSH.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
+import traceback
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -26,6 +28,8 @@ load_dotenv(encoding="utf-8-sig")
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from config.redis_client import get_redis
+
+logger = logging.getLogger("forge.web")
 
 app = FastAPI(title="Forge Dashboard", docs_url=None, redoc_url=None)
 
@@ -218,11 +222,55 @@ def _base(title: str, body: str) -> str:
 </html>"""
 
 
+# ─── Error handling ────────────────────────────────────────────────────────────
+
+def _error_page(title: str, detail: str) -> HTMLResponse:
+    """Render a user-friendly error page instead of a bare 500."""
+    body = f"""
+    <h1 style="color:var(--red)">{title}</h1>
+    <div class="card" style="margin-top:16px">
+      <pre style="white-space:pre-wrap;word-break:break-all;color:var(--dim);font-size:0.85rem">{detail}</pre>
+    </div>
+    <a href="/health" class="btn btn-outline" style="margin-top:16px">Check health</a>
+    """
+    return HTMLResponse(_base("Error", body), status_code=500)
+
+
+@app.exception_handler(Exception)
+async def _global_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled %s on %s: %s", type(exc).__name__, request.url.path, exc)
+    if request.url.path.startswith("/api/"):
+        return JSONResponse(
+            {"error": type(exc).__name__, "detail": str(exc)},
+            status_code=500,
+        )
+    return _error_page(
+        "Something went wrong",
+        f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
+    )
+
+
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    """Deep health check — verifies Redis is reachable."""
+    checks: dict = {"redis": "fail"}
+    try:
+        redis = get_redis()
+        try:
+            pong = await redis.ping()
+            checks["redis"] = "ok" if pong else "no_pong"
+        finally:
+            await redis.aclose()
+    except Exception as exc:
+        checks["redis"] = f"error: {exc}"
+
+    ok = all(v == "ok" for v in checks.values())
+    return JSONResponse(
+        {"status": "ok" if ok else "degraded", **checks},
+        status_code=200 if ok else 503,
+    )
 
 
 @app.get("/login", response_class=HTMLResponse)

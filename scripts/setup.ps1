@@ -106,33 +106,22 @@ if (-not (Test-Path ".env")) {
     Write-Yellow ".env created -- fill in ELECTRONHUB_API_KEY and other keys"
 }
 
-# --- Infrastructure directories ----------------------------------------------
-Write-Green "Creating infra directories..."
-$dirs = @(
-    "infra/postgres/data", "infra/redis/data", "infra/qdrant/data",
-    "infra/temporal", "infra/n8n/data", "infra/searxng"
-)
-foreach ($d in $dirs) {
-    New-Item -ItemType Directory -Force -Path $d | Out-Null
-}
+# --- Infrastructure config (must match docker-compose.yml mount paths) --------
+Write-Green "Creating config directories..."
+New-Item -ItemType Directory -Force -Path "config" | Out-Null
 
-# qdrant config
-@"
-service:
-  host: 0.0.0.0
-  http_port: 6333
-  grpc_port: 6334
-log_level: INFO
-"@ | Set-Content "infra/qdrant/config.yaml" -Encoding UTF8
-
-# temporal config
+# temporal dynamic config (docker-compose mounts config/temporal-dynamicconfig.yaml)
+if (-not (Test-Path "config/temporal-dynamicconfig.yaml")) {
 @"
 system.forceSearchAttributesCacheRefreshOnRead:
   - value: true
     constraints: {}
-"@ | Set-Content "infra/temporal/dynamicconfig.yaml" -Encoding UTF8
+"@ | Set-Content "config/temporal-dynamicconfig.yaml" -Encoding UTF8
+    Write-Yellow "  Created config/temporal-dynamicconfig.yaml"
+}
 
-# postgres init
+# postgres init SQL (docker-compose mounts config/postgres-init.sql)
+if (-not (Test-Path "config/postgres-init.sql")) {
 @"
 CREATE DATABASE n8n;
 GRANT ALL PRIVILEGES ON DATABASE n8n TO backbone;
@@ -161,7 +150,9 @@ CREATE TABLE IF NOT EXISTS ux_audit_reports (
   overall_score FLOAT, approved BOOLEAN, report_json JSONB,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
-"@ | Set-Content "infra/postgres/init.sql" -Encoding UTF8
+"@ | Set-Content "config/postgres-init.sql" -Encoding UTF8
+    Write-Yellow "  Created config/postgres-init.sql"
+}
 
 # --- Python version check ----------------------------------------------------
 $PyMinor = (& $PYTHON_CMD -c "import sys; print(sys.version_info.minor)" 2>$null)

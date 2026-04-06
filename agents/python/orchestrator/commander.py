@@ -3,7 +3,7 @@
 Commander — Layer 0: Orchestrator
 ===================================
 Master LangGraph state machine. Coordinates all 30 specialist agents.
-PostgreSQL checkpointing for crash recovery. Temporal for durability.
+PostgreSQL checkpointing for crash recovery.
 
 Entry point: python agents/python/orchestrator/commander.py --hackathon-id <id>
 Or triggered automatically by Hackathon Scout via Redis.
@@ -26,7 +26,6 @@ from redis.asyncio import Redis
 
 from config.electronhub import complete_json
 from config.agents_config import ALL_AGENTS, HUMAN_CHECKPOINTS
-from agents.python.intelligence.hackathon_scout import HackathonBrief
 from agents.python.intelligence.analysis_agents import run_all_intelligence
 from agents.python.infra.monitor_and_calendar import (
     schedule_hackathon_events, send_discord_alert,
@@ -34,7 +33,6 @@ from agents.python.infra.monitor_and_calendar import (
 
 logger = logging.getLogger(__name__)
 
-N8N_BASE = os.environ.get("N8N_BASE_URL", "http://localhost:5678")
 FORGE_WEB_URL = os.environ.get("FORGE_WEB_URL", "https://sentinelhive.dev")
 
 

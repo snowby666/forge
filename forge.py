@@ -925,39 +925,42 @@ def main():
         return
 
     async def run():
-        if args.command == "scout":
-            await cmd_scout(args)
-        elif args.command == "run":
-            await cmd_run(args)
-        elif args.command == "delete":
-            await cmd_delete(args)
-        elif args.command == "reroll":
-            await cmd_reroll(args)
-        elif args.command == "status":
-            await cmd_status(args)
-        elif args.command == "approve":
-            # Map short names to full checkpoint names
-            if args.checkpoint:
-                mapping = {"concept": "concept_approval", "design": "design_approval",
-                           "quality": "quality_review", "submit": "submission_approval"}
-                args.checkpoint = mapping.get(args.checkpoint, args.checkpoint)
-            await cmd_approve(args)
-        elif args.command == "plan":
-            await cmd_plan(args)
-        elif args.command == "knowledge":
-            await cmd_knowledge(args)
-        elif args.command == "ls":
-            await cmd_ls(args)
-        elif args.command == "test":
-            await cmd_test(args)
-        elif args.command == "calendar-test":
-            from agents.python.infra.monitor_and_calendar import calendar_test
-            print(f"\n{BOLD}Testing Google Calendar integration...{RESET}\n")
-            success = await calendar_test()
-            if success:
-                ok("Google Calendar is working! Check your calendar for the test event.")
-            else:
-                err("Google Calendar test failed. Run 'forge calendar-auth' first.")
+        try:
+            if args.command == "scout":
+                await cmd_scout(args)
+            elif args.command == "run":
+                await cmd_run(args)
+            elif args.command == "delete":
+                await cmd_delete(args)
+            elif args.command == "reroll":
+                await cmd_reroll(args)
+            elif args.command == "status":
+                await cmd_status(args)
+            elif args.command == "approve":
+                if args.checkpoint:
+                    mapping = {"concept": "concept_approval", "design": "design_approval",
+                               "quality": "quality_review", "submit": "submission_approval"}
+                    args.checkpoint = mapping.get(args.checkpoint, args.checkpoint)
+                await cmd_approve(args)
+            elif args.command == "plan":
+                await cmd_plan(args)
+            elif args.command == "knowledge":
+                await cmd_knowledge(args)
+            elif args.command == "ls":
+                await cmd_ls(args)
+            elif args.command == "test":
+                await cmd_test(args)
+            elif args.command == "calendar-test":
+                from agents.python.infra.monitor_and_calendar import calendar_test
+                print(f"\n{BOLD}Testing Google Calendar integration...{RESET}\n")
+                success = await calendar_test()
+                if success:
+                    ok("Google Calendar is working! Check your calendar for the test event.")
+                else:
+                    err("Google Calendar test failed. Run 'forge calendar-auth' first.")
+        finally:
+            from config.web_search import shutdown_c4a_crawler
+            await shutdown_c4a_crawler()
 
     asyncio.run(run())
 

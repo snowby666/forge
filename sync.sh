@@ -78,27 +78,21 @@ fi
 
 log "Done. $(date +%H:%M:%S)"
 
-# --- Start/restart Forge web dashboard (sentinelhive.dev) --------------------
+# --- Rebuild & restart Forge web dashboard (sentinelhive.dev) ----------------
 cd "$DST"
-# Source env so the web server gets REDIS_URL, FORGE_WEB_TOKEN, etc.
-if [[ -f "$DST/.env" ]]; then
-  sed -i 's/\r$//' "$DST/.env" 2>/dev/null || true
-  set -a; source "$DST/.env" 2>/dev/null || true; set +a
-fi
-
 FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
-WEB_PID=$(lsof -ti tcp:"$FORGE_WEB_PORT" 2>/dev/null || true)
-if [[ -n "$WEB_PID" ]]; then
-  kill "$WEB_PID" 2>/dev/null || true
-  sleep 1
-  log "Restarted web dashboard (killed old PID $WEB_PID)"
-fi
-nohup "$DST/.venv/bin/python" -m uvicorn forge_web:app --host 0.0.0.0 --port "$FORGE_WEB_PORT" --log-level warning > /tmp/forge-web.log 2>&1 &
-sleep 2
-if curl -sf "http://localhost:${FORGE_WEB_PORT}/health" &>/dev/null 2>&1; then
-  log "Web dashboard running on port ${FORGE_WEB_PORT}"
+if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
+  log "Rebuilding forge-web container..."
+  docker compose up -d --build --no-deps web 2>&1 | tail -3
+  sleep 3
+  if curl -sf "http://localhost:${FORGE_WEB_PORT}/health" &>/dev/null 2>&1; then
+    log "Web dashboard running on port ${FORGE_WEB_PORT}"
+  else
+    log "${DIM}Web dashboard may still be starting (check: docker logs forge-web)${NC}"
+  fi
 else
-  log "${DIM}Web dashboard may still be starting (check /tmp/forge-web.log)${NC}"
+  log "${DIM}Docker not available — skipping web container rebuild${NC}"
+  log "${DIM}Run manually: docker compose up -d --build web${NC}"
 fi
 
 # Auto-run forge if arguments were passed (e.g. bash sync.sh scout --shallow)
