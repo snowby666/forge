@@ -39,7 +39,7 @@ app = FastAPI(title="Forge API", docs_url=None, redoc_url=None)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -108,7 +108,7 @@ def _check_auth(request: Request) -> bool:
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    if request.url.path in ("/health", "/api/ws"):
+    if request.url.path in ("/health",):
         return await call_next(request)
     if not _check_auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -128,6 +128,28 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+async def _derive_phase(redis, hackathon_id: str) -> str:
+    """Derive current phase from agent task statuses in Redis."""
+    phase_order = ["intelligence", "strategy", "design", "build", "verify", "polish", "submission", "infra"]
+    for phase_name in phase_order:
+        agents = LAYER_AGENTS.get(phase_name, [])
+        all_done = True
+        for agent_id in agents:
+            raw = await redis.get(f"task:{hackathon_id}:{agent_id}")
+            if raw:
+                try:
+                    data = json.loads(raw)
+                    if data.get("status") != "done":
+                        all_done = False
+                except Exception:
+                    all_done = False
+            else:
+                all_done = False
+        if not all_done:
+            return phase_name
+    return "submission"
+
+
 async def _get_hackathons(redis) -> list[dict]:
     keys = await redis.keys("hackathon:*:brief")
     hacks = []
@@ -135,7 +157,11 @@ async def _get_hackathons(redis) -> list[dict]:
         hid = key.split(":")[1]
         brief_raw = await redis.get(key)
         brief = json.loads(brief_raw) if brief_raw else {}
-        phase = await redis.get(f"hackathon:{hid}:phase") or "unknown"
+        explicit = await redis.get(f"hackathon:{hid}:phase")
+        if explicit and explicit != "unknown":
+            phase = explicit
+        else:
+            phase = await _derive_phase(redis, hid)
         hacks.append({"id": hid, "brief": brief, "phase": phase})
     return hacks
 
@@ -204,7 +230,7 @@ async def _reroll_hackathon(redis, hackathon_id: str) -> dict:
     agents_to_clear = [
         "strategy_director", "pm", "tech_architect", "ui_ux_designer",
         "frontend_engineer", "backend_engineer", "integration_engineer",
-        "test_engineer", "devops", "security_agent",
+        "test_engineer", "devops", "security",
     ]
     checkpoints_to_clear = ["concept_approval", "design_approval", "quality_review"]
 
@@ -310,7 +336,7 @@ async def api_reroll(hackathon_id: str):
         agents_to_clear = [
             "strategy_director", "pm", "tech_architect", "ui_ux_designer",
             "frontend_engineer", "backend_engineer", "integration_engineer",
-            "test_engineer", "devops", "security_agent",
+            "test_engineer", "devops", "security",
         ]
         checkpoints_to_clear = ["concept_approval", "design_approval", "quality_review"]
 
@@ -374,6 +400,15 @@ async def api_approve(hackathon_id: str, checkpoint: str, request: Request):
 
 @app.websocket("/api/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    if WEB_TOKEN:
+        token = (
+            websocket.query_params.get("token", "")
+            or websocket.cookies.get("forge_token", "")
+            or websocket.headers.get("authorization", "").removeprefix("Bearer ").strip()
+        )
+        if token != WEB_TOKEN:
+            await websocket.close(code=4001, reason="unauthorized")
+            return
     await websocket.accept()
     redis = get_redis()
     pubsub = redis.pubsub()
@@ -704,17 +739,94 @@ async def api_design(hackathon_id: str):
     redis = get_redis()
     try:
         raw = await redis.get(f"hackathon:{hackathon_id}:design_spec")
-        if not raw:
-            return {"design_md": "", "screenshots": [], "tokens": [], "components": []}
+        if raw:
+            try:
+                data = json.loads(raw)
+                return {
+                    "design_md": data.get("design_md", data.get("markdown", "")),
+                    "screenshots": data.get("screenshots", []),
+                    "tokens": data.get("tokens") or {},
+                    "components": data.get("components", []),
+                    "screens": data.get("screens", []),
+                    "personality": data.get("personality"),
+                    "critique": data.get("critique") or data.get("self_critique"),
+                    "figma_file_id": data.get("figma_file_id"),
+                }
+            except Exception:
+                return {"design_md": raw, "screenshots": [], "tokens": {}, "components": [], "screens": [], "personality": None, "critique": None, "figma_file_id": None}
+
+        task_raw = await redis.get(f"task:{hackathon_id}:ui_ux_designer")
+        if not task_raw:
+            return {"design_md": "", "screenshots": [], "tokens": {}, "components": [], "screens": [], "personality": None, "critique": None, "figma_file_id": None}
+
         try:
-            data = json.loads(raw)
+            task = json.loads(task_raw)
         except Exception:
-            return {"design_md": raw, "screenshots": [], "tokens": [], "components": []}
+            return {"design_md": "", "screenshots": [], "tokens": {}, "components": [], "screens": [], "personality": None, "critique": None, "figma_file_id": None}
+
+        data = task.get("data") or {}
+
+        design_md = ""
+        md_path = data.get("design_md_path")
+        if md_path and os.path.isfile(md_path):
+            try:
+                with open(md_path, "r", encoding="utf-8") as f:
+                    design_md = f.read()
+            except Exception:
+                pass
+        if not design_md:
+            spec = data.get("design_spec") or {}
+            parts = []
+            if spec.get("app_name"):
+                parts.append(f"# {spec['app_name']}")
+            if spec.get("description"):
+                parts.append(spec["description"])
+            for screen in spec.get("screens", []):
+                parts.append(f"## {screen.get('name', 'Screen')}")
+                if screen.get("purpose"):
+                    parts.append(screen["purpose"])
+            design_md = "\n\n".join(parts)
+
+        screenshots = []
+        for ss in data.get("stitch_screens", []):
+            if ss.get("image_url"):
+                screenshots.append(ss["image_url"])
+        spec = data.get("design_spec") or {}
+        for screen in spec.get("screens", []):
+            if screen.get("image_url"):
+                screenshots.append(screen["image_url"])
+
+        tokens = data.get("tokens") or {}
+
+        components = []
+        for comp in (spec.get("components") or []):
+            components.append({
+                "name": comp.get("name", ""),
+                "description": comp.get("description", ""),
+                "is_demo_critical": comp.get("is_demo_critical", False),
+                "file_path": comp.get("file_path", ""),
+                "shadcn_base": comp.get("shadcn_base", ""),
+                "purpose": comp.get("purpose", ""),
+            })
+
+        screens = []
+        for scr in (spec.get("screens") or []):
+            screens.append({
+                "route": scr.get("route", ""),
+                "name": scr.get("name", ""),
+                "purpose": scr.get("purpose", ""),
+                "primary_action": scr.get("primary_action", ""),
+            })
+
         return {
-            "design_md": data.get("design_md", data.get("markdown", "")),
-            "screenshots": data.get("screenshots", []),
-            "tokens": data.get("tokens", []),
-            "components": data.get("components", []),
+            "design_md": design_md,
+            "screenshots": screenshots,
+            "tokens": tokens,
+            "components": components,
+            "screens": screens,
+            "personality": data.get("personality"),
+            "critique": data.get("self_critique") or data.get("critique"),
+            "figma_file_id": data.get("figma_file_id"),
         }
     finally:
         await redis.aclose()
@@ -766,6 +878,57 @@ async def api_batch(body: BatchRequest):
         await redis.aclose()
 
 
+# ── CLI features ──────────────────────────────────────────────────────────────
+
+@app.post("/api/scout")
+async def api_run_scout(body: dict = {}):
+    dry_run = body.get("dry_run", False)
+    cmd = [sys.executable, "-m", "forge", "scout"]
+    if dry_run:
+        cmd.append("--dry-run")
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+    )
+    return {"ok": True, "pid": proc.pid, "message": "Scout started in background"}
+
+
+@app.post("/api/hackathon/{hackathon_id}/run")
+async def api_run_hackathon(hackathon_id: str, body: dict = {}):
+    from_phase = body.get("from_phase")
+    restart = body.get("restart", False)
+    cmd = [sys.executable, "-m", "forge", "run", "--id", hackathon_id]
+    if restart:
+        cmd.append("--restart")
+    if from_phase:
+        cmd.extend(["--from-phase", from_phase])
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+    )
+    return {"ok": True, "pid": proc.pid}
+
+
+@app.post("/api/test")
+async def api_test():
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "forge", "test",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+        return {"ok": proc.returncode == 0, "stdout": stdout.decode(), "stderr": stderr.decode()}
+    except asyncio.TimeoutError:
+        proc.kill()
+        return {"ok": False, "stdout": "", "stderr": "Test timed out after 60s"}
+
+
 # ── Services health ───────────────────────────────────────────────────────────
 
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
@@ -789,11 +952,14 @@ async def api_services_health():
     except Exception as exc:
         services.append({"name": "redis", "status": "error", "error": str(exc)})
 
-    async def _check_http(name: str, url: str):
+    async def _check_http(name: str, url: str, headers: dict[str, str] | None = None):
         t = time.monotonic()
         try:
             loop = asyncio.get_event_loop()
             req = urllib.request.Request(url, method="GET")
+            if headers:
+                for k, v in headers.items():
+                    req.add_header(k, v)
             await asyncio.wait_for(
                 loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=5)),
                 timeout=6,
@@ -803,8 +969,10 @@ async def api_services_health():
         except Exception as exc:
             return {"name": name, "status": "error", "error": str(exc)}
 
+    qdrant_api_key = os.environ.get("QDRANT_API_KEY", "")
+    qdrant_headers = {"api-key": qdrant_api_key} if qdrant_api_key else None
     qdrant_check, searxng_check = await asyncio.gather(
-        _check_http("qdrant", f"{QDRANT_URL}/readyz"),
+        _check_http("qdrant", f"{QDRANT_URL}/readyz", headers=qdrant_headers),
         _check_http("searxng", f"{SEARXNG_URL}/healthz"),
     )
     services.append(qdrant_check)

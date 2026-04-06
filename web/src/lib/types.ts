@@ -126,11 +126,62 @@ export interface LogEntry {
   data?: Record<string, unknown>;
 }
 
+export interface DesignComponentVariant {
+  name: string;
+  description: string;
+  tailwind_classes: string;
+}
+
+export interface DesignComponentState {
+  state: string;
+  description: string;
+  tailwind_classes: string;
+}
+
+export interface DesignComponent {
+  name: string;
+  file_path?: string;
+  description?: string;
+  purpose?: string;
+  shadcn_base?: string;
+  is_demo_critical?: boolean;
+  estimated_minutes?: number;
+  variants?: DesignComponentVariant[];
+  states?: DesignComponentState[];
+  props_interface?: string;
+}
+
+export interface DesignScreen {
+  route: string;
+  name: string;
+  purpose?: string;
+  primary_action?: string;
+  secondary_actions?: string[];
+  information_hierarchy?: string[];
+}
+
+export interface DesignCritique {
+  overall_score?: number;
+  issues?: string[];
+  strengths?: string[];
+}
+
+export interface StitchScreen {
+  screen_name: string;
+  image_url: string;
+  project_id: string;
+}
+
 export interface DesignData {
   design_md: string;
   screenshots: string[];
   tokens: Record<string, unknown>;
-  components: Array<{ name: string; description?: string; demo_critical?: boolean }>;
+  components: DesignComponent[];
+  screens: DesignScreen[];
+  personality?: string;
+  critique?: DesignCritique;
+  figma_file_id?: string;
+  stitch_screens?: StitchScreen[];
 }
 
 export interface Artifact {

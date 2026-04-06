@@ -130,11 +130,14 @@ services:
       dockerfile: Dockerfile.api
     container_name: forge-api
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       REDIS_URL: "redis://:${REDIS_PASSWORD:-change_me}@redis:6379/0"
       DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-backbone}:${POSTGRES_PASSWORD:-change_me}@postgres:5432/backbone"
       FORGE_WEB_TOKEN: "${FORGE_WEB_TOKEN:-}"
       QDRANT_URL: "http://qdrant:6333"
+      QDRANT_API_KEY: "${QDRANT_API_KEY:-change_me}"
       SEARXNG_URL: "http://searxng:8080"
     expose:
       - "3001"
@@ -146,6 +149,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
 
   # ── Forge web dashboard — Next.js (sentinelhive.dev) ───────────────────────
   web:
@@ -154,13 +159,15 @@ services:
       dockerfile: Dockerfile.web
     container_name: forge-web
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       NEXT_PUBLIC_API_URL: "http://api:3001"
       FORGE_WEB_TOKEN: "${FORGE_WEB_TOKEN:-}"
     ports:
       - "3000:3000"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || wget -qO- http://localhost:3000/login || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -73,6 +73,21 @@ for var in POSTGRES_PASSWORD REDIS_PASSWORD QDRANT_API_KEY; do
 done
 [[ "$ENV_OK" == "true" ]] || err "Fix the above .env values, then re-run start.sh."
 
+# Ensure FORGE_WEB_TOKEN is set (protects dashboard from unauthenticated access)
+CURRENT_WEB_TOKEN="${FORGE_WEB_TOKEN:-}"
+if [[ -z "$CURRENT_WEB_TOKEN" ]]; then
+  gen_pw() { openssl rand -base64 18 | tr -d '=/+' | head -c 24; }
+  WEB_TOKEN=$(gen_pw)
+  if grep -q '^FORGE_WEB_TOKEN=' .env; then
+    sed -i "s|^FORGE_WEB_TOKEN=.*|FORGE_WEB_TOKEN=${WEB_TOKEN}|" .env
+  else
+    echo "FORGE_WEB_TOKEN=${WEB_TOKEN}" >> .env
+  fi
+  export FORGE_WEB_TOKEN="$WEB_TOKEN"
+  log "Generated FORGE_WEB_TOKEN=${WEB_TOKEN}"
+  info "Dashboard login: https://sentinelhive.dev/?token=${WEB_TOKEN}"
+fi
+
 # Force UTF-8 on Windows to prevent UnicodeDecodeError with non-ASCII chars
 export PYTHONUTF8=1
 

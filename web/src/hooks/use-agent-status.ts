@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import useSWR from "swr";
 import { fetchAgentStatuses } from "@/lib/api";
 import { useRealtimeStatus } from "@/lib/ws";
-import type { AgentStatus, AgentPhaseName, LAYER_AGENTS } from "@/lib/types";
+import type { AgentStatus, AgentPhaseName } from "@/lib/types";
 import { LAYER_AGENTS as LAYERS } from "@/lib/types";
 
 const REFRESH_INTERVAL_MS = 15_000;
@@ -42,7 +42,7 @@ export function useAgentStatus(hackathonId: string | undefined) {
         return {
           ...agent,
           status: wsStatus,
-          phase: agent.phase ?? phaseForAgent(agent.agent_id) ?? agent.phase,
+          phase: agent.phase ?? phaseForAgent(agent.agent_id),
         };
       }
       return agent;

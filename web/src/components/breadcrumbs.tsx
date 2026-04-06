@@ -5,13 +5,14 @@ import { usePathname } from "next/navigation"
 import { Home } from "lucide-react"
 
 const LABELS: Record<string, string> = {
-  hackathon: "Hackathon",
+  hackathon: "Live Logs",
   hackathons: "Hackathons",
   analytics: "Analytics",
   settings: "Settings",
   design: "Design",
   logs: "Logs",
   approve: "Approve",
+  login: "Login",
 }
 
 function segmentLabel(segment: string) {

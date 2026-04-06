@@ -94,6 +94,20 @@ if [[ "$CURRENT_PG_PASS" == "change_this_strong_password" || "$CURRENT_PG_PASS" 
   log "Generated secure passwords in .env"
 fi
 
+# Generate FORGE_WEB_TOKEN if not set (requires login to access dashboard)
+CURRENT_WEB_TOKEN=$(grep '^FORGE_WEB_TOKEN=' .env | cut -d= -f2- || echo "")
+if [[ -z "$CURRENT_WEB_TOKEN" ]]; then
+  WEB_TOKEN=$(gen_pw)
+  if grep -q '^FORGE_WEB_TOKEN=' .env; then
+    sed -i "s|^FORGE_WEB_TOKEN=.*|FORGE_WEB_TOKEN=${WEB_TOKEN}|" .env
+  else
+    echo "FORGE_WEB_TOKEN=${WEB_TOKEN}" >> .env
+  fi
+  log "Generated FORGE_WEB_TOKEN (required for dashboard login)"
+  info "Dashboard token: ${WEB_TOKEN}"
+  info "Login at: https://your-domain/?token=${WEB_TOKEN}"
+fi
+
 # ── Step 6: Ensure forge.py exists (entry point for pip install) ──────────────
 if [ -f forge ] && [ ! -f forge.py ]; then
   cp forge forge.py

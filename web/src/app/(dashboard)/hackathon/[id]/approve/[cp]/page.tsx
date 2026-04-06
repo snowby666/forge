@@ -46,10 +46,10 @@ export default function ApprovePage({
         }>)
       : undefined
 
-  const handleApprove = useCallback(async () => {
+  const handleApprove = useCallback(async (data?: Record<string, unknown>) => {
     setStatus("approving")
     try {
-      await approveCheckpoint(id, cp)
+      await approveCheckpoint(id, cp, data)
       setStatus("done")
       setTimeout(() => router.push(`/hackathon/${id}`), 1500)
     } catch {

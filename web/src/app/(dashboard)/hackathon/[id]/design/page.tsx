@@ -57,6 +57,11 @@ export default function DesignPage({
         screenshots={data?.screenshots}
         tokens={data?.tokens}
         components={data?.components}
+        screens={data?.screens}
+        personality={data?.personality}
+        critique={data?.critique}
+        figmaFileId={data?.figma_file_id}
+        stitchScreens={data?.stitch_screens}
       />
     </div>
   )

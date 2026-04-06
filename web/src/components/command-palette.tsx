@@ -11,11 +11,14 @@ import {
   ScrollText,
   Search,
   Settings,
+  Terminal,
   Trophy,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
+import { toast } from "sonner"
 import { Dialog, DialogContent } from "@/components/ui/dialog"
 import { useHackathons } from "@/hooks/use-hackathons"
+import { runScout } from "@/lib/api"
 
 interface CommandItemDef {
   id: string
@@ -29,14 +32,31 @@ interface CommandItemDef {
 const PAGES: CommandItemDef[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, href: "/", shortcut: "⌘D" },
   { id: "hackathons", label: "Hackathons", icon: Trophy, href: "/hackathons" },
+  { id: "live-logs", label: "Live Logs", icon: Terminal, href: "/hackathon" },
   { id: "analytics", label: "Analytics", icon: BarChart3, href: "/analytics" },
   { id: "settings", label: "Settings", icon: Settings, href: "/settings", shortcut: "⌘," },
 ]
 
 const ACTIONS: CommandItemDef[] = [
-  { id: "run-scout", label: "Run Scout", icon: Play, href: "/hackathons" },
+  {
+    id: "run-scout",
+    label: "Run Scout",
+    icon: Play,
+    action: () => {
+      toast.promise(runScout(), {
+        loading: "Starting scout...",
+        success: "Scout started in background!",
+        error: "Failed to start scout.",
+      })
+    },
+  },
   { id: "view-logs", label: "View Logs", icon: ScrollText, href: "/hackathon" },
-  { id: "approve-all", label: "Approve All", icon: CheckCircle2 },
+  {
+    id: "approve-all",
+    label: "Approve All Pending",
+    icon: CheckCircle2,
+    href: "/",
+  },
 ]
 
 const GROUP_HEADING =

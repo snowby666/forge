@@ -45,6 +45,7 @@ rsync -a --delete \
 # Fix line endings on anything that might have CRLF
 find "$DST" -maxdepth 1 -name "*.py" -exec sed -i 's/\r$//' {} + 2>/dev/null || true
 find "$DST/agents" "$DST/config" "$DST/scripts" "$DST/devpost_api" -type f \( -name "*.py" -o -name "*.sh" \) -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+sed -i 's/\r$//' "$DST/docker-compose.yml" 2>/dev/null || true
 
 # Re-install in editable mode (picks up new deps in pyproject.toml, ~2s if nothing changed)
 cd "$DST"
@@ -78,8 +79,22 @@ fi
 
 log "Done. $(date +%H:%M:%S)"
 
-# --- Rebuild & restart Forge web dashboard (sentinelhive.dev) ----------------
+# --- Ensure FORGE_WEB_TOKEN is set (auth for dashboard) ----------------------
 cd "$DST"
+if [ -f .env ]; then
+  CURRENT_WEB_TOKEN=$(grep '^FORGE_WEB_TOKEN=' .env | cut -d= -f2- || echo "")
+  if [[ -z "$CURRENT_WEB_TOKEN" ]]; then
+    WEB_TOKEN=$(openssl rand -base64 18 | tr -d '=/+' | head -c 24)
+    if grep -q '^FORGE_WEB_TOKEN=' .env; then
+      sed -i "s|^FORGE_WEB_TOKEN=.*|FORGE_WEB_TOKEN=${WEB_TOKEN}|" .env
+    else
+      echo "FORGE_WEB_TOKEN=${WEB_TOKEN}" >> .env
+    fi
+    log "Generated FORGE_WEB_TOKEN=${WEB_TOKEN} (required for dashboard login)"
+  fi
+fi
+
+# --- Rebuild & restart Forge web dashboard (sentinelhive.dev) ----------------
 FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
 if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
   log "Rebuilding forge-api + forge-web containers..."

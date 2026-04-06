@@ -1,8 +1,9 @@
 "use client"
 
-import { useCallback } from "react"
+import { useCallback, useState } from "react"
 import Link from "next/link"
 import useSWR from "swr"
+import { toast } from "sonner"
 import {
   Activity,
   ArrowRight,
@@ -10,6 +11,7 @@ import {
   Clock,
   DollarSign,
   ExternalLink,
+  FlaskConical,
   Trophy,
   Zap,
 } from "lucide-react"
@@ -28,6 +30,8 @@ import {
   approveCheckpoint,
   fetchCheckpoints,
   fetchServiceHealth,
+  runScout,
+  runSystemTest,
 } from "@/lib/api"
 import type { AgentPhaseName, Checkpoint, ServiceHealth } from "@/lib/types"
 
@@ -121,6 +125,39 @@ export default function DashboardPage() {
     )
     mutateCheckpoints()
   }, [pendingCheckpoints, mutateCheckpoints])
+
+  const [scoutLoading, setScoutLoading] = useState(false)
+  const [testLoading, setTestLoading] = useState(false)
+
+  const handleRunScout = useCallback(async () => {
+    setScoutLoading(true)
+    try {
+      await runScout()
+      toast.success("Scout started!")
+    } catch {
+      toast.error("Failed to start scout")
+    } finally {
+      setScoutLoading(false)
+    }
+  }, [])
+
+  const handleSystemTest = useCallback(async () => {
+    setTestLoading(true)
+    try {
+      const result = await runSystemTest()
+      if (result.ok) {
+        toast.success("System test passed!")
+      } else {
+        toast.error("System test failed", {
+          description: result.stderr || "Check logs for details",
+        })
+      }
+    } catch {
+      toast.error("Failed to run system test")
+    } finally {
+      setTestLoading(false)
+    }
+  }, [])
 
   const summaryCards = [
     {
@@ -268,10 +305,20 @@ export default function DashboardPage() {
           <Button
             variant="outline"
             size="sm"
-            render={<Link href="/settings" />}
+            disabled={scoutLoading}
+            onClick={handleRunScout}
           >
             <Zap className="mr-1.5 size-3.5" />
-            Run Scout
+            {scoutLoading ? "Running..." : "Run Scout"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={testLoading}
+            onClick={handleSystemTest}
+          >
+            <FlaskConical className="mr-1.5 size-3.5" />
+            {testLoading ? "Testing..." : "System Test"}
           </Button>
           <Button
             variant="outline"

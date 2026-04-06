@@ -18,6 +18,7 @@ import {
   FileJson,
   FileText,
   Palette,
+  Play,
   RefreshCw,
   ScrollText,
   Trash2,
@@ -41,6 +42,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -69,10 +78,11 @@ import {
   fetchHackathons,
   rerollHackathon,
   restartAgent,
+  runHackathon,
   triggerAgent,
 } from "@/lib/api"
 import { ALL_AGENT_IDS } from "@/lib/types"
-import type { AnalyticsData, Artifact, Checkpoint, Hackathon } from "@/lib/types"
+import type { AgentPhaseName, AnalyticsData, Artifact, Checkpoint, Hackathon } from "@/lib/types"
 
 const PHASE_BADGE: Record<string, string> = {
   intelligence: "border-blue-500/20 bg-blue-500/10 text-blue-400",
@@ -252,7 +262,7 @@ export default function HackathonDetailPage({
   const handleApprove = useCallback(
     async (cp: Checkpoint, data?: Record<string, unknown>) => {
       try {
-        await approveCheckpoint(id, cp.checkpoint)
+        await approveCheckpoint(id, cp.checkpoint, data)
         mutateCheckpoints()
         toast.success(`${cp.checkpoint.replace(/_/g, " ")} approved`)
       } catch {
@@ -260,6 +270,24 @@ export default function HackathonDetailPage({
       }
     },
     [id, mutateCheckpoints],
+  )
+
+  const handleRunPipeline = useCallback(
+    async (opts?: { from_phase?: string; restart?: boolean }) => {
+      try {
+        await runHackathon(id, opts)
+        toast.success(
+          opts?.restart
+            ? "Pipeline restarting..."
+            : opts?.from_phase
+              ? `Pipeline resuming from ${opts.from_phase}...`
+              : "Pipeline resumed!",
+        )
+      } catch {
+        toast.error("Failed to run pipeline")
+      }
+    },
+    [id],
   )
 
   if (!hackathon) {
@@ -348,6 +376,46 @@ export default function HackathonDetailPage({
         </div>
 
         <div className="flex items-center gap-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button size="sm">
+                  <Play className="mr-1.5 size-3.5" />
+                  Run Pipeline
+                </Button>
+              }
+            />
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel>Run Options</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => handleRunPipeline()}>
+                Resume
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleRunPipeline({ restart: true })}>
+                Restart from scratch
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>From Phase</DropdownMenuLabel>
+              {(
+                [
+                  "intelligence",
+                  "strategy",
+                  "design",
+                  "build",
+                  "verify",
+                  "polish",
+                  "submission",
+                ] as AgentPhaseName[]
+              ).map((phase) => (
+                <DropdownMenuItem
+                  key={phase}
+                  onClick={() => handleRunPipeline({ from_phase: phase })}
+                >
+                  <span className="capitalize">{phase}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Link href={`/hackathon/${id}/logs`}>
             <Button variant="outline" size="sm">
               <ScrollText className="mr-1.5 size-3.5" />
@@ -634,12 +702,6 @@ export default function HackathonDetailPage({
                           />
                           <Bar dataKey="avg_seconds" radius={[0, 4, 4, 0]}>
                             {analytics.agent_timing.map((entry) => {
-                              const agentPhase = Object.entries(
-                                { intelligence: 0, strategy: 0, design: 0, build: 0, verify: 0, polish: 0, submission: 0, infra: 0 }
-                              ).find(([]) => {
-                                const agent = agents.find((a) => a.agent_id === entry.agent_id)
-                                return agent
-                              })
                               const agent = agents.find((a) => a.agent_id === entry.agent_id)
                               const color = agent
                                 ? PHASE_BAR_COLORS[agent.phase] ?? "#60a5fa"

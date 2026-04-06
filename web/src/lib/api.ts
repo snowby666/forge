@@ -67,9 +67,10 @@ export function fetchCheckpoints() {
   return apiFetch<Checkpoint[]>("/api/checkpoints");
 }
 
-export function approveCheckpoint(hackathonId: string, checkpoint: string) {
+export function approveCheckpoint(hackathonId: string, checkpoint: string, data?: Record<string, unknown>) {
   return apiFetch<void>(`/api/approve/${hackathonId}/${checkpoint}`, {
     method: "POST",
+    ...(data ? { body: JSON.stringify(data) } : {}),
   });
 }
 
@@ -146,6 +147,28 @@ export function batchOperation(op: BatchOperation) {
   return apiFetch<BatchResult>("/api/hackathon/batch", {
     method: "POST",
     body: JSON.stringify(op),
+  });
+}
+
+// ── CLI Actions ─────────────────────────────────────────────
+
+export function runScout(dryRun = false) {
+  return apiFetch<{ ok: boolean; pid: number; message: string }>("/api/scout", {
+    method: "POST",
+    body: JSON.stringify({ dry_run: dryRun }),
+  });
+}
+
+export function runHackathon(hackathonId: string, opts?: { from_phase?: string; restart?: boolean }) {
+  return apiFetch<{ ok: boolean; pid: number }>(`/api/hackathon/${hackathonId}/run`, {
+    method: "POST",
+    body: JSON.stringify(opts ?? {}),
+  });
+}
+
+export function runSystemTest() {
+  return apiFetch<{ ok: boolean; stdout: string; stderr: string }>("/api/test", {
+    method: "POST",
   });
 }
 

@@ -8,7 +8,6 @@ import {
   Trophy,
   BarChart3,
   Settings,
-  Terminal,
   CircuitBoard,
 } from "lucide-react"
 
@@ -29,6 +28,8 @@ import { Badge } from "@/components/ui/badge"
 import { fetchHackathons, fetchCheckpoints } from "@/lib/api"
 import type { Hackathon, Checkpoint } from "@/lib/types"
 
+import { Terminal } from "lucide-react"
+
 const navItems = [
   { title: "Dashboard", path: "/", icon: LayoutDashboard },
   { title: "Hackathons", path: "/hackathons", icon: Trophy },
@@ -40,12 +41,12 @@ const navItems = [
 export function AppSidebar() {
   const pathname = usePathname()
 
-  const { data: hackathons } = useSWR<Hackathon[]>("hackathons", fetchHackathons, {
+  const { data: hackathons } = useSWR<Hackathon[]>("/api/hackathons", fetchHackathons, {
     refreshInterval: 30_000,
     fallbackData: [],
   })
 
-  const { data: checkpoints } = useSWR<Checkpoint[]>("checkpoints", fetchCheckpoints, {
+  const { data: checkpoints } = useSWR<Checkpoint[]>("/api/checkpoints", fetchCheckpoints, {
     refreshInterval: 15_000,
     fallbackData: [],
   })
@@ -81,7 +82,8 @@ export function AppSidebar() {
                 const isActive =
                   item.path === "/"
                     ? pathname === "/"
-                    : pathname.startsWith(item.path)
+                    : pathname === item.path ||
+                      pathname.startsWith(item.path + "/")
 
                 const count = badgeFor(item.title)
 
