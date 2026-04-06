@@ -396,10 +396,15 @@ async def run_intelligence(state: HackathonState) -> dict:
     t0 = _time.monotonic()
     redis = get_redis()
     logger.info(f"[forge:commander]   Scheduling calendar events...")
-    await schedule_hackathon_events(
-        state["hackathon_id"], state["brief"].get("name", "Hackathon"),
-        state["brief"].get("deadline", ""), ""
-    )
+    try:
+        await schedule_hackathon_events(
+            state["hackathon_id"], state["brief"].get("name", "Hackathon"),
+            state["brief"].get("deadline", ""), ""
+        )
+        await _set_task_status(state["hackathon_id"], "calendar", {"status": "done"})
+    except Exception as e:
+        logger.warning(f"[forge:commander] Calendar scheduling failed: {e}")
+        await _set_task_status(state["hackathon_id"], "calendar", {"status": "failed", "error": str(e)})
     logger.info(f"[forge:commander]   Starting 4 intelligence agents in parallel...")
     intel = await run_all_intelligence(state["hackathon_id"], state["brief"])
     elapsed = _time.monotonic() - t0
@@ -972,6 +977,10 @@ async def schedule_outcome_check(state: HackathonState) -> None:
                 f"[forge:commander] Outcome check scheduled for "
                 f"{brief.get('name')} in {delay_hours:.1f}h"
             )
+            await _set_task_status(
+                state["hackathon_id"], "outcome_tracker",
+                {"status": "done", "data": {"scheduled_at": check_at.isoformat()}},
+            )
         else:
             # Judging already happened — trigger immediately
             await trigger_agent(redis, state["hackathon_id"], "outcome_tracker", {})
@@ -1087,6 +1096,13 @@ async def run(
 ) -> HackathonState:
     redis = get_redis()
     brief_raw = await redis.get(f"hackathon:{hackathon_id}:brief")
+
+    # Mark infra daemons as active for this hackathon so status display shows them
+    await redis.set(
+        f"task:{hackathon_id}:monitor",
+        json.dumps({"status": "done"}),
+        ex=604800,
+    )
     await redis.aclose()
 
     if not brief_raw:

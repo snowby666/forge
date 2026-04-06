@@ -661,6 +661,18 @@ async def cmd_knowledge(args):
         ok(f"Sections updated: {', '.join(result.get('sections_updated', []))}")
         ok(f"Static sections preserved: {', '.join(result.get('sections_preserved', []))}")
 
+        # Mark knowledge_updater as done for all active hackathons
+        redis = get_redis()
+        keys = await redis.keys("hackathon:*:brief")
+        for key in keys:
+            hid = key.split(":")[1]
+            await redis.set(
+                f"task:{hid}:knowledge_updater",
+                json.dumps({"status": "done", "data": {"date": result.get("date")}}),
+                ex=604800,
+            )
+        await redis.aclose()
+
 
 async def cmd_ls(args):
     """List ALL active hackathons with quick stats."""

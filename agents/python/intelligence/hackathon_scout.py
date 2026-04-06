@@ -1268,6 +1268,14 @@ async def run_scout(
         await redis.set(f"hackathon:{brief.hackathon_id}:brief", brief.model_dump_json(), ex=604800)
         await memory.store_hackathon_brief(brief.hackathon_id, brief.model_dump())
 
+        # Mark scout + memory_keeper as done so `forge status` / web dashboard show ✓
+        for _aid in ("hackathon_scout", "memory_keeper"):
+            await redis.set(
+                f"task:{brief.hackathon_id}:{_aid}",
+                json.dumps({"status": "done", "data": {"score": brief.score, "name": brief.name}}),
+                ex=604800,
+            )
+
         if brief.registration_open:
             registered = await call_browser_register(brief.url, brief.platform, dry_run=dry_run)
             if registered and not dry_run:

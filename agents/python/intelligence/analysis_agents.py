@@ -270,11 +270,28 @@ Prioritize integrations that can run in parallel with the core product build."""
 # PARALLEL RUNNER — all 4 intel agents together
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _mark_task(redis: Redis, hackathon_id: str, agent_id: str, status: str, data: dict | None = None) -> None:
+    """Write task status to Redis so `forge status` / web dashboard can display it."""
+    payload: dict = {"status": status}
+    if data is not None:
+        payload["data"] = data
+    await redis.set(f"task:{hackathon_id}:{agent_id}", json.dumps(payload), ex=604800)
+
+
 async def run_all_intelligence(hackathon_id: str, brief: dict) -> dict:
     """Run all 4 intelligence agents in parallel."""
     redis = get_redis()
 
     logger.info(f"[intelligence] Running all 4 agents in parallel for: {brief.get('name')}")
+
+    agent_map = {
+        "competitor_analyst": analyze_competitors,
+        "judge_profiler": profile_judges,
+        "sponsor_researcher": research_sponsors,
+    }
+
+    for aid in agent_map:
+        await _mark_task(redis, hackathon_id, aid, "in-progress")
 
     comp_report, judge_profile, sponsor_map = await asyncio.gather(
         analyze_competitors(hackathon_id, brief, redis),
@@ -283,16 +300,28 @@ async def run_all_intelligence(hackathon_id: str, brief: dict) -> dict:
         return_exceptions=True,
     )
 
-    # Handle partial failures gracefully
-    results = {
-        "comp_report": comp_report.model_dump() if not isinstance(comp_report, Exception) else {},
-        "judge_profile": judge_profile.model_dump() if not isinstance(judge_profile, Exception) else {},
-        "sponsor_map": sponsor_map.model_dump() if not isinstance(sponsor_map, Exception) else {},
+    raw_results = {
+        "competitor_analyst": comp_report,
+        "judge_profiler": judge_profile,
+        "sponsor_researcher": sponsor_map,
+    }
+    result_keys = {
+        "competitor_analyst": "comp_report",
+        "judge_profiler": "judge_profile",
+        "sponsor_researcher": "sponsor_map",
     }
 
-    for name, result in results.items():
-        if not result:
-            logger.warning(f"[intelligence] {name} failed — proceeding with defaults")
+    results: dict[str, dict] = {}
+    for aid, raw in raw_results.items():
+        key = result_keys[aid]
+        if isinstance(raw, Exception):
+            logger.warning(f"[intelligence] {key} failed — proceeding with defaults")
+            results[key] = {}
+            await _mark_task(redis, hackathon_id, aid, "failed", {"error": str(raw)})
+        else:
+            dumped = raw.model_dump() if hasattr(raw, "model_dump") else (raw or {})
+            results[key] = dumped
+            await _mark_task(redis, hackathon_id, aid, "done", dumped)
 
     # Signal strategy layer that intelligence is complete
     await redis.publish("agent:trigger", json.dumps({
