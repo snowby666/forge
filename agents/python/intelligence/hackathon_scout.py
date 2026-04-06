@@ -461,9 +461,11 @@ async def _fast_search(query: str, max_results: int = 10) -> list[dict]:
     """
     Race all available search providers concurrently — first success wins.
 
-    Fires every available provider simultaneously via asyncio.wait with
-    FIRST_COMPLETED. The fastest provider to return results wins; all others
-    are cancelled immediately. Hard 8s global timeout as a safety net.
+    Uses asyncio.wait(FIRST_COMPLETED) with a hard wall-clock deadline.
+    IMPORTANT: does NOT use asyncio.wait_for inside the race — wait_for
+    blocks on cancellation of asyncio.to_thread (threads can't be interrupted)
+    and aiohttp cleanup (waits for server). asyncio.wait returns immediately
+    on timeout regardless of task state.
 
     Returns list of {"title": ..., "url": ...} dicts.
     """
@@ -475,26 +477,6 @@ async def _fast_search(query: str, max_results: int = 10) -> list[dict]:
 
     def _to_dicts(results: list) -> list[dict]:
         return [{"title": r.title, "url": r.url} for r in results if r.url]
-
-    async def _run_provider(name: str, coro) -> tuple[str, list[dict], float]:
-        t0 = _time.monotonic()
-        try:
-            result = await asyncio.wait_for(coro, timeout=6.0)
-            elapsed = (_time.monotonic() - t0) * 1000
-            dicts = _to_dicts(result) if result else []
-            if dicts:
-                logger.info(f"[forge:scout:search]   {name}: {len(dicts)} results in {elapsed:.0f}ms")
-            else:
-                logger.info(f"[forge:scout:search]   {name}: 0 results in {elapsed:.0f}ms")
-            return (name, dicts, elapsed)
-        except asyncio.TimeoutError:
-            elapsed = (_time.monotonic() - t0) * 1000
-            logger.warning(f"[forge:scout:search]   {name}: TIMEOUT after {elapsed:.0f}ms")
-            return (name, [], elapsed)
-        except Exception as e:
-            elapsed = (_time.monotonic() - t0) * 1000
-            logger.warning(f"[forge:scout:search]   {name}: ERROR in {elapsed:.0f}ms — {e}")
-            return (name, [], elapsed)
 
     providers: list[tuple[str, Any]] = []
     if os.environ.get("SERPER_API_KEY", "").strip():
@@ -510,41 +492,59 @@ async def _fast_search(query: str, max_results: int = 10) -> list[dict]:
     provider_names = [n for n, _ in providers]
     logger.info(f"[forge:scout:search] Racing {len(providers)} providers [{', '.join(provider_names)}] for '{query[:50]}'")
     t_start = _time.monotonic()
+    DEADLINE = 8.0
 
-    tasks = {
-        asyncio.create_task(_run_provider(name, coro), name=name): name
-        for name, coro in providers
-    }
+    task_to_name: dict[asyncio.Task, str] = {}
+    for name, coro in providers:
+        task_to_name[asyncio.create_task(coro, name=name)] = name
 
     try:
-        remaining = set(tasks.keys())
+        remaining = set(task_to_name.keys())
         while remaining:
+            elapsed = _time.monotonic() - t_start
+            time_left = DEADLINE - elapsed
+            if time_left <= 0:
+                logger.warning(f"[forge:scout:search] Deadline {DEADLINE}s hit after {elapsed*1000:.0f}ms")
+                break
+
             done, remaining = await asyncio.wait(
-                remaining, timeout=8.0, return_when=asyncio.FIRST_COMPLETED,
+                remaining, timeout=time_left, return_when=asyncio.FIRST_COMPLETED,
             )
             if not done:
-                total_ms = (_time.monotonic() - t_start) * 1000
-                logger.warning(f"[forge:scout:search] Global timeout after {total_ms:.0f}ms — no providers responded")
+                logger.warning(f"[forge:scout:search] Deadline {DEADLINE}s — no providers responded")
                 break
+
             for task in done:
-                name, results, _ = task.result()
-                if results:
-                    total_ms = (_time.monotonic() - t_start) * 1000
-                    cancelled = [tasks[t] for t in remaining]
+                name = task_to_name[task]
+                task_ms = (_time.monotonic() - t_start) * 1000
+                try:
+                    result = task.result()
+                    dicts = _to_dicts(result) if result else []
+                except asyncio.CancelledError:
+                    logger.info(f"[forge:scout:search]   {name}: cancelled at {task_ms:.0f}ms")
+                    continue
+                except Exception as e:
+                    logger.warning(f"[forge:scout:search]   {name}: ERROR at {task_ms:.0f}ms — {e}")
+                    continue
+
+                if dicts:
+                    cancelled = [task_to_name[t] for t in remaining]
                     logger.info(
-                        f"[forge:scout:search] Winner: {name} ({len(results)} results, {total_ms:.0f}ms total)"
-                        + (f" — cancelled: [{', '.join(cancelled)}]" if cancelled else "")
+                        f"[forge:scout:search] Winner: {name} ({len(dicts)} results, {task_ms:.0f}ms)"
+                        + (f" — cancelling [{', '.join(cancelled)}]" if cancelled else "")
                     )
                     for t in remaining:
                         t.cancel()
-                    return results
+                    return dicts
+                else:
+                    logger.info(f"[forge:scout:search]   {name}: 0 results at {task_ms:.0f}ms")
     finally:
-        for t in tasks:
+        for t in task_to_name:
             if not t.done():
                 t.cancel()
 
     total_ms = (_time.monotonic() - t_start) * 1000
-    logger.warning(f"[forge:scout:search] All {len(providers)} providers failed in {total_ms:.0f}ms for '{query[:50]}'")
+    logger.warning(f"[forge:scout:search] All {len(providers)} providers returned empty in {total_ms:.0f}ms")
     return []
 
 

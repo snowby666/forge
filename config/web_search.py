@@ -264,9 +264,9 @@ async def _search_ddgs(
             return []
 
     try:
-        raw = await asyncio.wait_for(asyncio.to_thread(_sync), timeout=10.0)
-    except asyncio.TimeoutError:
-        logger.debug("[forge:search] ddgs timed out (10s)")
+        raw = await asyncio.wait_for(asyncio.shield(asyncio.to_thread(_sync)), timeout=6.0)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        logger.debug("[forge:search] ddgs timed out (6s)")
         raw = []
     return [
         SearchResult(title=r.get("title", ""), url=r.get("href", ""),
@@ -293,9 +293,9 @@ async def _search_ddgs_news(query: str, max_results: int = 5) -> list[SearchResu
             return []
 
     try:
-        raw = await asyncio.wait_for(asyncio.to_thread(_sync), timeout=10.0)
-    except asyncio.TimeoutError:
-        logger.debug("[forge:search] ddgs_news timed out (10s)")
+        raw = await asyncio.wait_for(asyncio.shield(asyncio.to_thread(_sync)), timeout=6.0)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        logger.debug("[forge:search] ddgs_news timed out (6s)")
         raw = []
     return [
         SearchResult(
@@ -412,7 +412,7 @@ async def _search_tavily(query: str, max_results: int = 8) -> list[SearchResult]
     Each free key = 1,000 credits/month. Dev keys: 100 RPM, prod keys: 1,000 RPM.
     On 429/401, removes the exhausted key and retries with the next one.
     """
-    max_attempts = min(len(_tavily_keys) if _tavily_keys else 3, 5)
+    max_attempts = min(len(_tavily_keys) if _tavily_keys else 3, 3)
     for _attempt in range(max_attempts):
         api_key = _get_tavily_key()
         if not api_key:
@@ -432,7 +432,7 @@ async def _search_tavily(query: str, max_results: int = 8) -> list[SearchResult]
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
-                    timeout=aiohttp.ClientTimeout(total=15),
+                    timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
                     if resp.status in (429, 401, 403):
                         _mark_tavily_key_exhausted(api_key)
