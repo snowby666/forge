@@ -256,10 +256,10 @@ fi
 
 log "Installing Python core dependencies (this takes 1-3 minutes)..."
 if command -v uv &>/dev/null; then
-  uv pip install --python "$VENV_PYTHON" $PIP_EDIT_FLAG ".[dev]" \
+  uv pip install --python "$VENV_PYTHON" $PIP_EDIT_FLAG ".[dev,stitch]" \
     || { uv pip install --python "$VENV_PYTHON" $PIP_EDIT_FLAG "."; uv pip install --python "$VENV_PYTHON" pytest pytest-asyncio; }
 else
-  $PIP_CMD install $PIP_EDIT_FLAG ".[dev]" 2>&1 || {
+  $PIP_CMD install $PIP_EDIT_FLAG ".[dev,stitch]" 2>&1 || {
     warn "Full install failed -- trying core only"
     $PIP_CMD install $PIP_EDIT_FLAG "." 2>&1 || {
       err "pip install failed. Check errors above.

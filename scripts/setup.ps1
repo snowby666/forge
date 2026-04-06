@@ -170,11 +170,11 @@ Write-Green "Installing Python core dependencies..."
 if (-not $DryRun) {
     $installed = $false
     if (Get-Command uv -ErrorAction SilentlyContinue) {
-        try { uv pip install -e ".[dev]"; $installed = $true } catch {}
+        try { uv pip install -e ".[dev,stitch]"; $installed = $true } catch {}
     }
     if (-not $installed) {
         try {
-            & $PYTHON_CMD -m pip install -e ".[dev]" --quiet
+            & $PYTHON_CMD -m pip install -e ".[dev,stitch]" --quiet
             $installed = $true
         } catch {
             Write-Yellow "Full install failed -- trying core only (common on Python 3.13+)"

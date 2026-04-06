@@ -131,7 +131,7 @@ log "Python: $($PYTHON_CMD --version) | pip: $(pip --version | cut -d' ' -f2)"
 
 # ── Step 8: Install ALL Python dependencies ───────────────────────────────────
 log "Installing core dependencies (1-3 min)..."
-pip install -e ".[dev]" 2>&1 | tail -3
+pip install -e ".[dev,stitch]" 2>&1 | tail -3
 
 log "Installing crawl4ai..."
 pip install "crawl4ai>=0.4.0" 2>&1 | tail -3 || warn "crawl4ai install failed — lightweight HTTP fallback will be used"
@@ -240,17 +240,15 @@ echo ""
 info "Project:  $(pwd)"
 info "Activate: source $(pwd)/.venv/bin/activate"
 echo ""
-# ── Step 14: Start Forge web dashboard ────────────────────────────────────────
+# ── Step 14: Verify Forge web dashboard (runs inside Docker) ─────────────────
+# The web dashboard runs as the forge-web Docker container (started in Step 12).
 FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
-log "Starting Forge web dashboard on port ${FORGE_WEB_PORT}..."
-set -a; source .env 2>/dev/null || true; set +a
-nohup python -m uvicorn forge_web:app --host 0.0.0.0 --port "$FORGE_WEB_PORT" --log-level warning > /tmp/forge-web.log 2>&1 &
-sleep 2
-if curl -sf "http://localhost:${FORGE_WEB_PORT}/health" &>/dev/null 2>&1; then
-  log "Web dashboard ready (port ${FORGE_WEB_PORT})"
-else
-  warn "Web dashboard may still be starting (check /tmp/forge-web.log)"
-fi
+WAITED=0
+until curl -sf "http://localhost:${FORGE_WEB_PORT}/health" &>/dev/null 2>&1; do
+  sleep 2; WAITED=$((WAITED+2))
+  [[ $WAITED -ge 30 ]] && { warn "Web dashboard health check timed out — check: docker logs forge-web"; break; }
+done
+[[ $WAITED -lt 30 ]] && log "Web dashboard ready (port ${FORGE_WEB_PORT})"
 
 info "Next:"
 info "  1. Edit .env — add ELECTRONHUB_API_KEY"
