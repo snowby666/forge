@@ -13,6 +13,7 @@ Access from phone/laptop to approve checkpoints without SSH.
 
 from __future__ import annotations
 
+import html as _html
 import json
 import logging
 import os
@@ -226,10 +227,12 @@ def _base(title: str, body: str) -> str:
 
 def _error_page(title: str, detail: str) -> HTMLResponse:
     """Render a user-friendly error page instead of a bare 500."""
+    safe_title = _html.escape(title)
+    safe_detail = _html.escape(detail)
     body = f"""
-    <h1 style="color:var(--red)">{title}</h1>
+    <h1 style="color:var(--red)">{safe_title}</h1>
     <div class="card" style="margin-top:16px">
-      <pre style="white-space:pre-wrap;word-break:break-all;color:var(--dim);font-size:0.85rem">{detail}</pre>
+      <pre style="white-space:pre-wrap;word-break:break-all;color:var(--dim);font-size:0.85rem">{safe_detail}</pre>
     </div>
     <a href="/health" class="btn btn-outline" style="margin-top:16px">Check health</a>
     """

@@ -1114,7 +1114,7 @@ async def run_scout(
     # ── Phase 2: Deep Scrape (parallel, batched to avoid flooding LLM) ──────
     if deep:
         logger.info(f"[forge:scout] ═══ Phase 2: DEEP SCRAPE — extracting detail pages ═══")
-        BATCH_SIZE = 10
+        BATCH_SIZE = 20
         all_deep: list[HackathonBrief] = []
         for batch_start in range(0, len(briefs), BATCH_SIZE):
             batch = briefs[batch_start:batch_start + BATCH_SIZE]
@@ -1137,7 +1137,7 @@ async def run_scout(
 
     # ── Phase 5: Score (before community/research so we can prioritize) ─────
     logger.info(f"[forge:scout] ═══ Phase 5: SCORE — evaluating all hackathons ═══")
-    SCORE_BATCH = 10
+    SCORE_BATCH = 20
     scored_briefs: list[HackathonBrief] = []
     for batch_start in range(0, len(briefs), SCORE_BATCH):
         batch = briefs[batch_start:batch_start + SCORE_BATCH]

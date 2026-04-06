@@ -186,88 +186,84 @@ async def call_google_stitch(prompt: str, personality: str) -> list[dict]:
         f"AVOID: {', '.join(personality_data.get('anti_patterns', []))}."
     )
 
-    max_attempts = min(len(_stitch_keys), 5)
+    max_attempts = min(len(_stitch_keys), 5) or 1
 
     for attempt in range(max_attempts):
         try:
-            http = httpx.AsyncClient(
+            async with httpx.AsyncClient(
                 headers={"x-goog-api-key": api_key},
                 timeout=httpx.Timeout(300.0, connect=15.0),
-            )
-            async with streamable_http_client(STITCH_MCP_URL, http_client=http) as (
-                read_stream, write_stream, _get_sid,
-            ):
-                async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
+            ) as http:
+                async with streamable_http_client(STITCH_MCP_URL, http_client=http) as (
+                    read_stream, write_stream, _get_sid,
+                ):
+                    async with ClientSession(read_stream, write_stream) as session:
+                        await session.initialize()
 
-                    # Create a temporary project
-                    proj_result = await session.call_tool(
-                        "create_project", {"title": f"forge-{os.getpid()}"}
-                    )
-                    if proj_result.isError:
-                        logger.warning("[forge:design] Stitch create_project error: %s", proj_result.content)
-                        api_key = _get_stitch_key() or api_key
-                        continue
-
-                    project_id = ""
-                    for block in proj_result.content:
-                        if hasattr(block, "text"):
-                            data = json.loads(block.text)
-                            project_id = str(
-                                data.get("projectId")
-                                or data.get("id")
-                                or data.get("name", "").split("/")[-1]
-                            )
-
-                    if not project_id:
-                        logger.warning("[forge:design] Stitch: no project ID returned")
-                        api_key = _get_stitch_key() or api_key
-                        continue
-
-                    logger.info("[forge:design] Stitch project created: %s", project_id)
-
-                    # Generate screen (takes 1-3 min server-side)
-                    screen_result = await session.call_tool(
-                        "generate_screen_from_text",
-                        {
-                            "projectId": project_id,
-                            "prompt": full_prompt,
-                            "deviceType": "DESKTOP",
-                        },
-                    )
-
-                    if screen_result.isError:
-                        logger.warning("[forge:design] Stitch generate_screen error: %s", screen_result.content)
-                        return []
-
-                    screens = []
-                    for block in screen_result.content:
-                        if not hasattr(block, "text"):
+                        proj_result = await session.call_tool(
+                            "create_project", {"title": f"forge-{os.getpid()}"}
+                        )
+                        if proj_result.isError:
+                            logger.warning("[forge:design] Stitch create_project error: %s", proj_result.content)
+                            api_key = _get_stitch_key() or api_key
                             continue
-                        try:
-                            data = json.loads(block.text)
-                        except json.JSONDecodeError:
+
+                        project_id = ""
+                        for block in proj_result.content:
+                            if hasattr(block, "text"):
+                                data = json.loads(block.text)
+                                project_id = str(
+                                    data.get("projectId")
+                                    or data.get("id")
+                                    or data.get("name", "").split("/")[-1]
+                                )
+
+                        if not project_id:
+                            logger.warning("[forge:design] Stitch: no project ID returned")
+                            api_key = _get_stitch_key() or api_key
                             continue
-                        # Extract design system and screen info from the response
-                        components = data.get("outputComponents", [])
-                        for comp in components:
-                            screen_data = comp.get("screen", {})
-                            if not screen_data:
-                                continue
-                            screens.append({
-                                "id": screen_data.get("name", "").split("/")[-1],
-                                "html_url": screen_data.get("htmlCode", {}).get("downloadUrl", ""),
-                                "image_url": screen_data.get("screenshot", {}).get("downloadUrl", ""),
+
+                        logger.info("[forge:design] Stitch project created: %s", project_id)
+
+                        screen_result = await session.call_tool(
+                            "generate_screen_from_text",
+                            {
+                                "projectId": project_id,
                                 "prompt": full_prompt,
-                            })
-                        # Also capture the design system for downstream use
-                        for comp in components:
-                            ds = comp.get("designSystem", {}).get("designSystem", {})
-                            if ds:
-                                screens.append({"_design_system": ds})
+                                "deviceType": "DESKTOP",
+                            },
+                        )
 
-                    logger.info("[forge:design] Google Stitch generated %d screens", len(screens))
-                    return screens
+                        if screen_result.isError:
+                            logger.warning("[forge:design] Stitch generate_screen error: %s", screen_result.content)
+                            return []
+
+                        screens = []
+                        for block in screen_result.content:
+                            if not hasattr(block, "text"):
+                                continue
+                            try:
+                                data = json.loads(block.text)
+                            except json.JSONDecodeError:
+                                continue
+                            components = data.get("outputComponents", [])
+                            for comp in components:
+                                screen_data = comp.get("screen", {})
+                                if not screen_data:
+                                    continue
+                                screens.append({
+                                    "id": screen_data.get("name", "").split("/")[-1],
+                                    "html_url": screen_data.get("htmlCode", {}).get("downloadUrl", ""),
+                                    "image_url": screen_data.get("screenshot", {}).get("downloadUrl", ""),
+                                    "prompt": full_prompt,
+                                })
+                            for comp in components:
+                                ds = comp.get("designSystem", {}).get("designSystem", {})
+                                if ds:
+                                    screens.append({"_design_system": ds})
+
+                        logger.info("[forge:design] Google Stitch generated %d screens", len(screens))
+                        return screens
 
         except (ExceptionGroup, BaseExceptionGroup) as eg:
             is_401 = any("401" in str(exc) for exc in (eg.exceptions if hasattr(eg, "exceptions") else [eg]))
