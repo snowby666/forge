@@ -1,17 +1,20 @@
 "use client"
 
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import useSWR from "swr"
 import { toast } from "sonner"
 import {
   Activity,
   ArrowRight,
+  Ban,
   CheckCircle2,
   Clock,
   DollarSign,
   ExternalLink,
   FlaskConical,
+  Loader2,
+  ScrollText,
   Trophy,
   Zap,
 } from "lucide-react"
@@ -27,8 +30,10 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { useHackathons } from "@/hooks/use-hackathons"
 import {
+  abortScout,
   approveCheckpoint,
   fetchCheckpoints,
+  fetchScoutStatus,
   fetchServiceHealth,
   runScout,
   runSystemTest,
@@ -128,18 +133,51 @@ export default function DashboardPage() {
 
   const [scoutLoading, setScoutLoading] = useState(false)
   const [testLoading, setTestLoading] = useState(false)
+  const [scoutLogsOpen, setScoutLogsOpen] = useState(false)
+
+  const { data: scoutStatus, mutate: mutateScout } = useSWR(
+    "/api/scout/status",
+    fetchScoutStatus,
+    { refreshInterval: scoutLogsOpen ? 2000 : 10000 },
+  )
+  const scoutRunning = scoutStatus?.running ?? false
+  const logEndRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (scoutLogsOpen && logEndRef.current) {
+      logEndRef.current.scrollIntoView({ behavior: "smooth" })
+    }
+  }, [scoutStatus?.log_lines?.length, scoutLogsOpen])
 
   const handleRunScout = useCallback(async () => {
     setScoutLoading(true)
     try {
-      await runScout()
-      toast.success("Scout started!")
+      const res = await runScout()
+      if (res.already_running) {
+        toast.info("Scout is already running")
+        setScoutLogsOpen(true)
+      } else if (res.ok) {
+        toast.success("Scout started!")
+        setScoutLogsOpen(true)
+      } else {
+        toast.error(res.error ?? "Failed to start scout")
+      }
+      mutateScout()
     } catch {
       toast.error("Failed to start scout")
     } finally {
       setScoutLoading(false)
     }
-  }, [])
+  }, [mutateScout])
+
+  const handleAbortScout = useCallback(async () => {
+    try {
+      await abortScout()
+      toast.success("Scout aborted")
+      mutateScout()
+    } catch {
+      toast.error("Failed to abort scout")
+    }
+  }, [mutateScout])
 
   const handleSystemTest = useCallback(async () => {
     setTestLoading(true)
@@ -305,11 +343,34 @@ export default function DashboardPage() {
           <Button
             variant="outline"
             size="sm"
-            disabled={scoutLoading}
+            disabled={scoutLoading || scoutRunning}
             onClick={handleRunScout}
           >
-            <Zap className="mr-1.5 size-3.5" />
-            {scoutLoading ? "Running..." : "Run Scout"}
+            {scoutRunning ? (
+              <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+            ) : (
+              <Zap className="mr-1.5 size-3.5" />
+            )}
+            {scoutRunning ? "Scout Running..." : scoutLoading ? "Starting..." : "Run Scout"}
+          </Button>
+          {scoutRunning && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleAbortScout}
+              className="border-red-500/30 text-red-400 hover:bg-red-500/10"
+            >
+              <Ban className="mr-1.5 size-3.5" />
+              Abort Scout
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setScoutLogsOpen((v) => !v)}
+          >
+            <ScrollText className="mr-1.5 size-3.5" />
+            {scoutLogsOpen ? "Hide Scout Logs" : "Scout Logs"}
           </Button>
           <Button
             variant="outline"
@@ -341,6 +402,45 @@ export default function DashboardPage() {
           )}
         </div>
       </section>
+
+      {scoutLogsOpen && (
+        <section>
+          <Card>
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm">
+                  Scout Logs
+                  {scoutRunning && (
+                    <Badge variant="outline" className="ml-2 border-yellow-500/30 text-yellow-500">
+                      <Loader2 className="mr-1 size-3 animate-spin" />
+                      Running (PID {scoutStatus?.pid})
+                    </Badge>
+                  )}
+                  {!scoutRunning && scoutStatus?.exit_code != null && (
+                    <Badge
+                      variant="outline"
+                      className={`ml-2 ${scoutStatus.exit_code === 0 ? "border-emerald-500/30 text-emerald-400" : "border-red-500/30 text-red-400"}`}
+                    >
+                      Exited ({scoutStatus.exit_code})
+                    </Badge>
+                  )}
+                </CardTitle>
+                <Button variant="ghost" size="sm" onClick={() => setScoutLogsOpen(false)}>
+                  Close
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <pre className="max-h-80 overflow-auto rounded-md bg-zinc-950 p-3 text-xs leading-relaxed text-zinc-300 ring-1 ring-border/30">
+                {scoutStatus?.log_lines?.length
+                  ? scoutStatus.log_lines.join("\n")
+                  : "No scout logs yet. Click 'Run Scout' to start."}
+                <div ref={logEndRef} />
+              </pre>
+            </CardContent>
+          </Card>
+        </section>
+      )}
 
       <Separator />
 

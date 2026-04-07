@@ -172,10 +172,18 @@ export function fetchElapsed(hackathonId: string) {
 // ── CLI Actions ─────────────────────────────────────────────
 
 export function runScout(dryRun = false) {
-  return apiFetch<{ ok: boolean; pid: number; message: string }>("/api/scout", {
+  return apiFetch<{ ok: boolean; pid?: number; message?: string; error?: string; already_running?: boolean }>("/api/scout", {
     method: "POST",
     body: JSON.stringify({ dry_run: dryRun }),
   });
+}
+
+export function fetchScoutStatus() {
+  return apiFetch<{ running: boolean; pid: number | null; exit_code: number | null; log_lines: string[] }>("/api/scout/status");
+}
+
+export function abortScout() {
+  return apiFetch<{ ok: boolean; killed_pid?: number; error?: string }>("/api/scout/abort", { method: "POST" });
 }
 
 export function runHackathon(hackathonId: string, opts?: { from_phase?: string; restart?: boolean }) {

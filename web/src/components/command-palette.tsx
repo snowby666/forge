@@ -42,12 +42,19 @@ const ACTIONS: CommandItemDef[] = [
     id: "run-scout",
     label: "Run Scout",
     icon: Play,
-    action: () => {
-      toast.promise(runScout(), {
-        loading: "Starting scout...",
-        success: "Scout started in background!",
-        error: "Failed to start scout.",
-      })
+    action: async () => {
+      try {
+        const res = await runScout()
+        if (res.already_running) {
+          toast.info("Scout is already running")
+        } else if (res.ok) {
+          toast.success("Scout started in background!")
+        } else {
+          toast.error(res.error ?? "Failed to start scout")
+        }
+      } catch {
+        toast.error("Failed to start scout")
+      }
     },
   },
   { id: "view-logs", label: "View Logs", icon: ScrollText, href: "/hackathon" },

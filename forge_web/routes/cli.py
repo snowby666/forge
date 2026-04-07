@@ -78,8 +78,27 @@ async def _monitor_proc(hackathon_id: str, proc: asyncio.subprocess.Process, log
         await _clear_run_lock(hackathon_id)
 
 
+_SCOUT_LOG: str | None = None
+_SCOUT_PROC: asyncio.subprocess.Process | None = None
+_SCOUT_STARTED: float = 0
+
+
+def _scout_is_running() -> bool:
+    return _SCOUT_PROC is not None and _SCOUT_PROC.returncode is None
+
+
 @router.post("/api/scout")
 async def api_run_scout(body: dict = {}):
+    global _SCOUT_LOG, _SCOUT_PROC, _SCOUT_STARTED
+    if _scout_is_running():
+        elapsed = int(time.time() - _SCOUT_STARTED) if _SCOUT_STARTED else 0
+        return {
+            "ok": False,
+            "error": f"Scout is already running ({elapsed}s elapsed, pid={_SCOUT_PROC.pid})",
+            "already_running": True,
+            "pid": _SCOUT_PROC.pid,
+        }
+
     dry_run = body.get("dry_run", False)
     cmd = [sys.executable, "-m", "forge", "scout"]
     if dry_run:
@@ -93,8 +112,45 @@ async def api_run_scout(body: dict = {}):
         stderr=asyncio.subprocess.STDOUT,
         cwd=_PROJECT_DIR,
     )
+    _SCOUT_LOG = log_path
+    _SCOUT_PROC = proc
+    _SCOUT_STARTED = time.time()
     logger.info(f"[forge:cli] Scout started (pid={proc.pid}, log={log_path})")
     return {"ok": True, "pid": proc.pid, "message": "Scout started in background", "log": log_path}
+
+
+@router.get("/api/scout/status")
+async def api_scout_status():
+    """Get scout process status and recent log output."""
+    running = _scout_is_running()
+    pid = _SCOUT_PROC.pid if running and _SCOUT_PROC else None
+    exit_code = _SCOUT_PROC.returncode if _SCOUT_PROC and not running else None
+    elapsed = int(time.time() - _SCOUT_STARTED) if running and _SCOUT_STARTED else None
+
+    lines: list[str] = []
+    if _SCOUT_LOG and os.path.isfile(_SCOUT_LOG):
+        try:
+            with open(_SCOUT_LOG, "r", errors="replace") as f:
+                all_lines = f.readlines()
+                lines = [l.rstrip() for l in all_lines[-200:]]
+        except Exception:
+            pass
+
+    return {"running": running, "pid": pid, "exit_code": exit_code, "elapsed_s": elapsed, "log_lines": lines}
+
+
+@router.post("/api/scout/abort")
+async def api_abort_scout():
+    """Kill the running scout subprocess."""
+    global _SCOUT_PROC
+    if not _scout_is_running():
+        return {"ok": False, "error": "Scout is not running"}
+    pid = _SCOUT_PROC.pid
+    _SCOUT_PROC.kill()
+    await _SCOUT_PROC.wait()
+    _SCOUT_PROC = None
+    logger.info(f"[forge:cli] Scout aborted (pid={pid})")
+    return {"ok": True, "killed_pid": pid}
 
 
 @router.post("/api/hackathon/{hackathon_id}/run")
