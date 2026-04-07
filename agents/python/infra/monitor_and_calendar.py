@@ -20,6 +20,7 @@ import aiohttp
 from redis.asyncio import Redis
 
 from config.redis_client import get_redis
+from config.forge_trace import trace_op, set_agent_context
 
 logger = logging.getLogger(__name__)
 
@@ -66,35 +67,39 @@ async def send_discord_alert(message: str) -> None:
         logger.warning(f"[forge:monitor] DISCORD_WEBHOOK_URL not set — alert: {message}")
         return
     try:
-        async with aiohttp.ClientSession() as session:
-            await session.post(
-                webhook,
-                json={"content": message},
-                timeout=aiohttp.ClientTimeout(total=10),
-            )
+        async with trace_op("http", "monitor:discord_alert") as span:
+            span.input = {"message": message[:200]}
+            async with aiohttp.ClientSession() as session:
+                await session.post(
+                    webhook,
+                    json={"content": message},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                )
     except Exception as e:
         logger.error(f"[forge:monitor] Discord alert failed: {e}")
 
 
 async def check_agent_health(hackathon_id: str, redis: Redis) -> dict:
     """Check all active agent task statuses for a hackathon."""
-    from config.agents_config import ALL_AGENTS
+    async with trace_op("redis", "monitor:check_health") as span:
+        from config.agents_config import ALL_AGENTS
 
-    health = {}
-    for agent_id in ALL_AGENTS:
-        raw = await redis.get(f"task:{hackathon_id}:{agent_id}")
-        if raw:
-            task = json.loads(raw)
-            health[agent_id] = task.get("status", "unknown")
-            if task.get("status") == "failed":
-                _metrics.record_error(agent_id)
-                if _metrics.is_circuit_open(agent_id, encoding="utf-8"):
-                    await send_discord_alert(
-                        f":warning: **Circuit breaker open** for `{agent_id}` on hackathon `{hackathon_id}`\n"
-                        f"Failed {_metrics.consecutive_failures[agent_id]} times in a row.\n"
-                        f"Commander should simplify task scope or skip this agent."
-                    )
-    return health
+        health = {}
+        for agent_id in ALL_AGENTS:
+            raw = await redis.get(f"task:{hackathon_id}:{agent_id}")
+            if raw:
+                task = json.loads(raw)
+                health[agent_id] = task.get("status", "unknown")
+                if task.get("status") == "failed":
+                    _metrics.record_error(agent_id)
+                    if _metrics.is_circuit_open(agent_id, encoding="utf-8"):
+                        await send_discord_alert(
+                            f":warning: **Circuit breaker open** for `{agent_id}` on hackathon `{hackathon_id}`\n"
+                            f"Failed {_metrics.consecutive_failures[agent_id]} times in a row.\n"
+                            f"Commander should simplify task scope or skip this agent."
+                        )
+        span.output = {"agents_checked": len(health), "failed": [a for a, s in health.items() if s == "failed"]}
+        return health
 
 
 async def run_monitor_worker() -> None:
@@ -234,6 +239,7 @@ async def schedule_hackathon_events(
     preview_url: str = "",
 ) -> list[dict]:
     """Schedule all human checkpoint events directly via Google Calendar API."""
+    set_agent_context(hackathon_id, "calendar")
     try:
         deadline = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00"))
     except Exception:
@@ -305,22 +311,24 @@ async def schedule_hackathon_events(
         return events
 
     created_count = 0
-    for ev in events:
-        start_dt = ev["start"]
-        end_dt = start_dt + timedelta(minutes=ev["duration_minutes"])
-        body = {
-            "summary": ev["title"],
-            "description": ev["description"],
-            "start": {"dateTime": start_dt.isoformat(), "timeZone": "UTC"},
-            "end": {"dateTime": end_dt.isoformat(), "timeZone": "UTC"},
-            "reminders": {"useDefault": False, "overrides": [
-                {"method": "popup", "minutes": 10},
-            ]},
-        }
-        link = await _create_calendar_event(service, calendar_id, body)
-        if link:
-            created_count += 1
-            logger.info(f"[forge:calendar] Created: {ev['title']}")
+    async with trace_op("http", "calendar:create_events") as span:
+        for ev in events:
+            start_dt = ev["start"]
+            end_dt = start_dt + timedelta(minutes=ev["duration_minutes"])
+            body = {
+                "summary": ev["title"],
+                "description": ev["description"],
+                "start": {"dateTime": start_dt.isoformat(), "timeZone": "UTC"},
+                "end": {"dateTime": end_dt.isoformat(), "timeZone": "UTC"},
+                "reminders": {"useDefault": False, "overrides": [
+                    {"method": "popup", "minutes": 10},
+                ]},
+            }
+            link = await _create_calendar_event(service, calendar_id, body)
+            if link:
+                created_count += 1
+                logger.info(f"[forge:calendar] Created: {ev['title']}")
+        span.output = {"events_created": created_count, "total": len(events)}
 
     logger.info(f"[forge:calendar] Scheduled {created_count}/{len(events)} events for {hackathon_name}")
     return events

@@ -7,16 +7,13 @@ import useSWR from "swr"
 import { formatDistanceToNow } from "date-fns"
 import { motion } from "framer-motion"
 import { toast } from "sonner"
+import TraceViewer from "@/components/trace-viewer"
+import ArtifactRegistryView from "@/components/artifact-registry"
 import {
   ArrowLeft,
   Clock,
-  Copy,
   DollarSign,
   ExternalLink,
-  FileCode,
-  FileImage,
-  FileJson,
-  FileText,
   Palette,
   Play,
   RefreshCw,
@@ -65,7 +62,6 @@ import {
   approveCheckpoint,
   deleteHackathon,
   fetchAnalytics,
-  fetchArtifacts,
   fetchCheckpoints,
   fetchHackathons,
   rerollHackathon,
@@ -76,7 +72,7 @@ import {
   triggerAgent,
 } from "@/lib/api"
 import { ALL_AGENT_IDS } from "@/lib/types"
-import type { AgentPhaseName, AnalyticsData, Artifact, Checkpoint, Hackathon } from "@/lib/types"
+import type { AgentPhaseName, AnalyticsData, Checkpoint, Hackathon } from "@/lib/types"
 
 const PHASE_BADGE: Record<string, string> = {
   intelligence: "border-blue-500/20 bg-blue-500/10 text-blue-400",
@@ -112,17 +108,6 @@ function deadlineLabel(days: number) {
   if (days === 0) return "Today"
   if (days === 1) return "Tomorrow"
   return `${days}d left`
-}
-
-function fileTypeIcon(key: string) {
-  const lower = key.toLowerCase()
-  if (lower.includes("image") || lower.includes("screenshot") || lower.includes("logo"))
-    return FileImage
-  if (lower.includes("code") || lower.includes("component") || lower.includes("engineer"))
-    return FileCode
-  if (lower.includes("json") || lower.includes("config"))
-    return FileJson
-  return FileText
 }
 
 function MiniProgressRing({ value, size = 36 }: { value: number; size?: number }) {
@@ -168,7 +153,6 @@ export default function HackathonDetailPage({
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [rerollOpen, setRerollOpen] = useState(false)
   const [runMenuOpen, setRunMenuOpen] = useState(false)
-  const [expandedArtifact, setExpandedArtifact] = useState<string | null>(null)
 
   const { data: hackathons } = useSWR<Hackathon[]>(
     "/api/hackathons",
@@ -186,11 +170,6 @@ export default function HackathonDetailPage({
   )
   const hackCheckpoints = checkpoints?.filter((c) => c.hackathon_id === id) ?? []
 
-  const { data: artifacts } = useSWR<Artifact[]>(
-    `/api/hackathon/${id}/artifacts`,
-    () => fetchArtifacts(id),
-    { refreshInterval: 30_000 },
-  )
 
   const { data: analytics } = useSWR<AnalyticsData>(
     `/api/analytics/${id}`,
@@ -538,6 +517,7 @@ export default function HackathonDetailPage({
               </Badge>
             )}
           </TabsTrigger>
+          <TabsTrigger value="traces">Traces</TabsTrigger>
           <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
           <TabsTrigger value="performance">Performance</TabsTrigger>
         </TabsList>
@@ -586,103 +566,14 @@ export default function HackathonDetailPage({
           )}
         </TabsContent>
 
+        {/* Traces tab */}
+        <TabsContent value="traces" className="mt-4">
+          <TraceViewer hackathonId={id} />
+        </TabsContent>
+
         {/* Artifacts tab */}
         <TabsContent value="artifacts" className="mt-4">
-          {artifacts && artifacts.length > 0 ? (
-            <div className="grid gap-3 sm:grid-cols-2">
-              {artifacts.map((a) => {
-                const label = a.key.split(":").pop() ?? a.key
-                const keys = a.data && typeof a.data === "object" ? Object.keys(a.data as object) : []
-                const json = JSON.stringify(a.data, null, 2)
-                const IconComp = fileTypeIcon(a.key)
-                const isExpanded = expandedArtifact === a.key
-
-                return (
-                  <Card key={a.key}>
-                    <CardHeader className="flex flex-row items-center justify-between pb-2">
-                      <CardTitle className="flex items-center gap-1.5 truncate text-sm">
-                        <IconComp className="size-3.5 shrink-0 text-muted-foreground" />
-                        {label}
-                      </CardTitle>
-                      <div className="flex items-center gap-1.5">
-                        {keys.length > 0 && (
-                          <span className="text-[10px] text-muted-foreground">
-                            {keys.length} key{keys.length !== 1 && "s"}
-                          </span>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          className="size-6"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            navigator.clipboard.writeText(json)
-                            toast.success("Copied!")
-                          }}
-                        >
-                          <Copy className="size-3" />
-                        </Button>
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      <button
-                        className="w-full text-left"
-                        onClick={() =>
-                          setExpandedArtifact(isExpanded ? null : a.key)
-                        }
-                      >
-                        {isExpanded ? (
-                          <pre className="max-h-80 overflow-auto rounded-lg bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed">
-                            {json.split("\n").map((line, i) => {
-                              const keyMatch = line.match(/^(\s*)"([^"]+)"(:)/)
-                              if (keyMatch) {
-                                return (
-                                  <div key={i}>
-                                    <span className="text-zinc-600">{keyMatch[1]}</span>
-                                    <span className="text-blue-400">&quot;{keyMatch[2]}&quot;</span>
-                                    <span className="text-zinc-500">{keyMatch[3]}</span>
-                                    <span className="text-amber-300/80">
-                                      {line.slice(keyMatch[0].length)}
-                                    </span>
-                                  </div>
-                                )
-                              }
-                              return (
-                                <div key={i} className="text-zinc-400">{line}</div>
-                              )
-                            })}
-                          </pre>
-                        ) : (
-                          <div className="space-y-1">
-                            {keys.length > 0 ? (
-                              <div className="flex flex-wrap gap-1">
-                                {keys.slice(0, 6).map((k) => (
-                                  <Badge key={k} variant="secondary" className="text-[10px]">
-                                    {k}
-                                  </Badge>
-                                ))}
-                                {keys.length > 6 && (
-                                  <span className="text-[10px] text-muted-foreground">
-                                    +{keys.length - 6} more
-                                  </span>
-                                )}
-                              </div>
-                            ) : (
-                              <p className="text-xs text-muted-foreground">Click to expand</p>
-                            )}
-                          </div>
-                        )}
-                      </button>
-                    </CardContent>
-                  </Card>
-                )
-              })}
-            </div>
-          ) : (
-            <p className="py-12 text-center text-sm text-muted-foreground">
-              No artifacts available yet.
-            </p>
-          )}
+          <ArtifactRegistryView hackathonId={id} />
         </TabsContent>
 
         {/* Performance tab */}

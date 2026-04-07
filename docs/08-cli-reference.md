@@ -10,10 +10,14 @@ All commands use the `forge` executable at the project root. Run `pip install -e
 graph LR
     CLI["./forge"] --> SCOUT["scout\nDiscover hackathons"]
     CLI --> RUN["run\nFull build cycle"]
-    CLI --> STATUS["status\nLive agent view\n-p / -n pagination"]
+    CLI --> STATUS["status\nLive agent view"]
     CLI --> APPROVE["approve\nHuman checkpoints"]
+    CLI --> WEB["web\nLaunch dashboard"]
+    CLI --> DELETE["delete\nRemove hackathon"]
+    CLI --> REROLL["reroll\nReset strategy/design"]
+    CLI --> PLAN["plan\nRe-plan project"]
     CLI --> KNOWLEDGE["knowledge\nUpdate intelligence"]
-    CLI --> LS["ls\nList active hackathons\n-p / -n / -a"]
+    CLI --> LS["ls\nList hackathons"]
     CLI --> CAL["calendar-auth\ncalendar-test"]
     CLI --> TEST["test\nHealth checks"]
 ```
@@ -25,8 +29,9 @@ graph LR
 Discovers and scores hackathons. Registers to qualified ones (score ≥ 65). Schedules calendar events.
 
 ```bash
-forge scout           # discover, score, register to top 3
-forge scout --dry-run # discover and score only — no registration
+forge scout             # discover, score, register to top 3
+forge scout --dry-run   # discover and score only — no registration
+forge scout --shallow   # fast scan — skip deep analysis
 ```
 
 **Output:**
@@ -389,4 +394,49 @@ python scripts/test_run.py --test browser
 
 # Full system dry-run
 python scripts/test_run.py --dry-run
+```
+
+---
+
+## `forge web`
+
+Launch the Forge web dashboard (FastAPI backend on `:3001`).
+
+```bash
+forge web                      # start on default port 3001
+forge web --port 8080          # custom port
+```
+
+The web dashboard provides a browser UI for all forge operations — pipeline monitoring, checkpoint approvals, cost tracking, log viewing, and more. Requires `FORGE_WEB_TOKEN` in `.env` for authentication. See [07 Infrastructure](./07-infrastructure.md#web-dashboard).
+
+---
+
+## `forge delete`
+
+Permanently remove a hackathon and all associated data (tasks, checkpoints, logs, costs).
+
+```bash
+forge delete --id <hackathon_id>
+```
+
+---
+
+## `forge reroll`
+
+Reset strategy and design state for a hackathon while keeping intelligence data. Useful when you want to re-generate concepts.
+
+```bash
+forge reroll --id <hackathon_id>
+```
+
+Clears: strategy_director, PM, architect, designer, all build agents, concept/design/quality checkpoints. Keeps: scout data, competitor analysis, judge profiles, sponsor research.
+
+---
+
+## `forge plan`
+
+Re-plan a project without re-running intelligence. Triggers strategy_director with existing intelligence data.
+
+```bash
+forge plan --id <hackathon_id>
 ```

@@ -39,6 +39,8 @@ from pathlib import Path
 from config.electronhub import complete_json
 from pydantic import BaseModel
 
+from config.forge_trace import trace_op, set_agent_context
+
 logger = logging.getLogger(__name__)
 
 CONSTITUTION_PATH = Path(__file__).parents[3] / "config" / "design_constitution.py"
@@ -166,26 +168,28 @@ async def research_trending_libraries() -> TrendingLibraries:
 
     raw = ""
     try:
-        raw = await _call_with_web_search(search_query)
+        async with trace_op("http", "knowledge:search_libraries") as span:
+            raw = await _call_with_web_search(search_query)
     except Exception as e:
         logger.warning(f"[forge:knowledge] Web search failed: {e} — using training knowledge")
 
     # Parse the text response into structured form
-    result = await complete_json(
-        task="research-sponsor-apis",
-        response_model=TrendingLibraries,
-        messages=[{
-            "role": "user",
-            "content": f"""Based on this research about React libraries in {month}, extract structured recommendations.
+    async with trace_op("llm", "knowledge:parse_libraries") as span:
+        result = await complete_json(
+            task="research-sponsor-apis",
+            response_model=TrendingLibraries,
+            messages=[{
+                "role": "user",
+                "content": f"""Based on this research about React libraries in {month}, extract structured recommendations.
 
 Research findings:
 {raw if raw else "(web search unavailable — use best training knowledge)"}
 
 Current date: {month}
 Fill all fields with specific, opinionated recommendations.""",
-        }],
-        temperature=0.2,
-    )
+            }],
+            temperature=0.2,
+        )
     return result
 
 
@@ -197,16 +201,18 @@ async def research_winning_concepts() -> WinningConcepts:
     search_query = f"winning AI hackathon projects {month} Devpost MLH"
     raw = ""
     try:
-        raw = await _call_with_web_search(search_query)
+        async with trace_op("http", "knowledge:search_concepts") as span:
+            raw = await _call_with_web_search(search_query)
     except Exception as e:
         logger.warning(f"[forge:knowledge] Web search failed for concepts: {e}")
 
-    result = await complete_json(
-        task="analyze-competitors",
-        response_model=WinningConcepts,
-        messages=[{
-            "role": "user",
-            "content": f"""Based on this research, extract winning hackathon concept patterns in {month}.
+    async with trace_op("llm", "knowledge:parse_concepts") as span:
+        result = await complete_json(
+            task="analyze-competitors",
+            response_model=WinningConcepts,
+            messages=[{
+                "role": "user",
+                "content": f"""Based on this research, extract winning hackathon concept patterns in {month}.
 
 Research:
 {raw if raw else "(use best training knowledge)"}
@@ -228,20 +234,21 @@ Answer specifically:
 Reference: Composio's tool-as-product aesthetic is winning. Generic chatbots are losing.
 Agents that "close the loop" (read system A → decide → write system B) win.
 Current date: {datetime.now().strftime('%B %Y')}""",
-        }],
-        temperature=0.4,
-    )
+            }],
+            temperature=0.4,
+        )
     return result
 
 
 async def research_winning_aesthetic() -> WinningAesthetic:
     """Research current winning design aesthetic for developer tools."""
-    result = await complete_json(
-        task="design-system-create",
-        response_model=WinningAesthetic,
-        messages=[{
-            "role": "user",
-            "content": f"""What UI/UX design patterns are winning hackathons for developer tools in {datetime.now().year}?
+    async with trace_op("llm", "knowledge:parse_aesthetic") as span:
+        result = await complete_json(
+            task="design-system-create",
+            response_model=WinningAesthetic,
+            messages=[{
+                "role": "user",
+                "content": f"""What UI/UX design patterns are winning hackathons for developer tools in {datetime.now().year}?
 
 Reference companies to analyze:
 - composio.dev: dense terminal aesthetic, code blocks as UI, inline tool badges
@@ -256,20 +263,21 @@ Research questions:
 
 Be specific about components and patterns, not vague aesthetic adjectives.
 Current date: {datetime.now().strftime('%B %Y')}""",
-        }],
-        temperature=0.3,
-    )
+            }],
+            temperature=0.3,
+        )
     return result
 
 
 async def research_frontend_stack() -> FrontendStack:
     """Research current best frontend stack for hackathon projects."""
-    result = await complete_json(
-        task="create-sprint-plan",
-        response_model=FrontendStack,
-        messages=[{
-            "role": "user",
-            "content": f"""What is the optimal frontend stack for a hackathon in {datetime.now().year}?
+    async with trace_op("llm", "knowledge:parse_frontend_stack") as span:
+        result = await complete_json(
+            task="create-sprint-plan",
+            response_model=FrontendStack,
+            messages=[{
+                "role": "user",
+                "content": f"""What is the optimal frontend stack for a hackathon in {datetime.now().year}?
 
 Constraints:
 - Must deploy to Vercel (free tier)
@@ -293,20 +301,21 @@ Research the current best options for:
 
 Include a key_insight that is the ONE thing devs get wrong that makes their hackathon UI look bad.
 Current date: {datetime.now().strftime('%B %Y')}""",
-        }],
-        temperature=0.2,
-    )
+            }],
+            temperature=0.2,
+        )
     return result
 
 
 async def research_backend_stack() -> BackendStack:
     """Research current best backend stack for hackathon projects."""
-    result = await complete_json(
-        task="create-sprint-plan",
-        response_model=BackendStack,
-        messages=[{
-            "role": "user",
-            "content": f"""What is the optimal Python backend stack for a hackathon in {datetime.now().year}?
+    async with trace_op("llm", "knowledge:parse_backend_stack") as span:
+        result = await complete_json(
+            task="create-sprint-plan",
+            response_model=BackendStack,
+            messages=[{
+                "role": "user",
+                "content": f"""What is the optimal Python backend stack for a hackathon in {datetime.now().year}?
 
 Constraints:
 - Must support streaming AI output (SSE)
@@ -325,9 +334,9 @@ Research:
 Include a key_insight that is the ONE thing teams get wrong in their backend that
 causes demo day failures.
 Current date: {datetime.now().strftime('%B %Y')}""",
-        }],
-        temperature=0.2,
-    )
+            }],
+            temperature=0.2,
+        )
     return result
 
 
@@ -472,6 +481,7 @@ async def run_knowledge_update(dry_run: bool = False) -> dict:
     """
     Run all 5 research tasks in parallel, then update the constitution.
     """
+    set_agent_context("", "knowledge_updater")
     logger.info("[forge:knowledge] Starting knowledge research (5 tasks in parallel)...")
 
     libs, concepts, aesthetic, fe_stack, be_stack = await asyncio.gather(
@@ -534,7 +544,8 @@ async def run_knowledge_update(dry_run: bool = False) -> dict:
     backup_path.write_text(current_content, encoding="utf-8")
     logger.info(f"[forge:knowledge] Backed up to {backup_path}")
 
-    CONSTITUTION_PATH.write_text(updated_content, encoding="utf-8")
+    async with trace_op("file", "knowledge:write_constitution") as span:
+        CONSTITUTION_PATH.write_text(updated_content, encoding="utf-8")
     logger.info(f"[forge:knowledge] Knowledge updated successfully. Version: {now}")
 
     return {

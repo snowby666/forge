@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field, field_validator
 from config.electronhub import complete, complete_json
 from config.redis_client import get_redis
 from config.agents_config import ALL_AGENTS
+from config.forge_trace import trace_op, register_artifact, set_agent_context
 from config.design_constitution import (
     ANTI_SLOP_RULES,
     STATIC_DESIGN_LAWS,
@@ -135,6 +136,7 @@ STITCH_MCP_URL = "https://stitch.googleapis.com/mcp"
 _stitch_keys: list[str] = []
 _stitch_idx = 0
 _stitch_validated = False
+_stitch_lock = asyncio.Lock()
 
 
 def _load_stitch_keys() -> list[str]:
@@ -146,23 +148,25 @@ def _load_stitch_keys() -> list[str]:
     return [k.strip() for k in raw.split(",") if k.strip()]
 
 
-def _get_stitch_key() -> str | None:
-    """Round-robin across validated Stitch API keys."""
+async def _get_stitch_key() -> str | None:
+    """Round-robin across validated Stitch API keys (lock-protected)."""
     global _stitch_keys, _stitch_idx, _stitch_validated
-    if not _stitch_validated:
-        _stitch_keys = _load_stitch_keys()
-        _stitch_validated = True
-    if not _stitch_keys:
-        return None
-    key = _stitch_keys[_stitch_idx % len(_stitch_keys)]
-    _stitch_idx = (_stitch_idx + 1) % len(_stitch_keys)
-    return key
+    async with _stitch_lock:
+        if not _stitch_validated:
+            _stitch_keys = _load_stitch_keys()
+            _stitch_validated = True
+        if not _stitch_keys:
+            return None
+        key = _stitch_keys[_stitch_idx % len(_stitch_keys)]
+        _stitch_idx = (_stitch_idx + 1) % len(_stitch_keys)
+        return key
 
 
-def _remove_stitch_key(bad_key: str) -> None:
+async def _remove_stitch_key(bad_key: str) -> None:
     """Remove a key that returned 401 so we don't retry it."""
     global _stitch_keys
-    _stitch_keys = [k for k in _stitch_keys if k != bad_key]
+    async with _stitch_lock:
+        _stitch_keys = [k for k in _stitch_keys if k != bad_key]
 
 
 async def call_google_stitch(prompt: str, personality: str) -> list[dict]:
@@ -179,7 +183,7 @@ async def call_google_stitch(prompt: str, personality: str) -> list[dict]:
         logger.info("[forge:design] `mcp` package not installed — skipping Stitch")
         return []
 
-    api_key = _get_stitch_key()
+    api_key = await _get_stitch_key()
     if not api_key:
         logger.info("[forge:design] No STITCH_API_KEY set — skipping Stitch, using LLM fallback")
         return []
@@ -212,7 +216,7 @@ async def call_google_stitch(prompt: str, personality: str) -> list[dict]:
                         )
                         if proj_result.isError:
                             logger.warning("[forge:design] Stitch create_project error: %s", proj_result.content)
-                            api_key = _get_stitch_key() or api_key
+                            api_key = await _get_stitch_key() or api_key
                             continue
 
                         project_id = ""
@@ -227,7 +231,7 @@ async def call_google_stitch(prompt: str, personality: str) -> list[dict]:
 
                         if not project_id:
                             logger.warning("[forge:design] Stitch: no project ID returned")
-                            api_key = _get_stitch_key() or api_key
+                            api_key = await _get_stitch_key() or api_key
                             continue
 
                         logger.info("[forge:design] Stitch project created: %s", project_id)
@@ -270,14 +274,24 @@ async def call_google_stitch(prompt: str, personality: str) -> list[dict]:
                                     screens.append({"_design_system": ds})
 
                         logger.info("[forge:design] Google Stitch generated %d screens", len(screens))
+                        try:
+                            from config.forge_trace import emit_span
+                            await emit_span(
+                                hackathon_id="", agent_id="ui_ux_designer",
+                                op="mcp", name="stitch:generate_screens",
+                                span_input={"prompt": full_prompt[:200], "project_id": project_id},
+                                span_output={"screen_count": len(screens), "image_urls": [s.get("image_url", "") for s in screens if s.get("image_url")]},
+                            )
+                        except Exception:
+                            pass
                         return screens
 
         except (ExceptionGroup, BaseExceptionGroup) as eg:
             is_401 = any("401" in str(exc) for exc in (eg.exceptions if hasattr(eg, "exceptions") else [eg]))
             if is_401:
                 logger.debug("[forge:design] Stitch key %s...%s returned 401, rotating", api_key[:8], api_key[-4:])
-                _remove_stitch_key(api_key)
-                api_key = _get_stitch_key()
+                await _remove_stitch_key(api_key)
+                api_key = await _get_stitch_key()
                 if not api_key:
                     logger.warning("[forge:design] All Stitch keys exhausted (401)")
                     return []
@@ -286,10 +300,10 @@ async def call_google_stitch(prompt: str, personality: str) -> list[dict]:
             return []
         except asyncio.TimeoutError:
             logger.warning("[forge:design] Stitch timed out (attempt %d/%d)", attempt + 1, max_attempts)
-            api_key = _get_stitch_key() or api_key
+            api_key = await _get_stitch_key() or api_key
         except Exception as e:
             logger.warning("[forge:design] Stitch error: %s", e)
-            api_key = _get_stitch_key() or api_key
+            api_key = await _get_stitch_key() or api_key
 
     return []
 
@@ -674,28 +688,38 @@ async def run_ui_ux_agent(
     output_dir: str,
 ) -> dict:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+    set_agent_context(hackathon_id, "ui_ux_designer")
 
     logger.info(f"[forge:design] Starting design pipeline for: {project_plan.get('project_name')}")
 
     # Step 1: Select design personality
-    personality = await select_personality(project_plan, judge_profile)
+    async with trace_op("llm", "design:select_personality", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
+        personality = await select_personality(project_plan, judge_profile)
+        _sp.output = {"personality": personality}
     logger.info(f"[forge:design] Selected personality: {personality}")
 
     # Step 2: Generate design tokens
-    tokens = await generate_design_tokens(project_plan, personality, hackathon_brief)
+    async with trace_op("llm", "design:generate_tokens", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
+        tokens = await generate_design_tokens(project_plan, personality, hackathon_brief)
+        _sp.output = {"has_typescript": bool(tokens.typescript_content), "has_tailwind": bool(tokens.tailwind_extend), "has_css": bool(tokens.css_variables)}
 
     # Step 3: Generate screens via Google Stitch (or fallback)
     concept_summary = (
         f"{project_plan.get('project_name')}: {project_plan.get('solution')}. "
         f"Core features: {', '.join(f['name'] for f in project_plan.get('core_features', [])[:2])}"
     )
-    stitch_screens = await call_google_stitch(concept_summary, personality)
+    async with trace_op("mcp", "design:stitch_screens", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
+        _sp.input = {"concept": concept_summary[:200], "personality": personality}
+        stitch_screens = await call_google_stitch(concept_summary, personality)
+        _sp.output = {"screen_count": len(stitch_screens), "image_urls": [s.get("image_url", "") for s in stitch_screens if s.get("image_url")]}
     logger.info(f"[forge:design] Google Stitch generated {len(stitch_screens)} screens")
 
     # Step 4: Generate full design spec
-    screens, components = await generate_screen_and_components(
-        project_plan, personality, tokens, stitch_screens
-    )
+    async with trace_op("llm", "design:screen_and_components", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
+        screens, components = await generate_screen_and_components(
+            project_plan, personality, tokens, stitch_screens
+        )
+        _sp.output = {"screens": len(screens), "components": len(components)}
 
     design_spec = DesignSpec(
         personality=personality,
@@ -712,7 +736,9 @@ async def run_ui_ux_agent(
     # Step 5: Self-critique — iterate if score < 7.0
     max_critique_attempts = 2
     for attempt in range(max_critique_attempts):
-        critique = await critique_own_design(design_spec)
+        async with trace_op("llm", f"design:self_critique:attempt_{attempt+1}", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
+            critique = await critique_own_design(design_spec)
+            _sp.output = {"approved": critique.get("approved"), "score": critique.get("overall_score"), "issues": critique.get("issues_found", [])}
         if critique["approved"] or attempt == max_critique_attempts - 1:
             break
 
@@ -720,12 +746,14 @@ async def run_ui_ux_agent(
         issues = "\n".join(f"- {issue}" for issue in critique.get("issues_found", []))
 
         # Re-generate screens and components with specific fix constraints added
-        screens, components = await generate_screen_and_components(
-            project_plan=project_plan,
-            personality=personality,
-            tokens_output=tokens,
-            stitch_screens=stitch_screens,
-            extra_constraints=f"""PREVIOUS CRITIQUE FAILED — FIX THESE SPECIFIC ISSUES BEFORE ANYTHING ELSE:
+        async with trace_op("llm", f"design:regenerate_after_critique:{attempt+1}", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _rsp:
+            _rsp.input = {"issues": issues[:500]}
+            screens, components = await generate_screen_and_components(
+                project_plan=project_plan,
+                personality=personality,
+                tokens_output=tokens,
+                stitch_screens=stitch_screens,
+                extra_constraints=f"""PREVIOUS CRITIQUE FAILED — FIX THESE SPECIFIC ISSUES BEFORE ANYTHING ELSE:
 
 {issues}
 
@@ -738,7 +766,8 @@ Critique scores:
 - Brand coherence: {critique.get('brand_coherence_score', 0)}/10
 
 Do NOT repeat the same design decisions that caused these failures.""",
-        )
+            )
+            _rsp.output = {"screens": len(screens), "components": len(components)}
 
         design_spec = DesignSpec(
             personality=personality,
@@ -753,14 +782,27 @@ Do NOT repeat the same design decisions that caused these failures.""",
         )
 
     # Step 6: Sync to Figma
-    figma_id = await sync_to_figma(design_spec, tokens)
+    async with trace_op("redis", "design:sync_to_figma", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
+        figma_id = await sync_to_figma(design_spec, tokens)
+        _sp.output = {"figma_file_id": figma_id}
     if figma_id:
         logger.info(f"[forge:design] Synced to Figma: {figma_id}")
 
     # Step 7: Write output files
-    design_md_path = write_design_md(design_spec, tokens, output_dir)
-    tokens_path = write_design_tokens_ts(tokens, output_dir)
-    specs_path = write_component_specs_json(components, output_dir)
+    async with trace_op("file", "design:write_design_md", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
+        design_md_path = write_design_md(design_spec, tokens, output_dir)
+        _sp.output = {"path": design_md_path, "screens": len(design_spec.screens), "components": len(design_spec.components)}
+    await register_artifact(hackathon_id, "ui_ux_designer", "DESIGN.md", "markdown", f"Design specification — {len(design_spec.screens)} screens, {len(design_spec.components)} components")
+
+    async with trace_op("file", "design:write_tokens_ts", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
+        tokens_path = write_design_tokens_ts(tokens, output_dir)
+        _sp.output = {"path": tokens_path}
+    await register_artifact(hackathon_id, "ui_ux_designer", "design-tokens.ts", "typescript", "Design tokens (colors, spacing, typography)")
+
+    async with trace_op("file", "design:write_component_specs", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
+        specs_path = write_component_specs_json(components, output_dir)
+        _sp.output = {"path": specs_path, "component_count": len(components)}
+    await register_artifact(hackathon_id, "ui_ux_designer", "component-specs.json", "json", f"Component specifications — {len(components)} components")
 
     result = {
         "design_spec": design_spec.model_dump(),
@@ -804,10 +846,9 @@ async def run_worker() -> None:
         hackathon_id = payload["hackathon_id"]
         inp = payload["input"]
 
-        from config.electronhub import set_llm_context
         from datetime import datetime, timezone
         started_at = datetime.now(timezone.utc).isoformat()
-        set_llm_context(hackathon_id, "ui_ux_designer")
+        set_agent_context(hackathon_id, "ui_ux_designer")
         await redis.set(f"task:{hackathon_id}:ui_ux_designer", json.dumps({
             "status": "in-progress",
             "started_at": started_at,

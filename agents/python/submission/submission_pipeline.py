@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from config.electronhub import complete
 from config.redis_client import get_redis
 from config.agents_config import ALL_AGENTS
+from config.forge_trace import trace_op, register_artifact, set_agent_context
 
 logger = logging.getLogger(__name__)
 BROWSER_URL = os.environ.get("BROWSER_SERVER_URL", "http://localhost:3100")
@@ -207,18 +208,31 @@ async def run_demo_producer(
     script_path = Path(output_dir) / "demo-script.txt"
     script_path.write_text(script)
 
-    narration_path = await generate_narration_audio(script, str(Path(output_dir) / "narration.mp3"))
-    video_path = await record_demo_video(
-        preview_url=preview_url,
-        demo_golden_path=project_plan.get("demo_golden_path", []),
-        narration_path=narration_path,
-        output_path=str(Path(output_dir) / "demo-final.mp4"),
-    )
-    video_url = await upload_to_youtube(
-        video_path,
-        title=f"{project_plan.get('project_name')} — Hackathon Demo",
-        description=f"{project_plan.get('tagline')}\n\n{project_plan.get('problem')}",
-    )
+    async with trace_op("http", "demo:elevenlabs_tts") as span:
+        span.input = {"script_len": len(script)}
+        narration_path = await generate_narration_audio(script, str(Path(output_dir) / "narration.mp3"))
+        span.output = {"path": narration_path}
+    await register_artifact(hackathon_id, "demo_producer", "narration.mp3", "audio", "Demo narration audio")
+
+    async with trace_op("http", "demo:browser_record") as span:
+        span.input = {"preview_url": preview_url, "steps": len(project_plan.get("demo_golden_path", []))}
+        video_path = await record_demo_video(
+            preview_url=preview_url,
+            demo_golden_path=project_plan.get("demo_golden_path", []),
+            narration_path=narration_path,
+            output_path=str(Path(output_dir) / "demo-final.mp4"),
+        )
+        span.output = {"path": video_path}
+    await register_artifact(hackathon_id, "demo_producer", "demo-final.mp4", "video", "Demo recording with narration")
+
+    async with trace_op("http", "demo:youtube_upload") as span:
+        span.input = {"video_path": video_path}
+        video_url = await upload_to_youtube(
+            video_path,
+            title=f"{project_plan.get('project_name')} — Hackathon Demo",
+            description=f"{project_plan.get('tagline')}\n\n{project_plan.get('problem')}",
+        )
+        span.output = {"url": video_url}
 
     return {"video_url": video_url, "script_path": str(script_path)}
 
@@ -242,24 +256,28 @@ async def generate_readme(
     readme_path = Path(output_dir) / "README.md"
     readmeai_success = False
 
-    try:
-        result = subprocess.run(
-            [
-                "readmeai",
-                "--repository", repo_url,
-                "--api", "openai",
-                "--base-url", os.environ.get("ELECTRONHUB_BASE_URL", "https://api.electronhub.ai/v1"),
-                "--model", "gpt-4o",
-                "--output", str(readme_path),
-                "--badge-style", "flat",
-            ],
-            env={**os.environ, "OPENAI_API_KEY": os.environ["ELECTRONHUB_API_KEY"]},
-            check=True, capture_output=True, timeout=120,
-        )
-        readmeai_success = True
-        logger.info("[forge:pitch] readmeai generated README")
-    except Exception as e:
-        logger.warning(f"[forge:pitch] readmeai failed: {e} — using ElectronHub")
+    async with trace_op("subprocess", "pitch:readmeai") as span:
+        span.input = {"repo_url": repo_url}
+        try:
+            result = subprocess.run(
+                [
+                    "readmeai",
+                    "--repository", repo_url,
+                    "--api", "openai",
+                    "--base-url", os.environ.get("ELECTRONHUB_BASE_URL", "https://api.electronhub.ai/v1"),
+                    "--model", "gpt-4o",
+                    "--output", str(readme_path),
+                    "--badge-style", "flat",
+                ],
+                env={**os.environ, "OPENAI_API_KEY": os.environ["ELECTRONHUB_API_KEY"]},
+                check=True, capture_output=True, timeout=120,
+            )
+            readmeai_success = True
+            span.output = {"success": True}
+            logger.info("[forge:pitch] readmeai generated README")
+        except Exception as e:
+            span.error = str(e)
+            logger.warning(f"[forge:pitch] readmeai failed: {e} — using ElectronHub")
 
     if not readmeai_success:
         readme = await complete(
@@ -306,31 +324,35 @@ async def generate_pitch_deck(project_plan: dict, preview_url: str, output_dir: 
         logger.warning("[forge:pitch] GAMMA_API_KEY not set — skipping deck")
         return str(deck_path)
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://gamma.app/api/generate",
-                headers={"Authorization": f"Bearer {gamma_key}"},
-                json={
-                    "prompt": (
-                        f"Hackathon pitch deck for {project_plan.get('project_name')}.\n"
-                        f"Problem: {project_plan.get('problem')}\n"
-                        f"Solution: {project_plan.get('solution')}\n"
-                        f"Live demo: {preview_url}\n"
-                        f"8 slides, modern dark theme."
-                    ),
-                    "format": "presentation",
-                    "slides": 8,
-                },
-                timeout=aiohttp.ClientTimeout(total=90),
-            ) as resp:
-                data = await resp.json()
-                export_url = data.get("exportUrl")
-            if export_url:
-                async with session.get(export_url) as pdf_resp:
-                    deck_path.write_bytes(await pdf_resp.read())
-    except Exception as e:
-        logger.warning(f"[forge:pitch] Gamma failed: {e}")
+    async with trace_op("http", "pitch:gamma_deck") as span:
+        span.input = {"project": project_plan.get("project_name"), "slides": 8}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://gamma.app/api/generate",
+                    headers={"Authorization": f"Bearer {gamma_key}"},
+                    json={
+                        "prompt": (
+                            f"Hackathon pitch deck for {project_plan.get('project_name')}.\n"
+                            f"Problem: {project_plan.get('problem')}\n"
+                            f"Solution: {project_plan.get('solution')}\n"
+                            f"Live demo: {preview_url}\n"
+                            f"8 slides, modern dark theme."
+                        ),
+                        "format": "presentation",
+                        "slides": 8,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=90),
+                ) as resp:
+                    data = await resp.json()
+                    export_url = data.get("exportUrl")
+                if export_url:
+                    async with session.get(export_url) as pdf_resp:
+                        deck_path.write_bytes(await pdf_resp.read())
+            span.output = {"export_url": export_url or "none"}
+        except Exception as e:
+            span.error = str(e)
+            logger.warning(f"[forge:pitch] Gamma failed: {e}")
 
     return str(deck_path)
 
@@ -389,6 +411,9 @@ async def run_pitch_writer(
 
     desc_path = Path(output_dir) / "submission-description.txt"
     desc_path.write_text(description)
+
+    await register_artifact(hackathon_id, "pitch_writer", "README.md", "markdown", "Project README")
+    await register_artifact(hackathon_id, "pitch_writer", "pitch-deck.pdf", "pdf", "Gamma pitch deck (8 slides)")
 
     return {
         "readme_path": readme_path,
@@ -457,29 +482,31 @@ async def run_submission_agent(
     if not passed:
         raise RuntimeError(f"Pre-submission checklist failed: {issues}")
 
-    # Call browser layer
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            f"{BROWSER_URL}/submit",
-            json={
-                "hackathon_url": hackathon_url,
-                "platform": platform,
-                "project_name": project_plan.get("project_name"),
-                "tagline": project_plan.get("tagline"),
-                "description": description,
-                "video_url": video_url,
-                "live_url": preview_url,
-                "repo_url": repo_url,
-                "tech_stack": list(project_plan.get("tech_stack", {}).values())[:8],
-                "sponsor_integrations": sponsor_manifest.get("recommended_integrations", []),
-                "output_dir": output_dir,
-                "dry_run": dry_run,
-            },
-            timeout=aiohttp.ClientTimeout(total=300),
-        ) as resp:
-            result = await resp.json()
-            if not result.get("success"):
-                raise RuntimeError(f"Submission failed: {result.get('error')}")
+    async with trace_op("http", "submission:devpost_submit") as span:
+        span.input = {"platform": platform, "hackathon_url": hackathon_url, "dry_run": dry_run}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{BROWSER_URL}/submit",
+                json={
+                    "hackathon_url": hackathon_url,
+                    "platform": platform,
+                    "project_name": project_plan.get("project_name"),
+                    "tagline": project_plan.get("tagline"),
+                    "description": description,
+                    "video_url": video_url,
+                    "live_url": preview_url,
+                    "repo_url": repo_url,
+                    "tech_stack": list(project_plan.get("tech_stack", {}).values())[:8],
+                    "sponsor_integrations": sponsor_manifest.get("recommended_integrations", []),
+                    "output_dir": output_dir,
+                    "dry_run": dry_run,
+                },
+                timeout=aiohttp.ClientTimeout(total=300),
+            ) as resp:
+                result = await resp.json()
+                if not result.get("success"):
+                    raise RuntimeError(f"Submission failed: {result.get('error')}")
+        span.output = {"success": True, "submission_url": result.get("submission_url")}
 
     submission_url = result.get("submission_url", hackathon_url)
     logger.info(f"[forge:submit] {'DRY RUN — ' if dry_run else ''}Submitted: {submission_url}")
@@ -502,6 +529,7 @@ async def run_full_submission_pipeline(
     dry_run: bool = False,
 ) -> dict:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+    set_agent_context(hackathon_id, "submission")
     redis = get_redis()
 
     logger.info(f"[submission_pipeline] Starting for: {project_plan.get('project_name')}")

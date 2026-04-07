@@ -51,7 +51,9 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-_last_usage: dict[str, Any] = {}
+_last_usage: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
+    "last_llm_usage", default={},
+)
 
 # Context vars for automatic cost tracking per hackathon/agent
 _ctx_hackathon_id: contextvars.ContextVar[str] = contextvars.ContextVar("hackathon_id", default="")
@@ -63,9 +65,9 @@ def set_llm_context(hackathon_id: str, agent_id: str) -> None:
     _ctx_agent_id.set(agent_id)
 
 def get_last_usage() -> dict[str, Any]:
-    """Return usage data from the most recent complete() call.
+    """Return usage data from the most recent complete() call (task-local).
     Keys: model, prompt_tokens, completion_tokens, elapsed_s."""
-    return dict(_last_usage)
+    return dict(_last_usage.get({}))
 
 
 # ── Singleton client ──────────────────────────────────────────────────────────
@@ -430,7 +432,7 @@ async def complete(
                 f"| {chunk_count} chunks | {len(result)} chars"
                 f" | tokens={prompt_tok}+{completion_tok}"
             )
-            _last_usage.update({
+            _last_usage.set({
                 "model": current_model,
                 "prompt_tokens": prompt_tok,
                 "completion_tokens": completion_tok,
@@ -455,9 +457,9 @@ async def complete(
                 continue
 
             # Auto-track cost if context is set
+            hid = _ctx_hackathon_id.get("")
+            aid = _ctx_agent_id.get("")
             if prompt_tok or completion_tok:
-                hid = _ctx_hackathon_id.get("")
-                aid = _ctx_agent_id.get("")
                 if hid and aid:
                     try:
                         from config.forge_tools import track_agent_cost
@@ -469,6 +471,33 @@ async def complete(
                             await r.aclose()
                     except Exception:
                         pass
+
+            # Emit trace span for this LLM call
+            try:
+                from config.forge_trace import emit_span
+                await emit_span(
+                    hackathon_id=hid,
+                    agent_id=aid,
+                    op="llm",
+                    name=f"complete:{task}",
+                    elapsed_s=elapsed,
+                    span_input={
+                        "model": current_model,
+                        "task": task,
+                        "tier": tier.name if tier else "unknown",
+                        "messages_count": len(full_messages),
+                        "max_tokens": max_tok,
+                        "attempt": attempt + 1,
+                    },
+                    span_output={
+                        "prompt_tokens": prompt_tok,
+                        "completion_tokens": completion_tok,
+                        "chars": len(result),
+                        "chunks": chunk_count,
+                    },
+                )
+            except Exception:
+                pass
 
             return result
 
@@ -578,6 +607,7 @@ async def complete_json(
     )
 
     last_error: Exception | None = None
+    _json_t0 = _t.monotonic()
     for attempt in range(max_json_retries):
         logger.info(f"[forge:llm] complete_json attempt {attempt+1}/{max_json_retries} for task={task}")
         raw = await complete(task=task, messages=messages, system_prompt=sys, temperature=temperature)
@@ -595,14 +625,43 @@ async def complete_json(
         try:
             # strict=False allows literal control characters (\n, \t) inside
             # JSON string values — LLMs frequently emit these unescaped.
-            return response_model.model_validate(json.loads(cleaned, strict=False))
+            parsed = response_model.model_validate(json.loads(cleaned, strict=False))
+            # Trace the successful complete_json
+            try:
+                from config.forge_trace import emit_span
+                await emit_span(
+                    hackathon_id=_ctx_hackathon_id.get(""),
+                    agent_id=_ctx_agent_id.get(""),
+                    op="llm",
+                    name=f"complete_json:{task}",
+                    elapsed_s=_t.monotonic() - _json_t0,
+                    span_input={"model_name": response_model.__name__, "attempts": attempt + 1},
+                    span_output={"parsed": True, "response_chars": len(cleaned)},
+                )
+            except Exception:
+                pass
+            return parsed
         except json.JSONDecodeError as e:
             # Attempt repair on truncated output (stream stall / max_tokens)
             if "Unterminated" in str(e) or "Expecting" in str(e) or "end of" in str(e).lower():
                 try:
                     repaired = _repair_truncated_json(cleaned)
                     logger.info(f"[forge:llm] Attempting JSON repair for task={task} (+{len(repaired)-len(cleaned)} chars)")
-                    return response_model.model_validate(json.loads(repaired, strict=False))
+                    parsed = response_model.model_validate(json.loads(repaired, strict=False))
+                    try:
+                        from config.forge_trace import emit_span
+                        await emit_span(
+                            hackathon_id=_ctx_hackathon_id.get(""),
+                            agent_id=_ctx_agent_id.get(""),
+                            op="llm",
+                            name=f"complete_json:{task}",
+                            elapsed_s=_t.monotonic() - _json_t0,
+                            span_input={"model_name": response_model.__name__, "attempts": attempt + 1},
+                            span_output={"parsed": True, "repaired": True, "response_chars": len(repaired)},
+                        )
+                    except Exception:
+                        pass
+                    return parsed
                 except Exception:
                     pass
             last_error = e
@@ -623,6 +682,21 @@ async def complete_json(
             if attempt < max_json_retries - 1:
                 await asyncio.sleep(1)
 
+    # Trace the failure
+    try:
+        from config.forge_trace import emit_span
+        await emit_span(
+            hackathon_id=_ctx_hackathon_id.get(""),
+            agent_id=_ctx_agent_id.get(""),
+            op="llm",
+            name=f"complete_json:{task}",
+            status="error",
+            elapsed_s=_t.monotonic() - _json_t0,
+            span_input={"model_name": response_model.__name__, "attempts": max_json_retries},
+            error=str(last_error)[:500] if last_error else "unknown",
+        )
+    except Exception:
+        pass
     raise last_error or RuntimeError(f"[forge:llm] JSON parse failed after {max_json_retries} retries")
 
 

@@ -32,7 +32,7 @@ graph LR
     CLIENT -->|OpenAI-compatible API| EH
 ```
 
-**Streaming:** `complete()` in `config/electronhub.py` uses `stream=True` for chat completions (deltas are concatenated client-side). That keeps long generations from sitting behind a single blocking HTTP response, which helps avoid proxy idle timeouts (e.g. Cloudflare 504). Each stream is limited to **180 seconds** wall-clock time via `asyncio.wait_for`; on timeout, a partial body longer than ~200 characters may be returned as-is; shorter partials re-raise so the caller sees a failure (distinct from the rate-limit **Fallback chain** below). `complete_json` goes through `complete()`, so it inherits the same streaming behavior.
+**Streaming:** `complete()` in `config/electronhub.py` uses `stream=True` with `stream_options={"include_usage": True}` for chat completions (deltas are concatenated client-side, usage data is captured from the final chunk). That keeps long generations from sitting behind a single blocking HTTP response, which helps avoid proxy idle timeouts (e.g. Cloudflare 504). Streams have a **600 second** total ceiling and a **120 second** stall timeout (no new chunks). `complete_json` goes through `complete()`, so it inherits the same streaming and cost-tracking behavior.
 
 ---
 
@@ -239,4 +239,38 @@ vector = await embed("AI agent for customer support automation")
 
 # In agent code:
 result = await complete(task="my-new-task", messages=[...])
+```
+
+---
+
+## Cost tracking
+
+Forge tracks per-call token usage and cost automatically.
+
+**How it works:**
+
+1. `complete()` passes `stream_options={"include_usage": True}` to the OpenAI-compatible API. The final stream chunk contains `prompt_tokens`, `completion_tokens`, and `total_tokens`.
+
+2. Context variables (`set_llm_context(hackathon_id, agent_id)`) tell `complete()` which hackathon and agent are making the call. The commander sets this automatically before each agent runs.
+
+3. After each successful LLM call, `complete()` calls `track_agent_cost()` from `config/forge_tools.py`, which accumulates token counts and estimated USD in the Redis key `cost:{hackathon_id}:{agent_id}` (TTL 7 days).
+
+4. Pricing is in `TOKEN_COSTS` in `config/forge_tools.py` — USD per million tokens for each model. Unknown models fall back to $3/$15 (input/output).
+
+**API endpoints:**
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/hackathon/{id}/cost` | Total USD, total tokens, per-agent breakdown (cost, input/output tokens, call count) |
+| `GET /api/hackathon/{id}/elapsed` | Total elapsed seconds, per-agent elapsed times |
+
+**Accessing usage in agent code:**
+
+```python
+from config.electronhub import complete, get_last_usage, set_llm_context
+
+set_llm_context(hackathon_id, agent_id)
+result = await complete(task="my-task", messages=[...])
+usage = get_last_usage()
+# {"model": "claude-sonnet-4-6", "prompt_tokens": 2400, "completion_tokens": 800, "elapsed_s": 12.3}
 ```

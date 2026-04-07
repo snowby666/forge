@@ -33,6 +33,7 @@ from pydantic import BaseModel
 from config.electronhub import complete, complete_json
 from config.agents_config import ALL_AGENTS
 from config.redis_client import get_redis
+from config.forge_trace import trace_op, register_artifact, set_agent_context
 
 logger = logging.getLogger(__name__)
 AGENT = ALL_AGENTS["outcome_tracker"]
@@ -92,20 +93,21 @@ async def scrape_results(hackathon_url: str, platform: str) -> dict:
 
     for url in urls_to_try:
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{BROWSER_URL}/scrape",
-                    json={
-                        "custom_urls": [url],
-                        "extract_winners": True,
-                        "limit_per_platform": 10,
-                    },
-                    timeout=aiohttp.ClientTimeout(total=90),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data.get("winners") or data.get("hackathons"):
-                            return data
+            async with trace_op("http", "outcome:scrape_results") as span:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{BROWSER_URL}/scrape",
+                        json={
+                            "custom_urls": [url],
+                            "extract_winners": True,
+                            "limit_per_platform": 10,
+                        },
+                        timeout=aiohttp.ClientTimeout(total=90),
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if data.get("winners") or data.get("hackathons"):
+                                return data
         except Exception as e:
             logger.warning(f"[forge:outcome] Scrape failed for {url}: {e}")
 
@@ -122,18 +124,19 @@ async def check_our_submission(
         return {}
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{BROWSER_URL}/scrape",
-                json={
-                    "custom_urls": [submission_url],
-                    "extract_feedback": True,
-                    "limit_per_platform": 1,
-                },
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as resp:
-                if resp.status == 200:
-                    return await resp.json()
+        async with trace_op("http", "outcome:check_submission") as span:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{BROWSER_URL}/scrape",
+                    json={
+                        "custom_urls": [submission_url],
+                        "extract_feedback": True,
+                        "limit_per_platform": 1,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    if resp.status == 200:
+                        return await resp.json()
     except Exception as e:
         logger.warning(f"[forge:outcome] Submission scrape failed: {e}")
 
@@ -162,13 +165,14 @@ async def parse_results(
         judged_at: str | None = None
         results_available: bool
 
-    parsed = await complete_json(
-        task="analyze-competitors",
-        response_model=ParsedResult,
-        system_prompt=AGENT.system_prompt,
-        messages=[{
-            "role": "user",
-            "content": f"""Parse these hackathon results.
+    async with trace_op("llm", "outcome:parse_results") as span:
+        parsed = await complete_json(
+            task="analyze-competitors",
+            response_model=ParsedResult,
+            system_prompt=AGENT.system_prompt,
+            messages=[{
+                "role": "user",
+                "content": f"""Parse these hackathon results.
 
 Our project name: {project_name}
 Hackathon: {hackathon_name}
@@ -188,9 +192,10 @@ Determine:
 7. results_available: true if results were findable, false if page had no results yet
 
 If the results page has no winners yet, set results_available=false.""",
-        }],
-        temperature=0.1,
-    )
+            }],
+            temperature=0.1,
+        )
+        span.output = {"placement": parsed.our_placement, "results_available": parsed.results_available}
 
     winners = [WinnerEntry(
         project_name=w.get("project_name", "Unknown"),
@@ -231,13 +236,14 @@ async def analyze_outcome(
         for w in result.winners
     ]) or "No winner data available"
 
-    analysis = await complete_json(
-        task="analyze-competitors",
-        response_model=OutcomeAnalysis,
-        system_prompt=AGENT.system_prompt,
-        messages=[{
-            "role": "user",
-            "content": f"""Analyze this hackathon outcome to extract learning.
+    async with trace_op("llm", "outcome:analyze_outcome") as span:
+        analysis = await complete_json(
+            task="analyze-competitors",
+            response_model=OutcomeAnalysis,
+            system_prompt=AGENT.system_prompt,
+            messages=[{
+                "role": "user",
+                "content": f"""Analyze this hackathon outcome to extract learning.
 
 OUR RESULT:
 - Placement: {result.our_placement}
@@ -263,9 +269,10 @@ Produce honest analysis:
 7. knowledge_update_signal: one sentence for LIVING_KNOWLEDGE (e.g., "Enterprise workflow agents with ERP integration won $20k at this event over generic chatbots")
 
 Be direct. If we lost, say why. Don't sugarcoat.""",
-        }],
-        temperature=0.3,
-    )
+            }],
+            temperature=0.3,
+        )
+        span.output = {"what_worked_count": len(analysis.what_worked), "what_failed_count": len(analysis.what_failed)}
     return analysis
 
 
@@ -334,6 +341,7 @@ async def run_outcome_tracker(
     hackathon_id: str,
     retry_if_no_results: bool = True,
 ) -> HackathonResult | None:
+    set_agent_context(hackathon_id, "outcome_tracker")
     redis = get_redis()
 
     # Load all context from Redis
@@ -408,6 +416,8 @@ async def run_outcome_tracker(
     }
     (output_dir / "outcome-report.json").write_text(json.dumps(report, indent=2))
 
+    await register_artifact(hackathon_id, "outcome_tracker", "outcome-report.json", "json", f"Outcome: {result.our_placement}")
+
     logger.info(
         f"[forge:outcome] DONE — {brief.get('name')}: {result.our_placement} "
         f"(${result.our_prize_amount:,.0f}). "
@@ -458,6 +468,7 @@ async def run_worker() -> None:
         # Triggered by agent:trigger channel
         if payload.get("agent") == "outcome_tracker":
             hackathon_id = payload["hackathon_id"]
+            set_agent_context(hackathon_id, "outcome_tracker")
             await redis.set(
                 f"task:{hackathon_id}:outcome_tracker",
                 json.dumps({"status": "in-progress"}),

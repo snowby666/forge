@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from config.agents_config import ALL_AGENTS
 from config.electronhub import complete_json
 from config.redis_client import get_redis
+from config.forge_trace import trace_op, register_artifact, set_agent_context
 
 logger = logging.getLogger(__name__)
 AGENT = ALL_AGENTS["hackathon_scout"]
@@ -1033,6 +1034,7 @@ async def run_scout(
     from agents.python.infra.memory_keeper import MemoryKeeper
 
     platforms = platforms or ["devpost", "lablab", "devfolio"]
+    set_agent_context("", "hackathon_scout")
     redis = get_redis()
     memory = MemoryKeeper()
 
@@ -1046,7 +1048,10 @@ async def run_scout(
 
     # ── Phase 1: Discover ────────────────────────────────────────────────────
     logger.info(f"[forge:scout] ═══ Phase 1: DISCOVER — scraping {platforms} ═══")
-    raw_listings = await call_browser_scrape(platforms, limit=20)
+    async with trace_op("http", "scout:browser_scrape") as span:
+        span.input = {"platforms": platforms, "limit": 20}
+        raw_listings = await call_browser_scrape(platforms, limit=20)
+        span.output = {"listings_count": len(raw_listings)}
     logger.info(f"[forge:scout] Discovered {len(raw_listings)} raw listings")
 
     # Convert to HackathonBrief objects
@@ -1120,8 +1125,11 @@ async def run_scout(
             batch = briefs[batch_start:batch_start + BATCH_SIZE]
             logger.info(f"[forge:scout] Deep scrape batch {batch_start // BATCH_SIZE + 1} ({len(batch)} hackathons)")
             try:
-                deep_tasks = [asyncio.wait_for(deep_scrape_hackathon(b), timeout=60.0) for b in batch]
-                results = await asyncio.gather(*deep_tasks, return_exceptions=True)
+                async with trace_op("http", "scout:deep_scrape") as span:
+                    span.input = {"batch_size": len(batch), "batch_num": batch_start // BATCH_SIZE + 1}
+                    deep_tasks = [asyncio.wait_for(deep_scrape_hackathon(b), timeout=60.0) for b in batch]
+                    results = await asyncio.gather(*deep_tasks, return_exceptions=True)
+                    span.output = {"batch_size": len(batch)}
                 for idx, r in enumerate(results):
                     if isinstance(r, HackathonBrief):
                         all_deep.append(r)
@@ -1142,8 +1150,11 @@ async def run_scout(
     for batch_start in range(0, len(briefs), SCORE_BATCH):
         batch = briefs[batch_start:batch_start + SCORE_BATCH]
         logger.info(f"[forge:scout] Score batch {batch_start // SCORE_BATCH + 1} ({len(batch)} hackathons)")
-        score_tasks = [asyncio.wait_for(score_hackathon(b), timeout=30.0) for b in batch]
-        results = await asyncio.gather(*score_tasks, return_exceptions=True)
+        async with trace_op("llm", "scout:score_hackathon") as span:
+            span.input = {"batch_size": len(batch), "batch_num": batch_start // SCORE_BATCH + 1}
+            score_tasks = [asyncio.wait_for(score_hackathon(b), timeout=30.0) for b in batch]
+            results = await asyncio.gather(*score_tasks, return_exceptions=True)
+            span.output = {"batch_scored": len(batch)}
         for idx, r in enumerate(results):
             if isinstance(r, HackathonBrief):
                 scored_briefs.append(r)
@@ -1184,13 +1195,16 @@ async def run_scout(
         # Phase 3: Community — per-hackathon 15s timeout, 30s global
         logger.info(f"[forge:scout] ═══ Phase 3: COMMUNITY INTEL — searching {len(top_for_deep)} hackathons ═══")
         try:
-            community_tasks = [
-                asyncio.wait_for(discover_community(b), timeout=15.0)
-                for b in top_for_deep
-            ]
-            results = await asyncio.wait_for(
-                asyncio.gather(*community_tasks, return_exceptions=True), timeout=30.0,
-            )
+            async with trace_op("http", "scout:discover_community") as span:
+                span.input = {"hackathon_count": len(top_for_deep)}
+                community_tasks = [
+                    asyncio.wait_for(discover_community(b), timeout=15.0)
+                    for b in top_for_deep
+                ]
+                results = await asyncio.wait_for(
+                    asyncio.gather(*community_tasks, return_exceptions=True), timeout=30.0,
+                )
+                span.output = {"tasks_completed": len(results)}
             enriched = []
             for idx, r in enumerate(results):
                 if isinstance(r, HackathonBrief):
@@ -1206,13 +1220,16 @@ async def run_scout(
         # Phase 4: Research — per-hackathon 20s timeout, 45s global
         logger.info(f"[forge:scout] ═══ Phase 4: RESEARCH — finding papers/repos/tutorials ═══")
         try:
-            research_tasks = [
-                asyncio.wait_for(research_hackathon(b), timeout=20.0)
-                for b in top_for_deep
-            ]
-            results = await asyncio.wait_for(
-                asyncio.gather(*research_tasks, return_exceptions=True), timeout=45.0,
-            )
+            async with trace_op("http", "scout:research") as span:
+                span.input = {"hackathon_count": len(top_for_deep)}
+                research_tasks = [
+                    asyncio.wait_for(research_hackathon(b), timeout=20.0)
+                    for b in top_for_deep
+                ]
+                results = await asyncio.wait_for(
+                    asyncio.gather(*research_tasks, return_exceptions=True), timeout=45.0,
+                )
+                span.output = {"tasks_completed": len(results)}
             enriched = []
             for idx, r in enumerate(results):
                 if isinstance(r, HackathonBrief):
@@ -1265,19 +1282,24 @@ async def run_scout(
 
     # Process top 3 NEW qualified
     for brief in new_qualified[:3]:
-        await redis.set(f"hackathon:{brief.hackathon_id}:brief", brief.model_dump_json(), ex=604800)
-        await memory.store_hackathon_brief(brief.hackathon_id, brief.model_dump())
-
-        # Mark scout + memory_keeper as done so `forge status` / web dashboard show ✓
-        for _aid in ("hackathon_scout", "memory_keeper"):
-            await redis.set(
-                f"task:{brief.hackathon_id}:{_aid}",
-                json.dumps({"status": "done", "data": {"score": brief.score, "name": brief.name}}),
-                ex=604800,
-            )
+        async with trace_op("redis", "scout:store_brief", hackathon_id=brief.hackathon_id) as span:
+            span.input = {"hackathon_id": brief.hackathon_id, "name": brief.name, "score": brief.score}
+            await redis.set(f"hackathon:{brief.hackathon_id}:brief", brief.model_dump_json(), ex=604800)
+            await memory.store_hackathon_brief(brief.hackathon_id, brief.model_dump())
+            # Mark scout + memory_keeper as done so `forge status` / web dashboard show ✓
+            for _aid in ("hackathon_scout", "memory_keeper"):
+                await redis.set(
+                    f"task:{brief.hackathon_id}:{_aid}",
+                    json.dumps({"status": "done", "data": {"score": brief.score, "name": brief.name}}),
+                    ex=604800,
+                )
+            span.output = {"stored": True}
 
         if brief.registration_open:
-            registered = await call_browser_register(brief.url, brief.platform, dry_run=dry_run)
+            async with trace_op("http", "scout:register", hackathon_id=brief.hackathon_id) as span:
+                span.input = {"url": brief.url, "platform": brief.platform, "dry_run": dry_run}
+                registered = await call_browser_register(brief.url, brief.platform, dry_run=dry_run)
+                span.output = {"registered": registered}
             if registered and not dry_run:
                 await redis.publish("commander:new_hackathon", json.dumps({
                     "hackathon_id": brief.hackathon_id,

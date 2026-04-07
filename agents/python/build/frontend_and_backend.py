@@ -17,6 +17,7 @@ from daytona_sdk import Daytona, DaytonaConfig, CreateWorkspaceParams, CodeLangu
 from pydantic import BaseModel
 
 from config.electronhub import complete, complete_batch
+from config.forge_trace import trace_op, register_artifact, set_agent_context
 from config.redis_client import get_redis
 from config.agents_config import ALL_AGENTS
 from config.design_constitution import SYSTEM_PROMPT_FRONTEND_AGENT
@@ -83,6 +84,7 @@ async def run_frontend_engineer(
     api_contract: dict | None,
     simplify: bool = False,
 ) -> dict:
+    set_agent_context(hackathon_id, "frontend_engineer")
     AGENT = ALL_AGENTS["frontend_engineer"]
     daytona = get_daytona()
     repo_name = f"hack-{hackathon_id[:8]}-frontend"
@@ -101,21 +103,22 @@ async def run_frontend_engineer(
     try:
         # 1. Scaffold with exact stack
         logger.info(f"[forge:frontend] Scaffolding {repo_name}...")
-        await workspace.process.exec(
-            f"npx create-next-app@latest {repo_name} "
-            f"--typescript --tailwind --app --yes "
-            f"--import-alias '@/*' "
-            f"--use-npm",
-            timeout=180,
-        )
-        await workspace.process.exec(
-            f"cd {repo_path} && npx shadcn@latest init --yes --defaults",
-            timeout=120,
-        )
-        await workspace.process.exec(
-            f"cd {repo_path} && npm install @tanstack/react-query zod clsx tailwind-merge class-variance-authority lucide-react",
-            timeout=60,
-        )
+        async with trace_op("subprocess", "frontend:scaffold") as span:
+            await workspace.process.exec(
+                f"npx create-next-app@latest {repo_name} "
+                f"--typescript --tailwind --app --yes "
+                f"--import-alias '@/*' "
+                f"--use-npm",
+                timeout=180,
+            )
+            await workspace.process.exec(
+                f"cd {repo_path} && npx shadcn@latest init --yes --defaults",
+                timeout=120,
+            )
+            await workspace.process.exec(
+                f"cd {repo_path} && npm install @tanstack/react-query zod clsx tailwind-merge class-variance-authority lucide-react",
+                timeout=60,
+            )
 
         # 2. Write design tokens
         await workspace.fs.upload_file(f"{repo_path}/src/lib/tokens.ts", design_tokens_content.encode())
@@ -172,7 +175,9 @@ Output the complete .tsx file only.""",
         ]
 
         logger.info(f"[forge:frontend] Generating {len(component_tasks)} components...")
-        component_codes = await complete_batch(component_tasks, concurrency=4)
+        async with trace_op("llm", "frontend:generate_components") as span:
+            component_codes = await complete_batch(component_tasks, concurrency=4)
+            span.output = {"component_count": len(component_codes)}
 
         for spec, code in zip(components_to_build, component_codes):
             file_path = spec.get("file_path", f"components/{spec['name'].lower()}.tsx")
@@ -184,12 +189,13 @@ Output the complete .tsx file only.""",
         screens = design_spec.get("screens", [])
         for screen in screens:
             route = screen.get("route", "/").lstrip("/") or "."
-            page_code = await complete(
-                task="generate-page",
-                system_prompt=SYSTEM_PROMPT_FRONTEND_AGENT,
-                messages=[{
-                    "role": "user",
-                    "content": f"""Generate a Next.js 14 App Router page.
+            async with trace_op("llm", "frontend:generate_page") as span:
+                page_code = await complete(
+                    task="generate-page",
+                    system_prompt=SYSTEM_PROMPT_FRONTEND_AGENT,
+                    messages=[{
+                        "role": "user",
+                        "content": f"""Generate a Next.js 14 App Router page.
 
 Screen: {json.dumps(screen, indent=2)}
 
@@ -204,34 +210,35 @@ Output files needed:
 2. Include loading.tsx and error.tsx as brief stubs
 
 Start your response with --- FILE: app/{route}/page.tsx ---""",
-                }],
-                temperature=0.1,
-            )
+                    }],
+                    temperature=0.1,
+                )
 
             page_dir = f"{repo_path}/src/app/{route}"
             await workspace.process.exec(f"mkdir -p {page_dir}")
             await workspace.fs.upload_file(f"{page_dir}/page.tsx", page_code.encode())
 
         # 7. Quality gates with auto-fix
-        for attempt in range(1, 4):
-            passed, errors = await run_fe_quality_gates(workspace, repo_path)
-            if passed:
-                break
-            logger.warning(f"[forge:frontend] Gates failed (attempt {attempt}/3), auto-fixing...")
-            fix_tasks = [
-                {
-                    "task": "fix-typescript-error" if "TypeScript" in e else "fix-lint-error",
-                    "messages": [{"role": "user", "content": f"Fix this error:\n{e}\n\nRespond with FILE: path\\ncode"}],
-                }
-                for e in errors[:3]
-            ]
-            fixes = await complete_batch(fix_tasks, concurrency=3)
-            for fix in fixes:
-                lines = fix.strip().split("\n")
-                if lines and lines[0].startswith("FILE:"):
-                    fp = lines[0].replace("FILE:", "").strip()
-                    code = "\n".join(lines[1:])
-                    await workspace.fs.upload_file(f"{repo_path}/src/{fp}", code.encode())
+        async with trace_op("subprocess", "frontend:quality_gates") as span:
+            for attempt in range(1, 4):
+                passed, errors = await run_fe_quality_gates(workspace, repo_path)
+                if passed:
+                    break
+                logger.warning(f"[forge:frontend] Gates failed (attempt {attempt}/3), auto-fixing...")
+                fix_tasks = [
+                    {
+                        "task": "fix-typescript-error" if "TypeScript" in e else "fix-lint-error",
+                        "messages": [{"role": "user", "content": f"Fix this error:\n{e}\n\nRespond with FILE: path\\ncode"}],
+                    }
+                    for e in errors[:3]
+                ]
+                fixes = await complete_batch(fix_tasks, concurrency=3)
+                for fix in fixes:
+                    lines = fix.strip().split("\n")
+                    if lines and lines[0].startswith("FILE:"):
+                        fp = lines[0].replace("FILE:", "").strip()
+                        code = "\n".join(lines[1:])
+                        await workspace.fs.upload_file(f"{repo_path}/src/{fp}", code.encode())
 
         # 8. Deploy
         if passed:
@@ -282,6 +289,7 @@ async def run_backend_engineer(
     db_schema: dict,
     simplify: bool = False,
 ) -> dict:
+    set_agent_context(hackathon_id, "backend_engineer")
     AGENT = ALL_AGENTS["backend_engineer"]
     daytona = get_daytona()
     repo_name = f"hack-{hackathon_id[:8]}-backend"
@@ -297,12 +305,13 @@ async def run_backend_engineer(
     try:
         # IMMEDIATE: design and publish API contract
         logger.info(f"[forge:backend] Designing API contract for immediate publish...")
-        api_contract_raw = await complete(
-            task="design-api-contract",
-            system_prompt=AGENT.system_prompt,
-            messages=[{
-                "role": "user",
-                "content": f"""Design the FastAPI API contract for this project.
+        async with trace_op("llm", "backend:design_api_contract") as span:
+            api_contract_raw = await complete(
+                task="design-api-contract",
+                system_prompt=AGENT.system_prompt,
+                messages=[{
+                    "role": "user",
+                    "content": f"""Design the FastAPI API contract for this project.
 
 Project: {project_plan.get('project_name')}
 Features: {json.dumps([f.get('name') for f in project_plan.get('core_features', [])], indent=2)}
@@ -311,9 +320,9 @@ Demo path: {json.dumps(project_plan.get('demo_golden_path', [])[:6], indent=2)}
 
 Output as JSON with: base_url, endpoints (with method, path, request_body, response_schema, is_demo_path), schemas.
 Include /health and /demo/seed endpoints.""",
-            }],
-            temperature=0.1,
-        )
+                }],
+                temperature=0.1,
+            )
 
         # Clean and store contract immediately
         contract_clean = api_contract_raw.strip()
@@ -336,18 +345,19 @@ Include /health and /demo/seed endpoints.""",
         )
 
         # Generate models, routers, main.py
-        models_code = await complete(
-            task="design-db-schema",
-            system_prompt=AGENT.system_prompt,
-            messages=[{
-                "role": "user",
-                "content": f"""Generate SQLAlchemy 2.0 async models for:
+        async with trace_op("llm", "backend:generate_models") as span:
+            models_code = await complete(
+                task="design-db-schema",
+                system_prompt=AGENT.system_prompt,
+                messages=[{
+                    "role": "user",
+                    "content": f"""Generate SQLAlchemy 2.0 async models for:
 {json.dumps(db_schema.get('tables', []), indent=2)}
 
 Complete app/models.py file. AsyncAttrs mixin, UUID PKs, timestamps, relationships.""",
-            }],
-            temperature=0.0,
-        )
+                }],
+                temperature=0.0,
+            )
         await workspace.fs.upload_file(f"{repo_path}/app/models.py", models_code.encode())
 
         # Parse contract and generate routers
@@ -474,6 +484,7 @@ async def run_frontend_worker() -> None:
         elif "api_contract" in payload and payload.get("hackathon_id") in pending:
             hackathon_id = payload.get("hackathon_id")
             if hackathon_id and hackathon_id in pending:
+                set_agent_context(hackathon_id, "frontend_engineer")
                 inp = pending.pop(hackathon_id)["input"]
                 inp["api_contract"] = payload["api_contract"]
                 await redis.set(f"task:{hackathon_id}:frontend_engineer", json.dumps({"status": "in-progress"}), ex=604800)
@@ -554,6 +565,7 @@ async def run_backend_worker() -> None:
             continue
 
         hackathon_id = payload["hackathon_id"]
+        set_agent_context(hackathon_id, "backend_engineer")
         inp = payload["input"]
         await redis.set(f"task:{hackathon_id}:backend_engineer", json.dumps({"status": "in-progress"}), ex=604800)
         try:

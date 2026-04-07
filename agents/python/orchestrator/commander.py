@@ -25,6 +25,7 @@ from config.redis_client import get_redis
 from redis.asyncio import Redis
 
 from config.electronhub import complete_json
+from config.forge_trace import trace_op, set_trace_context, set_agent_context, emit_span, emit_log
 from config.agents_config import ALL_AGENTS, HUMAN_CHECKPOINTS
 from agents.python.intelligence.analysis_agents import run_all_intelligence
 from agents.python.infra.monitor_and_calendar import (
@@ -65,6 +66,21 @@ class HackathonState(TypedDict):
 
 
 _INLINE_TASKS: set[asyncio.Task] = set()
+
+
+def _trace_node(op: str, name: str):
+    """Decorator: wrap a LangGraph node with a trace_op span."""
+    def _decorator(fn):
+        async def _wrapper(state: HackathonState) -> dict:
+            async with trace_op(op, name,
+                                hackathon_id=state["hackathon_id"],
+                                agent_id="commander") as _span:
+                result = await fn(state)
+                if isinstance(result, dict):
+                    _span.output = result
+                return result
+        return _wrapper
+    return _decorator
 
 
 async def _dispatch_agent(agent_id: str, hackathon_id: str, inp: dict, redis: Redis) -> Any:
@@ -257,40 +273,46 @@ async def _dispatch_agent(agent_id: str, hackathon_id: str, inp: dict, redis: Re
         raise ValueError(f"[forge:worker] Unknown agent: {agent_id}")
 
 
-async def _set_task_status(hackathon_id: str, agent_id: str, payload: dict) -> None:
-    """Write task status to Redis with a fresh connection (avoids stale idle connections)."""
+async def _get_epoch(hackathon_id: str) -> int:
+    """Read the current run-epoch counter for a hackathon."""
     r = get_redis()
     try:
+        raw = await r.get(f"hackathon:{hackathon_id}:epoch")
+        return int(raw) if raw else 0
+    finally:
+        await r.aclose()
+
+
+async def _set_task_status(
+    hackathon_id: str, agent_id: str, payload: dict, *, epoch: int | None = None,
+) -> None:
+    """Write task status to Redis. If *epoch* is given, skip the write when stale."""
+    r = get_redis()
+    try:
+        if epoch is not None:
+            current = await r.get(f"hackathon:{hackathon_id}:epoch")
+            current_epoch = int(current) if current else 0
+            if epoch != current_epoch:
+                logger.warning(
+                    f"[forge:worker] Stale epoch for {agent_id} "
+                    f"(have={epoch}, current={current_epoch}) — discarding write"
+                )
+                return
         await r.set(f"task:{hackathon_id}:{agent_id}", json.dumps(payload), ex=604800)
     finally:
         await r.aclose()
 
 
 async def _push_log(hackathon_id: str, agent_id: str, level: str, message: str, data: dict | None = None) -> None:
-    """Push a structured log entry to the hackathon's log list in Redis."""
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "agent_id": agent_id,
-        "level": level,
-        "message": message,
-    }
-    if data:
-        entry["data"] = data
-    try:
-        r = get_redis()
-        try:
-            await r.rpush(f"logs:{hackathon_id}", json.dumps(entry))
-            await r.ltrim(f"logs:{hackathon_id}", -2000, -1)
-        finally:
-            await r.aclose()
-    except Exception:
-        pass
+    """Push a structured log entry to the unified events list in Redis."""
+    await emit_log(hackathon_id, agent_id, level, message, data)
 
 
-async def _run_agent_inline(hackathon_id: str, agent_id: str, input_data: dict) -> None:
+async def _run_agent_inline(
+    hackathon_id: str, agent_id: str, input_data: dict, *, epoch: int = 0,
+) -> None:
     """Execute an agent function in-process and store result in Redis."""
     import time as _t
-    from config.electronhub import set_llm_context
     t0 = _t.monotonic()
     started_at = datetime.now(timezone.utc).isoformat()
     logger.info(f"[forge:worker] ▶ {agent_id} starting inline (hackathon={hackathon_id})")
@@ -299,9 +321,9 @@ async def _run_agent_inline(hackathon_id: str, agent_id: str, input_data: dict) 
         await _set_task_status(hackathon_id, agent_id, {
             "status": "in-progress",
             "started_at": started_at,
-        })
+        }, epoch=epoch)
 
-        set_llm_context(hackathon_id, agent_id)
+        set_agent_context(hackathon_id, agent_id)
 
         redis = get_redis()
         try:
@@ -318,7 +340,7 @@ async def _run_agent_inline(hackathon_id: str, agent_id: str, input_data: dict) 
             "started_at": started_at,
             "finished_at": finished_at,
             "elapsed_s": round(elapsed, 1),
-        })
+        }, epoch=epoch)
         await _push_log(hackathon_id, agent_id, "info", f"Agent {agent_id} completed in {elapsed:.1f}s")
         logger.info(f"[forge:worker] ✓ {agent_id} completed inline ({elapsed:.1f}s)")
     except Exception as e:
@@ -337,7 +359,7 @@ async def _run_agent_inline(hackathon_id: str, agent_id: str, input_data: dict) 
                 "started_at": started_at,
                 "finished_at": finished_at,
                 "elapsed_s": round(elapsed, 1),
-            })
+            }, epoch=epoch)
         except Exception:
             logger.error(f"[forge:worker] Could not write failure status to Redis for {agent_id}")
 
@@ -346,7 +368,13 @@ async def trigger_agent(redis: Redis, hackathon_id: str, agent_id: str, input_da
     logger.info(f"[forge:commander]   → Triggering {agent_id}")
     await _push_log(hackathon_id, agent_id, "info", f"Agent {agent_id} queued")
     await redis.set(f"task:{hackathon_id}:{agent_id}", json.dumps({"status": "pending"}), ex=604800)
-    task = asyncio.create_task(_run_agent_inline(hackathon_id, agent_id, input_data))
+    await emit_span(hackathon_id, "commander", "redis", f"commander:dispatch:{agent_id}",
+                    span_input={"agent_id": agent_id})
+    epoch_raw = await redis.get(f"hackathon:{hackathon_id}:epoch")
+    epoch = int(epoch_raw) if epoch_raw else 0
+    task = asyncio.create_task(
+        _run_agent_inline(hackathon_id, agent_id, input_data, epoch=epoch),
+    )
     _INLINE_TASKS.add(task)
     task.add_done_callback(_INLINE_TASKS.discard)
 
@@ -431,6 +459,7 @@ async def notify_checkpoint(hackathon_id: str, checkpoint_id: str, message: str)
 
 # ── Graph nodes ────────────────────────────────────────────────────────────────
 
+@_trace_node("redis", "commander:phase:intelligence")
 async def run_intelligence(state: HackathonState) -> dict:
     """Layer 1: Run all 4 intel agents in parallel."""
     logger.info(
@@ -470,6 +499,7 @@ async def run_intelligence(state: HackathonState) -> dict:
     return {"intel": intel, "phase": "strategy"}
 
 
+@_trace_node("redis", "commander:phase:concepts")
 async def generate_concepts(state: HackathonState) -> dict:
     """Trigger Strategy Director, wait for concepts, notify human."""
     logger.info(f"[forge:commander] ━━━ Phase 1b: CONCEPT GENERATION ━━━")
@@ -501,6 +531,7 @@ async def generate_concepts(state: HackathonState) -> dict:
     return {"concepts": concepts}
 
 
+@_trace_node("redis", "commander:wait_checkpoint:concept_approval")
 async def wait_concept_approval(state: HackathonState) -> dict:
     """Wait for human to pick a concept."""
     redis = get_redis()
@@ -525,6 +556,7 @@ async def wait_concept_approval(state: HackathonState) -> dict:
     }
 
 
+@_trace_node("redis", "commander:phase:planning")
 async def run_planning(state: HackathonState) -> dict:
     """Run PM + Tech Architect in parallel."""
     logger.info(
@@ -571,6 +603,7 @@ async def run_planning(state: HackathonState) -> dict:
     }
 
 
+@_trace_node("redis", "commander:phase:design")
 async def run_design(state: HackathonState) -> dict:
     """Trigger UI/UX Designer, wait, notify human for design approval."""
     await _push_log(state["hackathon_id"], "commander", "info", "Starting design phase — UI/UX Designer")
@@ -680,6 +713,7 @@ demo_path_components = the 3-5 UI components judges will see in the demo.""",
         return {}
 
 
+@_trace_node("redis", "commander:wait_checkpoint:design_approval")
 async def wait_design_approval(state: HackathonState) -> dict:
     """Wait for human design approval."""
     redis = get_redis()
@@ -696,6 +730,7 @@ async def wait_design_approval(state: HackathonState) -> dict:
     }
 
 
+@_trace_node("redis", "commander:phase:build")
 async def run_build(state: HackathonState) -> dict:
     """
     Trigger all build agents in dependency-correct order.
@@ -808,6 +843,7 @@ async def run_build(state: HackathonState) -> dict:
     return {"preview_url": preview_url, "repo_url": repo_url, "phase": "verifying"}
 
 
+@_trace_node("redis", "commander:phase:verification")
 async def run_verification(state: HackathonState) -> dict:
     """Run Code Reviewer + UX Auditor + Performance in parallel."""
     await _push_log(state["hackathon_id"], "commander", "info", "Starting verification phase — Code Review, UX Audit, Performance")
@@ -886,6 +922,7 @@ async def run_verification(state: HackathonState) -> dict:
     return {"phase": "polishing"}
 
 
+@_trace_node("redis", "commander:wait_checkpoint:quality_review")
 async def wait_quality_review(state: HackathonState) -> dict:
     redis = get_redis()
     cfg = HUMAN_CHECKPOINTS["quality_review"]
@@ -894,6 +931,7 @@ async def wait_quality_review(state: HackathonState) -> dict:
     return {"checkpoint_approvals": {**state["checkpoint_approvals"], "quality_review": True}, "phase": "polishing"}
 
 
+@_trace_node("redis", "commander:phase:polish")
 async def run_polish(state: HackathonState) -> dict:
     """Run all 4 polish agents in parallel."""
     await _push_log(state["hackathon_id"], "commander", "info", "Starting polish phase")
@@ -928,6 +966,7 @@ async def run_polish(state: HackathonState) -> dict:
     return {"phase": "submitting"}
 
 
+@_trace_node("redis", "commander:phase:submission")
 async def run_submission(state: HackathonState) -> dict:
     """Run demo producer + pitch writer in parallel, then submit."""
     await _push_log(state["hackathon_id"], "commander", "info", "Starting submission phase — Demo, Pitch, Submit")
@@ -978,7 +1017,9 @@ async def run_submission(state: HackathonState) -> dict:
     )
 
     cfg = HUMAN_CHECKPOINTS["submission_approval"]
-    approval = await wait_for_checkpoint(redis, state["hackathon_id"], "submission_approval", cfg["timeout_hours"])
+    async with trace_op("redis", "commander:wait_checkpoint:submission_approval",
+                        hackathon_id=state["hackathon_id"], agent_id="commander"):
+        approval = await wait_for_checkpoint(redis, state["hackathon_id"], "submission_approval", cfg["timeout_hours"])
 
     submission_url = ""
     if approval:
@@ -1167,6 +1208,7 @@ async def run(
         raise SystemExit(f"No brief for hackathon_id={hackathon_id}")
 
     brief = json.loads(brief_raw)
+    set_agent_context(hackathon_id, "commander")
 
     def _make_initial(phase: str = "intelligence") -> HackathonState:
         return {

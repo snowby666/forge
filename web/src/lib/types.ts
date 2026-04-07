@@ -122,6 +122,9 @@ export interface ServiceHealthResponse {
 }
 
 export interface LogEntry {
+  kind?: "log";
+  id?: string;
+  hackathon_id?: string;
   timestamp: string;
   level: "debug" | "info" | "warning" | "error" | "critical";
   agent_id?: string;
@@ -224,4 +227,54 @@ export interface HealthResponse {
   status: string;
   version?: string;
   uptime?: number;
+}
+
+// ── Tracing ─────────────────────────────────────────────────────────────────
+
+export type TraceOp = "llm" | "mcp" | "http" | "file" | "redis" | "subprocess" | "artifact";
+
+export interface TraceSpan {
+  kind?: "span";
+  id: string;
+  hackathon_id: string;
+  agent_id: string;
+  op: TraceOp;
+  name: string;
+  status: "ok" | "error";
+  started_at: string;
+  finished_at: string;
+  elapsed_s: number;
+  input?: Record<string, unknown>;
+  output?: Record<string, unknown>;
+  error?: string | null;
+  tags?: Record<string, unknown>;
+}
+
+export type UnifiedEvent = (TraceSpan & { kind: "span" }) | (LogEntry & { kind: "log" });
+
+export interface TraceSummary {
+  total_spans: number;
+  total_logs?: number;
+  by_op: Record<string, number>;
+  by_agent: Record<string, number>;
+  total_llm_tokens: number;
+  total_llm_cost_usd: number;
+  total_file_writes: number;
+  error_count: number;
+}
+
+export interface ArtifactEntry {
+  name: string;
+  type: string;
+  agent_id: string;
+  timestamp: string;
+  summary: string;
+  meta?: Record<string, unknown>;
+}
+
+export interface TraceListResponse {
+  total: number;
+  offset: number;
+  limit: number;
+  spans: TraceSpan[];
 }

@@ -19,6 +19,7 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams, Filter, FieldCondition, MatchValue
 
 from config.electronhub import embed
+from config.forge_trace import trace_op
 
 logger = logging.getLogger(__name__)
 
@@ -113,57 +114,66 @@ class MemoryKeeper:
     async def store_hackathon_brief(self, hackathon_id: str, brief: dict) -> None:
         await self.ensure_collections()
         text = f"{brief.get('name', '')} {brief.get('theme', '')} {brief.get('description', '')[:200]}"
-        vector = await embed(text)
-        point_id = int(hashlib.md5(hackathon_id.encode()).hexdigest()[:8], 16)
-        await self.qdrant.upsert(
-            collection_name=COLLECTIONS["briefs"],
-            points=[PointStruct(
-                id=point_id,
-                vector=vector,
-                payload={
-                    "hackathon_id": hackathon_id,
-                    "name": brief.get("name"),
-                    "theme": brief.get("theme"),
-                    "platform": brief.get("platform"),
-                    "score": brief.get("score"),
-                    "stored_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )],
-        )
+        async with trace_op("http", "memory:store_brief") as span:
+            span.input = {"hackathon_id": hackathon_id}
+            vector = await embed(text)
+            point_id = int(hashlib.md5(hackathon_id.encode()).hexdigest()[:8], 16)
+            await self.qdrant.upsert(
+                collection_name=COLLECTIONS["briefs"],
+                points=[PointStruct(
+                    id=point_id,
+                    vector=vector,
+                    payload={
+                        "hackathon_id": hackathon_id,
+                        "name": brief.get("name"),
+                        "theme": brief.get("theme"),
+                        "platform": brief.get("platform"),
+                        "score": brief.get("score"),
+                        "stored_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )],
+            )
+            span.output = {"stored": True}
 
     async def find_similar_hackathons(self, theme: str, limit: int = 3) -> list[dict]:
         await self.ensure_collections()
-        vector = await embed(theme)
-        results = await self.qdrant.search(
-            collection_name=COLLECTIONS["briefs"],
-            query_vector=vector,
-            limit=limit,
-            score_threshold=0.7,
-        )
+        async with trace_op("http", "memory:find_similar") as span:
+            vector = await embed(theme)
+            results = await self.qdrant.search(
+                collection_name=COLLECTIONS["briefs"],
+                query_vector=vector,
+                limit=limit,
+                score_threshold=0.7,
+            )
+            span.output = {"results": len(results)}
         return [r.payload for r in results if r.payload]
 
     # ── Outcomes ──────────────────────────────────────────────────────────────
 
     async def store_outcome(self, hackathon_id: str, hackathon_name: str, outcome: dict) -> None:
-        self.mem0.add(
-            messages=[
-                {"role": "user", "content": f"Hackathon: {hackathon_name}"},
-                {"role": "assistant", "content": (
-                    f"Result: {outcome.get('result')}. "
-                    f"Concept: {outcome.get('concept')}. "
-                    f"What worked: {'; '.join(outcome.get('what_worked', []))}. "
-                    f"What failed: {'; '.join(outcome.get('what_failed', []))}. "
-                    f"Prize: {outcome.get('prize_won', 'none')}. "
-                    f"UX audit score: {outcome.get('ux_audit_score', 'unknown')}."
-                )},
-            ],
-            user_id=self.USER_ID,
-            metadata={"hackathon_id": hackathon_id, "result": outcome.get("result")},
-        )
+        async with trace_op("http", "memory:store_outcome") as span:
+            span.input = {"hackathon_id": hackathon_id}
+            self.mem0.add(
+                messages=[
+                    {"role": "user", "content": f"Hackathon: {hackathon_name}"},
+                    {"role": "assistant", "content": (
+                        f"Result: {outcome.get('result')}. "
+                        f"Concept: {outcome.get('concept')}. "
+                        f"What worked: {'; '.join(outcome.get('what_worked', []))}. "
+                        f"What failed: {'; '.join(outcome.get('what_failed', []))}. "
+                        f"Prize: {outcome.get('prize_won', 'none')}. "
+                        f"UX audit score: {outcome.get('ux_audit_score', 'unknown')}."
+                    )},
+                ],
+                user_id=self.USER_ID,
+                metadata={"hackathon_id": hackathon_id, "result": outcome.get("result")},
+            )
         logger.info(f"[forge:memory] Stored outcome for {hackathon_name}: {outcome.get('result')}")
 
     async def get_relevant_past(self, query: str, limit: int = 5) -> list[dict]:
-        results = self.mem0.search(query=query, user_id=self.USER_ID, limit=limit)
+        async with trace_op("http", "memory:search_past") as span:
+            results = self.mem0.search(query=query, user_id=self.USER_ID, limit=limit)
+            span.output = {"results": len(results.get("results", []))}
         return results.get("results", [])
 
     # ── Code artifacts ─────────────────────────────────────────────────────────
@@ -173,23 +183,24 @@ class MemoryKeeper:
     ) -> None:
         await self.ensure_collections()
         text = f"{name} {description} {code[:300]}"
-        vector = await embed(text)
-        point_id = int(hashlib.md5(f"{name}{code[:100]}".encode()).hexdigest()[:8], 16)
-        await self.qdrant.upsert(
-            collection_name=COLLECTIONS["code"],
-            points=[PointStruct(
-                id=point_id,
-                vector=vector,
-                payload={
-                    "hackathon_id": hackathon_id,
-                    "type": artifact_type,
-                    "name": name,
-                    "description": description,
-                    "code": code,
-                    "stored_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )],
-        )
+        async with trace_op("http", "memory:store_artifact") as span:
+            vector = await embed(text)
+            point_id = int(hashlib.md5(f"{name}{code[:100]}".encode()).hexdigest()[:8], 16)
+            await self.qdrant.upsert(
+                collection_name=COLLECTIONS["code"],
+                points=[PointStruct(
+                    id=point_id,
+                    vector=vector,
+                    payload={
+                        "hackathon_id": hackathon_id,
+                        "type": artifact_type,
+                        "name": name,
+                        "description": description,
+                        "code": code,
+                        "stored_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )],
+            )
 
     async def find_similar_component(
         self, spec: str, artifact_type: str, threshold: float = 0.85,
@@ -210,16 +221,17 @@ class MemoryKeeper:
     async def store_judge_profile(self, hackathon_id: str, profile: dict) -> None:
         await self.ensure_collections()
         panel_desc = profile.get("panel_character", "")
-        vector = await embed(panel_desc)
-        point_id = int(hashlib.md5(hackathon_id.encode()).hexdigest()[:8], 16) + 1
-        await self.qdrant.upsert(
-            collection_name=COLLECTIONS["judges"],
-            points=[PointStruct(
-                id=point_id,
-                vector=vector,
-                payload={"hackathon_id": hackathon_id, "profile": profile},
-            )],
-        )
+        async with trace_op("http", "memory:store_judge") as span:
+            vector = await embed(panel_desc)
+            point_id = int(hashlib.md5(hackathon_id.encode()).hexdigest()[:8], 16) + 1
+            await self.qdrant.upsert(
+                collection_name=COLLECTIONS["judges"],
+                points=[PointStruct(
+                    id=point_id,
+                    vector=vector,
+                    payload={"hackathon_id": hackathon_id, "profile": profile},
+                )],
+            )
 
     async def find_similar_judge_profile(self, panel_description: str) -> dict | None:
         await self.ensure_collections()

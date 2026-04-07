@@ -24,6 +24,7 @@ from config.electronhub import complete_json
 from config.redis_client import get_redis
 from config.agents_config import ALL_AGENTS
 from config.design_constitution import DESIGN_CRITIQUE_RUBRIC, ANTI_SLOP_RULES
+from config.forge_trace import trace_op, register_artifact, set_agent_context
 
 logger = logging.getLogger(__name__)
 AGENT = ALL_AGENTS["ux_auditor"]
@@ -66,37 +67,40 @@ class UXAuditReport(BaseModel):
 
 async def capture_screenshots(preview_url: str, screens: list[str]) -> list[dict]:
     """Ask browser layer to screenshot each screen in the demo path."""
+    set_agent_context("", "ux_auditor")
     screenshots = []
 
-    async with aiohttp.ClientSession() as session:
-        for route in screens:
-            url = f"{preview_url}{route}"
-            try:
-                async with session.post(
-                    f"{BROWSER_URL}/screenshot",
-                    json={
-                        "url": url,
-                        "viewports": [
-                            {"width": 375, "height": 812, "label": "mobile"},
-                            {"width": 1440, "height": 900, "label": "desktop"},
-                        ],
-                        "wait_for_selector": "body",
-                        "wait_ms": 2000,
-                    },
-                    timeout=aiohttp.ClientTimeout(total=60),
-                ) as resp:
-                    data = await resp.json()
-                    screenshots.append({
-                        "route": route,
-                        "url": url,
-                        "mobile_path": data.get("mobile_path"),
-                        "desktop_path": data.get("desktop_path"),
-                        "console_errors": data.get("console_errors", []),
-                        "has_layout_shift": data.get("has_layout_shift", False),
-                    })
-            except Exception as e:
-                logger.warning(f"[forge:audit] Screenshot failed for {url}: {e}")
-                screenshots.append({"route": route, "url": url, "error": str(e)})
+    async with trace_op("http", "audit:capture_screenshots") as span:
+        async with aiohttp.ClientSession() as session:
+            for route in screens:
+                url = f"{preview_url}{route}"
+                try:
+                    async with session.post(
+                        f"{BROWSER_URL}/screenshot",
+                        json={
+                            "url": url,
+                            "viewports": [
+                                {"width": 375, "height": 812, "label": "mobile"},
+                                {"width": 1440, "height": 900, "label": "desktop"},
+                            ],
+                            "wait_for_selector": "body",
+                            "wait_ms": 2000,
+                        },
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as resp:
+                        data = await resp.json()
+                        screenshots.append({
+                            "route": route,
+                            "url": url,
+                            "mobile_path": data.get("mobile_path"),
+                            "desktop_path": data.get("desktop_path"),
+                            "console_errors": data.get("console_errors", []),
+                            "has_layout_shift": data.get("has_layout_shift", False),
+                        })
+                except Exception as e:
+                    logger.warning(f"[forge:audit] Screenshot failed for {url}: {e}")
+                    screenshots.append({"route": route, "url": url, "error": str(e)})
+        span.output = {"screenshot_count": len(screenshots)}
 
     return screenshots
 
@@ -104,13 +108,14 @@ async def capture_screenshots(preview_url: str, screens: list[str]) -> list[dict
 async def run_lighthouse(preview_url: str) -> dict:
     """Run Lighthouse audit via browser layer."""
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{BROWSER_URL}/lighthouse",
-                json={"url": preview_url},
-                timeout=aiohttp.ClientTimeout(total=120),
-            ) as resp:
-                return await resp.json()
+        async with trace_op("http", "audit:lighthouse") as span:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{BROWSER_URL}/lighthouse",
+                    json={"url": preview_url},
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    return await resp.json()
     except Exception as e:
         return {"error": str(e), "performance": 0, "accessibility": 0}
 
@@ -158,13 +163,14 @@ DESIGN.md summary:
 {design_md_content[:2000]}
 """
 
-    report = await complete_json(
-        task="audit-ux-flow",
-        response_model=UXAuditReport,
-        system_prompt=AGENT.system_prompt,
-        messages=[{
-            "role": "user",
-            "content": f"""{DESIGN_CRITIQUE_RUBRIC}
+    async with trace_op("llm", "audit:score_design") as span:
+        report = await complete_json(
+            task="audit-ux-flow",
+            response_model=UXAuditReport,
+            system_prompt=AGENT.system_prompt,
+            messages=[{
+                "role": "user",
+                "content": f"""{DESIGN_CRITIQUE_RUBRIC}
 
 {ANTI_SLOP_RULES}
 
@@ -185,9 +191,10 @@ VETO CRITERIA (auto-blocked):
 - Empty states visible on demo path screens
 - Mobile layout broken at 375px (check horizontal scroll)
 - Primary action not visible above fold on desktop""",
-        }],
-        temperature=0.2,
-    )
+            }],
+            temperature=0.2,
+        )
+        span.output = {"score": report.overall_score, "approved": report.approved}
 
     # Override approval if lighthouse scores are too low
     if lighthouse.get("accessibility", 100) < 85:
@@ -229,6 +236,7 @@ async def run_ux_audit(
     design_spec: dict,
     design_md_path: str,
 ) -> UXAuditReport:
+    set_agent_context(hackathon_id, "ux_auditor")
 
     logger.info(f"[forge:audit] Starting audit: {preview_url}")
 
@@ -292,6 +300,8 @@ async def run_worker() -> None:
 
         hackathon_id = payload["hackathon_id"]
         inp = payload["input"]
+
+        set_agent_context(hackathon_id, "ux_auditor")
 
         await redis.set(f"task:{hackathon_id}:ux_auditor", json.dumps({"status": "in-progress"}), ex=604800)
 

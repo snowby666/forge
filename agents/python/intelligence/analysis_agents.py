@@ -19,6 +19,7 @@ from config.electronhub import complete_json, complete
 from config.web_search import search_and_synthesize, research_people, research_companies
 from config.agents_config import ALL_AGENTS
 from config.redis_client import get_redis
+from config.forge_trace import trace_op, set_agent_context
 
 logger = logging.getLogger(__name__)
 BROWSER_URL = os.environ.get("BROWSER_SERVER_URL", "http://localhost:3100")
@@ -55,6 +56,7 @@ async def analyze_competitors(
     brief: dict,
     redis: Redis,
 ) -> CompReport:
+    set_agent_context(hackathon_id, "competitor_analyst")
     AGENT = ALL_AGENTS["competitor_analyst"]
 
     # Scrape past winners from Devpost
@@ -62,28 +64,36 @@ async def analyze_competitors(
     past_winners_data: list[dict] = []
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{BROWSER_URL}/scrape",
-                json={
-                    "platforms": [],
-                    "custom_urls": [f"{platform_url}#winners", f"{platform_url}?tab=winners"],
-                    "limit_per_platform": 5,
-                },
-                timeout=aiohttp.ClientTimeout(total=120),
-            ) as resp:
-                data = await resp.json()
-                past_winners_data = data.get("hackathons", [])
+        async with trace_op("http", "intel:scrape_past_winners") as span:
+            span.input = {
+                "platform_url": platform_url,
+                "custom_urls": [f"{platform_url}#winners", f"{platform_url}?tab=winners"],
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{BROWSER_URL}/scrape",
+                    json={
+                        "platforms": [],
+                        "custom_urls": [f"{platform_url}#winners", f"{platform_url}?tab=winners"],
+                        "limit_per_platform": 5,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    data = await resp.json()
+                    past_winners_data = data.get("hackathons", [])
+            span.output = {"hackathons_count": len(past_winners_data)}
     except Exception as e:
         logger.warning(f"[forge:intel] Scraping past winners failed: {e}")
 
-    report = await complete_json(
-        task="analyze-competitors",
-        response_model=CompReport,
-        system_prompt=AGENT.system_prompt,
-        messages=[{
-            "role": "user",
-            "content": f"""Analyze the competitive landscape for this hackathon.
+    async with trace_op("llm", "intel:analyze_competitors") as span:
+        span.input = {"hackathon": brief.get("name")}
+        report = await complete_json(
+            task="analyze-competitors",
+            response_model=CompReport,
+            system_prompt=AGENT.system_prompt,
+            messages=[{
+                "role": "user",
+                "content": f"""Analyze the competitive landscape for this hackathon.
 
 Hackathon: {brief.get('name')}
 Theme: {brief.get('theme')}
@@ -99,9 +109,14 @@ Provide:
 3. Underexplored opportunities (real gaps in what's been built)
 4. Common failure patterns from past submissions
 5. Specific positioning recommendation for differentiation""",
-        }],
-        temperature=0.3,
-    )
+            }],
+            temperature=0.3,
+        )
+        span.output = {
+            "patterns": len(report.top_winning_patterns),
+            "overused_themes": len(report.overused_themes),
+            "past_winners": len(report.past_winners),
+        }
 
     await redis.set(f"hackathon:{hackathon_id}:comp_report", report.model_dump_json(), ex=604800)
     logger.info(f"[forge:intel] Done. {len(report.top_winning_patterns)} patterns found, {len(report.overused_themes)} themes to avoid")
@@ -137,29 +152,35 @@ async def profile_judges(
     brief: dict,
     redis: Redis,
 ) -> JudgeProfile:
+    set_agent_context(hackathon_id, "judge_profiler")
     AGENT = ALL_AGENTS["judge_profiler"]
 
     # Scrape judges from hackathon page
     judges_raw: list[dict] = []
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{BROWSER_URL}/scrape",
-                json={"custom_urls": [brief.get("url", "")], "extract_judges": True},
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as resp:
-                data = await resp.json()
-                judges_raw = data.get("judges", [])
+        async with trace_op("http", "intel:scrape_judges") as span:
+            span.input = {"url": brief.get("url", ""), "extract_judges": True}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{BROWSER_URL}/scrape",
+                    json={"custom_urls": [brief.get("url", "")], "extract_judges": True},
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    data = await resp.json()
+                    judges_raw = data.get("judges", [])
+            span.output = {"judges_count": len(judges_raw)}
     except Exception as e:
         logger.warning(f"[forge:intel] Scraping judges failed: {e}")
 
-    profile = await complete_json(
-        task="profile-judges",
-        response_model=JudgeProfile,
-        system_prompt=AGENT.system_prompt,
-        messages=[{
-            "role": "user",
-            "content": f"""Profile the judges for this hackathon.
+    async with trace_op("llm", "intel:profile_judges") as span:
+        span.input = {"hackathon": brief.get("name")}
+        profile = await complete_json(
+            task="profile-judges",
+            response_model=JudgeProfile,
+            system_prompt=AGENT.system_prompt,
+            messages=[{
+                "role": "user",
+                "content": f"""Profile the judges for this hackathon.
 
 Hackathon: {brief.get('name')}
 Theme: {brief.get('theme')}
@@ -174,9 +195,13 @@ Infer from context if judges not available:
 
 Provide actionable guidance on: what to emphasize, what language to use,
 how technical the demo should be, what narrative framing will win this panel.""",
-        }],
-        temperature=0.3,
-    )
+            }],
+            temperature=0.3,
+        )
+        span.output = {
+            "judges": len(profile.judges),
+            "recommended_language": profile.recommended_language,
+        }
 
     await redis.set(f"hackathon:{hackathon_id}:judge_profile", profile.model_dump_json(), ex=604800)
     logger.info(f"[forge:intel] Done. {len(profile.judges)} judges profiled, language={profile.recommended_language}")
@@ -218,6 +243,7 @@ async def research_sponsors(
     brief: dict,
     redis: Redis,
 ) -> SponsorMap:
+    set_agent_context(hackathon_id, "sponsor_researcher")
     AGENT = ALL_AGENTS["sponsor_researcher"]
 
     sponsor_techs = brief.get("sponsor_techs", [])
@@ -226,13 +252,15 @@ async def research_sponsors(
     # Cross-reference sponsor_techs with prizes to build full picture
     sponsor_prizes = [p for p in prizes if p.get("sponsor")]
 
-    sponsor_map = await complete_json(
-        task="research-sponsor-apis",
-        response_model=SponsorMap,
-        system_prompt=AGENT.system_prompt,
-        messages=[{
-            "role": "user",
-            "content": f"""Research integration opportunities for this hackathon's sponsor prizes.
+    async with trace_op("llm", "intel:research_sponsors") as span:
+        span.input = {"hackathon": brief.get("name")}
+        sponsor_map = await complete_json(
+            task="research-sponsor-apis",
+            response_model=SponsorMap,
+            system_prompt=AGENT.system_prompt,
+            messages=[{
+                "role": "user",
+                "content": f"""Research integration opportunities for this hackathon's sponsor prizes.
 
 Hackathon: {brief.get('name')}
 Theme: {brief.get('theme')}
@@ -253,9 +281,13 @@ For each sponsor with a prize:
 Sort opportunities by value_score (highest first).
 Only recommend integrations that take ≤ 4 hours total.
 Prioritize integrations that can run in parallel with the core product build.""",
-        }],
-        temperature=0.2,
-    )
+            }],
+            temperature=0.2,
+        )
+        span.output = {
+            "opportunities": len(sponsor_map.opportunities),
+            "total_potential_prize": sponsor_map.total_potential_prize,
+        }
 
     await redis.set(f"hackathon:{hackathon_id}:sponsor_map", sponsor_map.model_dump_json(), ex=604800)
     logger.info(
@@ -280,6 +312,7 @@ async def _mark_task(redis: Redis, hackathon_id: str, agent_id: str, status: str
 
 async def run_all_intelligence(hackathon_id: str, brief: dict) -> dict:
     """Run all 4 intelligence agents in parallel."""
+    set_agent_context(hackathon_id, "intelligence")
     redis = get_redis()
 
     logger.info(f"[intelligence] Running all 4 agents in parallel for: {brief.get('name')}")

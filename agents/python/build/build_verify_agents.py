@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from config.electronhub import complete, complete_json, complete_batch
 from config.redis_client import get_redis
 from config.agents_config import ALL_AGENTS
+from config.forge_trace import trace_op, register_artifact, set_agent_context
 
 logger = logging.getLogger(__name__)
 BROWSER_URL = os.environ.get("BROWSER_SERVER_URL", "http://localhost:3100")
@@ -109,7 +110,10 @@ Output format:
         if opp.get("recommendation") != "skip"
     ]
 
-    results = await complete_batch(tasks, concurrency=3)
+    async with trace_op("llm", "integration:generate_code") as span:
+        span.input = {"task_count": len(tasks)}
+        results = await complete_batch(tasks, concurrency=3)
+        span.output = {"result_count": len(results)}
 
     modules = []
     all_prizes: list[str] = []
@@ -148,8 +152,13 @@ Output format:
     # Write integration files to disk
     output_dir = Path(f"/tmp/hackathon-{hackathon_id}/integrations")
     output_dir.mkdir(parents=True, exist_ok=True)
-    for mod in manifest.modules:
-        (output_dir / Path(mod.file_path).name).write_text(mod.code)
+    async with trace_op("file", "integration:write_modules") as span:
+        written = []
+        for mod in manifest.modules:
+            p = output_dir / Path(mod.file_path).name
+            p.write_text(mod.code)
+            written.append(str(p))
+        span.output = {"files": written}
 
     logger.info(
         f"[forge:integration] Built {len(modules)} integrations, "
@@ -185,13 +194,16 @@ async def run_test_engineer(
     demo_endpoints = [e for e in endpoints if e.get("is_demo_path")]
     project_name   = project_plan.get("project_name", "Project")
 
-    # Generate Playwright e2e suite (demo golden path)
-    e2e_code = await complete(
-        task="write-tests",
-        system_prompt=AGENT.system_prompt,
-        messages=[{
-            "role": "user",
-            "content": f"""Write a Playwright e2e test suite for the demo golden path.
+    async with trace_op("llm", "test:generate_tests") as span:
+        span.input = {"project": project_name, "demo_steps": len(demo_path), "endpoints": len(endpoints)}
+
+        # Generate Playwright e2e suite (demo golden path)
+        e2e_code = await complete(
+            task="write-tests",
+            system_prompt=AGENT.system_prompt,
+            messages=[{
+                "role": "user",
+                "content": f"""Write a Playwright e2e test suite for the demo golden path.
 
 Project: {project_name}
 Demo golden path steps:
@@ -211,17 +223,17 @@ Requirements:
 - Mark demo-critical assertions with // JUDGE SEES THIS
 - Max 60 seconds total for full demo path
 """,
-        }],
-        temperature=0.0,
-    )
+            }],
+            temperature=0.0,
+        )
 
-    # Generate pytest API test suite
-    pytest_code = await complete(
-        task="write-pytest",
-        system_prompt=AGENT.system_prompt,
-        messages=[{
-            "role": "user",
-            "content": f"""Write a pytest integration test suite for the FastAPI backend.
+        # Generate pytest API test suite
+        pytest_code = await complete(
+            task="write-pytest",
+            system_prompt=AGENT.system_prompt,
+            messages=[{
+                "role": "user",
+                "content": f"""Write a pytest integration test suite for the FastAPI backend.
 
 Project: {project_name}
 API endpoints:
@@ -236,15 +248,19 @@ Requirements:
 - Use pytest.mark.asyncio
 - No external service calls (mock everything)
 """,
-        }],
-        temperature=0.0,
-    )
+            }],
+            temperature=0.0,
+        )
+
+        span.output = {"e2e_len": len(e2e_code), "pytest_len": len(pytest_code)}
 
     # Write files
-    e2e_path  = output_dir / "demo-golden-path.spec.ts"
-    api_path  = output_dir / "test_api.py"
-    e2e_path.write_text(e2e_code)
-    api_path.write_text(pytest_code)
+    async with trace_op("file", "test:write_tests") as span:
+        e2e_path  = output_dir / "demo-golden-path.spec.ts"
+        api_path  = output_dir / "test_api.py"
+        e2e_path.write_text(e2e_code)
+        api_path.write_text(pytest_code)
+        span.output = {"files": [str(e2e_path), str(api_path)]}
 
     report = TestReport(
         e2e_tests_written=e2e_code.count("test("),
@@ -282,13 +298,15 @@ async def run_devops(
     output_dir = Path(f"/tmp/hackathon-{hackathon_id}/cicd")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    fe_workflow, be_workflow = await asyncio.gather(
-        complete(
-            task="create-sprint-plan",
-            system_prompt=AGENT.system_prompt,
-            messages=[{
-                "role": "user",
-                "content": f"""Write a GitHub Actions workflow for the Next.js frontend.
+    async with trace_op("llm", "devops:generate_cicd") as span:
+        span.input = {"project": project_name}
+        fe_workflow, be_workflow = await asyncio.gather(
+            complete(
+                task="create-sprint-plan",
+                system_prompt=AGENT.system_prompt,
+                messages=[{
+                    "role": "user",
+                    "content": f"""Write a GitHub Actions workflow for the Next.js frontend.
 
 Project: {project_name}-frontend
 Requirements:
@@ -300,15 +318,15 @@ Requirements:
 
 Output ONLY the YAML content for .github/workflows/frontend.yml
 """,
-            }],
-            temperature=0.0,
-        ),
-        complete(
-            task="create-sprint-plan",
-            system_prompt=AGENT.system_prompt,
-            messages=[{
-                "role": "user",
-                "content": f"""Write a GitHub Actions workflow for the FastAPI backend.
+                }],
+                temperature=0.0,
+            ),
+            complete(
+                task="create-sprint-plan",
+                system_prompt=AGENT.system_prompt,
+                messages=[{
+                    "role": "user",
+                    "content": f"""Write a GitHub Actions workflow for the FastAPI backend.
 
 Project: {project_name}-backend
 Requirements:
@@ -320,14 +338,17 @@ Requirements:
 
 Output ONLY the YAML content for .github/workflows/backend.yml
 """,
-            }],
-            temperature=0.0,
-        ),
-    )
+                }],
+                temperature=0.0,
+            ),
+        )
+        span.output = {"frontend_len": len(fe_workflow), "backend_len": len(be_workflow)}
 
     # Write workflows to disk
-    (output_dir / "frontend.yml").write_text(fe_workflow)
-    (output_dir / "backend.yml").write_text(be_workflow)
+    async with trace_op("file", "devops:write_configs") as span:
+        (output_dir / "frontend.yml").write_text(fe_workflow)
+        (output_dir / "backend.yml").write_text(be_workflow)
+        span.output = {"files": ["frontend.yml", "backend.yml"]}
 
     env_vars = [
         "NEXT_PUBLIC_API_URL", "NEXT_PUBLIC_DEMO_MODE",
@@ -425,48 +446,54 @@ async def run_security_agent(
     # 2. npm audit (if package.json present)
     pkg_json = output_dir / "package.json"
     if pkg_json.exists():
-        try:
-            result = subprocess.run(
-                ["npm", "audit", "--json", "--audit-level=high"],
-                cwd=str(output_dir),
-                capture_output=True, text=True, timeout=60,
-            )
-            scan_commands.append("npm audit --audit-level=high")
-            if result.returncode != 0:
-                audit_data = json.loads(result.stdout) if result.stdout else {}
-                vuln_count = audit_data.get("metadata", {}).get("vulnerabilities", {})
-                if vuln_count.get("high", 0) + vuln_count.get("critical", 0) > 0:
-                    high.append(SecurityIssue(
-                        severity="HIGH",
-                        file="package.json",
-                        line=None,
-                        description=f"npm audit: {vuln_count.get('high', 0)} high, {vuln_count.get('critical', 0)} critical vulnerabilities",
-                        fix="Run: npm audit fix",
-                    ))
-        except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
-            scan_commands.append("npm audit: skipped (npm not available)")
+        async with trace_op("subprocess", "security:npm_audit") as span:
+            try:
+                result = subprocess.run(
+                    ["npm", "audit", "--json", "--audit-level=high"],
+                    cwd=str(output_dir),
+                    capture_output=True, text=True, timeout=60,
+                )
+                scan_commands.append("npm audit --audit-level=high")
+                span.output = {"returncode": result.returncode}
+                if result.returncode != 0:
+                    audit_data = json.loads(result.stdout) if result.stdout else {}
+                    vuln_count = audit_data.get("metadata", {}).get("vulnerabilities", {})
+                    if vuln_count.get("high", 0) + vuln_count.get("critical", 0) > 0:
+                        high.append(SecurityIssue(
+                            severity="HIGH",
+                            file="package.json",
+                            line=None,
+                            description=f"npm audit: {vuln_count.get('high', 0)} high, {vuln_count.get('critical', 0)} critical vulnerabilities",
+                            fix="Run: npm audit fix",
+                        ))
+            except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
+                span.error = "npm not available or timed out"
+                scan_commands.append("npm audit: skipped (npm not available)")
 
     # 3. pip-audit (if requirements.txt or pyproject.toml present)
     if (output_dir / "pyproject.toml").exists() or (output_dir / "requirements.txt").exists():
-        try:
-            result = subprocess.run(
-                ["pip-audit", "--format=json"],
-                cwd=str(output_dir),
-                capture_output=True, text=True, timeout=60,
-            )
-            scan_commands.append("pip-audit --format=json")
-            if result.returncode != 0 and result.stdout:
-                vulns = json.loads(result.stdout)
-                for v in vulns[:5]:
-                    medium.append(SecurityIssue(
-                        severity="MEDIUM",
-                        file="pyproject.toml",
-                        line=None,
-                        description=f"CVE in {v.get('name')}: {v.get('vulns', [{}])[0].get('id', 'unknown')}",
-                        fix=f"Upgrade {v.get('name')} to {v.get('fix_versions', ['latest'])[0]}",
-                    ))
-        except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
-            scan_commands.append("pip-audit: skipped (not installed)")
+        async with trace_op("subprocess", "security:pip_audit") as span:
+            try:
+                result = subprocess.run(
+                    ["pip-audit", "--format=json"],
+                    cwd=str(output_dir),
+                    capture_output=True, text=True, timeout=60,
+                )
+                scan_commands.append("pip-audit --format=json")
+                span.output = {"returncode": result.returncode}
+                if result.returncode != 0 and result.stdout:
+                    vulns = json.loads(result.stdout)
+                    for v in vulns[:5]:
+                        medium.append(SecurityIssue(
+                            severity="MEDIUM",
+                            file="pyproject.toml",
+                            line=None,
+                            description=f"CVE in {v.get('name')}: {v.get('vulns', [{}])[0].get('id', 'unknown')}",
+                            fix=f"Upgrade {v.get('name')} to {v.get('fix_versions', ['latest'])[0]}",
+                        ))
+            except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
+                span.error = "pip-audit not available or timed out"
+                scan_commands.append("pip-audit: skipped (not installed)")
 
     # 4. LLM review of CORS and auth configuration
     api_contract_raw = ""
@@ -483,13 +510,15 @@ async def run_security_agent(
         class SecurityAnalysis(BaseModel):
             issues: list[dict]
 
-        analysis = await complete_json(
-            task="security-scan",
-            response_model=SecurityAnalysis,
-            system_prompt=AGENT.system_prompt,
-            messages=[{
-                "role": "user",
-                "content": f"""Review this API contract for security issues.
+        async with trace_op("llm", "security:scan") as span:
+            span.input = {"contract_len": len(api_contract_raw)}
+            analysis = await complete_json(
+                task="security-scan",
+                response_model=SecurityAnalysis,
+                system_prompt=AGENT.system_prompt,
+                messages=[{
+                    "role": "user",
+                    "content": f"""Review this API contract for security issues.
 
 {api_contract_raw}
 
@@ -497,9 +526,10 @@ Look for: missing auth on sensitive endpoints, overly permissive CORS,
 unvalidated inputs, exposed internal routes.
 
 Return JSON: {{"issues": [{{"severity": "HIGH|MEDIUM|LOW", "description": "...", "fix": "..."}}]}}""",
-            }],
-            temperature=0.0,
-        )
+                }],
+                temperature=0.0,
+            )
+            span.output = {"issues_found": len(analysis.issues)}
         scan_commands.append("LLM security review of API contract")
         for issue in analysis.issues:
             sev = issue.get("severity", "MEDIUM")
@@ -575,53 +605,52 @@ async def run_code_reviewer(
     output_dir = Path(f"/tmp/hackathon-{hackathon_id}")
 
     # ── Feature 4: Grep-based evidence gathering (GrepTool pattern) ──────────
-    # Search for specific anti-pattern evidence across the whole codebase
-    # instead of reading 6 random files.
     grep_evidence: list[str] = []
 
-    if output_dir.exists():
-        checks = [
-            # (label, pattern, glob, severity_hint)
-            ("TypeScript 'any' type",       ": any",              "*.tsx",  "BLOCKER"),
-            ("TypeScript 'any' type",       ": any",              "*.ts",   "BLOCKER"),
-            ("Hardcoded hex color",         r"#[0-9a-fA-F]{3,6}", "*.tsx",  "BLOCKER"),
-            ("console.error in prod",       "console.error",      "*.tsx",  "BLOCKER"),
-            ("Fixed pixel width (mobile)",  r"width: [0-9]*px",   "*.tsx",  "BLOCKER"),
-            ("Missing DEMO_MODE guard",     "useEffect",          "*.tsx",  "WARNING"),
-            ("Placeholder text",            "placeholder text",   "*.tsx",  "WARNING"),
-            ("ISO date string (unformatted)","toISOString",        "*.tsx",  "WARNING"),
-            ("Missing aria-label",          "onClick={",          "*.tsx",  "WARNING"),
-            ("Secret in code",              "sk-",                "*.ts",   "BLOCKER"),
-            ("TODO comment",                "TODO",               "*.tsx",  "WARNING"),
-        ]
-        for label, pattern, glob, severity in checks:
-            hits = grep_codebase(pattern, output_dir, glob)
-            if hits:
-                grep_evidence.append(
-                    f"[{severity}] {label} — {len(hits)} occurrence(s):\n"
-                    + "\n".join(f"  {h}" for h in hits[:4])
-                )
-
-        # Also run tsc --noEmit for type errors (LSPTool pattern)
-        tsc_errors: list[str] = []
-        pkg_json = output_dir / "package.json"
-        if pkg_json.exists():
-            try:
-                import subprocess
-                tsc_result = subprocess.run(
-                    ["npx", "tsc", "--noEmit", "--strict", "--pretty", "false"],
-                    cwd=str(output_dir),
-                    capture_output=True, text=True, timeout=60,
-                )
-                if tsc_result.returncode != 0:
-                    tsc_lines = [l for l in tsc_result.stdout.splitlines() if "error TS" in l]
-                    tsc_errors = tsc_lines[:10]
+    async with trace_op("subprocess", "code_review:tsc_check") as span:
+        if output_dir.exists():
+            checks = [
+                ("TypeScript 'any' type",       ": any",              "*.tsx",  "BLOCKER"),
+                ("TypeScript 'any' type",       ": any",              "*.ts",   "BLOCKER"),
+                ("Hardcoded hex color",         r"#[0-9a-fA-F]{3,6}", "*.tsx",  "BLOCKER"),
+                ("console.error in prod",       "console.error",      "*.tsx",  "BLOCKER"),
+                ("Fixed pixel width (mobile)",  r"width: [0-9]*px",   "*.tsx",  "BLOCKER"),
+                ("Missing DEMO_MODE guard",     "useEffect",          "*.tsx",  "WARNING"),
+                ("Placeholder text",            "placeholder text",   "*.tsx",  "WARNING"),
+                ("ISO date string (unformatted)","toISOString",        "*.tsx",  "WARNING"),
+                ("Missing aria-label",          "onClick={",          "*.tsx",  "WARNING"),
+                ("Secret in code",              "sk-",                "*.ts",   "BLOCKER"),
+                ("TODO comment",                "TODO",               "*.tsx",  "WARNING"),
+            ]
+            for label, pattern, glob, severity in checks:
+                hits = grep_codebase(pattern, output_dir, glob)
+                if hits:
                     grep_evidence.append(
-                        f"[BLOCKER] TypeScript compiler errors — {len(tsc_lines)} error(s):\n"
-                        + "\n".join(f"  {e}" for e in tsc_errors[:5])
+                        f"[{severity}] {label} — {len(hits)} occurrence(s):\n"
+                        + "\n".join(f"  {h}" for h in hits[:4])
                     )
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                pass  # tsc not available; grep evidence is sufficient
+
+            # Also run tsc --noEmit for type errors (LSPTool pattern)
+            tsc_errors: list[str] = []
+            pkg_json = output_dir / "package.json"
+            if pkg_json.exists():
+                try:
+                    import subprocess
+                    tsc_result = subprocess.run(
+                        ["npx", "tsc", "--noEmit", "--strict", "--pretty", "false"],
+                        cwd=str(output_dir),
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    if tsc_result.returncode != 0:
+                        tsc_lines = [l for l in tsc_result.stdout.splitlines() if "error TS" in l]
+                        tsc_errors = tsc_lines[:10]
+                        grep_evidence.append(
+                            f"[BLOCKER] TypeScript compiler errors — {len(tsc_lines)} error(s):\n"
+                            + "\n".join(f"  {e}" for e in tsc_errors[:5])
+                        )
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+        span.output = {"evidence_count": len(grep_evidence)}
 
     evidence_block = (
         "\n\nGrep evidence from full codebase scan:\n" + "\n\n".join(grep_evidence)
@@ -633,13 +662,15 @@ async def run_code_reviewer(
         warnings: list[dict]
         summary: str
 
-    review = await complete_json(
-        task="review-code",
-        response_model=ReviewOutput,
-        system_prompt=AGENT.system_prompt,
-        messages=[{
-            "role": "user",
-            "content": f"""Review this Forge hackathon project using the evidence below.
+    async with trace_op("llm", "code_review:review") as span:
+        span.input = {"evidence_items": len(grep_evidence)}
+        review = await complete_json(
+            task="review-code",
+            response_model=ReviewOutput,
+            system_prompt=AGENT.system_prompt,
+            messages=[{
+                "role": "user",
+                "content": f"""Review this Forge hackathon project using the evidence below.
 
 Design personality: {design_spec.get('personality', 'unknown')}
 {evidence_block}
@@ -664,9 +695,10 @@ WARNING criteria (fix in polish pass):
 
 Return JSON with blockers and warnings as lists of {{file, description, fix}}.
 Be specific — reference exact file paths from the grep evidence.""",
-        }],
-        temperature=0.0,
-    )
+            }],
+            temperature=0.0,
+        )
+        span.output = {"blockers": len(review.blockers), "warnings": len(review.warnings)}
 
     blockers = [ReviewIssue(severity="BLOCKER", file=i.get("file", "unknown"),
                             description=i.get("description", ""), fix=i.get("fix", ""))
@@ -710,55 +742,59 @@ async def run_performance_agent(
 ) -> PerformanceReport:
     warnings = []
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{BROWSER_URL}/lighthouse",
-                json={"url": preview_url},
-                timeout=aiohttp.ClientTimeout(total=120),
-            ) as resp:
-                data = await resp.json()
+    async with trace_op("http", "performance:lighthouse") as span:
+        span.input = {"url": preview_url}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{BROWSER_URL}/lighthouse",
+                    json={"url": preview_url},
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    data = await resp.json()
 
-        perf  = data.get("performance", 0)
-        a11y  = data.get("accessibility", 0)
-        bp    = data.get("best_practices", 0)
-        fcp   = data.get("fcp")
-        lcp   = data.get("lcp")
-        cls   = data.get("cls")
-        source = data.get("note", "lighthouse_cli").replace("Lighthouse CLI unavailable, using basic checks", "browser_fallback")
+            perf  = data.get("performance", 0)
+            a11y  = data.get("accessibility", 0)
+            bp    = data.get("best_practices", 0)
+            fcp   = data.get("fcp")
+            lcp   = data.get("lcp")
+            cls   = data.get("cls")
+            source = data.get("note", "lighthouse_cli").replace("Lighthouse CLI unavailable, using basic checks", "browser_fallback")
 
-        if perf < 85:
-            warnings.append(f"Performance {perf} < 85 — add code splitting, optimize images, check bundle size")
-        if a11y < 90:
-            warnings.append(f"Accessibility {a11y} < 90 — fix ARIA labels, color contrast, keyboard navigation")
-        if lcp and lcp > 3500:
-            warnings.append(f"LCP {lcp:.0f}ms > 3500ms — largest element renders too slowly on mobile")
-        if cls and cls > 0.1:
-            warnings.append(f"CLS {cls:.3f} > 0.1 — layout shift visible when content loads")
+            if perf < 85:
+                warnings.append(f"Performance {perf} < 85 — add code splitting, optimize images, check bundle size")
+            if a11y < 90:
+                warnings.append(f"Accessibility {a11y} < 90 — fix ARIA labels, color contrast, keyboard navigation")
+            if lcp and lcp > 3500:
+                warnings.append(f"LCP {lcp:.0f}ms > 3500ms — largest element renders too slowly on mobile")
+            if cls and cls > 0.1:
+                warnings.append(f"CLS {cls:.3f} > 0.1 — layout shift visible when content loads")
 
-        report = PerformanceReport(
-            lighthouse_performance=perf,
-            lighthouse_accessibility=a11y,
-            lighthouse_best_practices=bp,
-            fcp_ms=fcp,
-            lcp_ms=lcp,
-            cls=cls,
-            passed=perf >= 85 and a11y >= 90,
-            warnings=warnings,
-            source=source,
-        )
+            span.output = {"performance": perf, "accessibility": a11y, "best_practices": bp}
+            report = PerformanceReport(
+                lighthouse_performance=perf,
+                lighthouse_accessibility=a11y,
+                lighthouse_best_practices=bp,
+                fcp_ms=fcp,
+                lcp_ms=lcp,
+                cls=cls,
+                passed=perf >= 85 and a11y >= 90,
+                warnings=warnings,
+                source=source,
+            )
 
-    except Exception as e:
-        logger.warning(f"[forge:performance] Browser layer unavailable: {e}")
-        report = PerformanceReport(
-            lighthouse_performance=0,
-            lighthouse_accessibility=0,
-            lighthouse_best_practices=0,
-            fcp_ms=None, lcp_ms=None, cls=None,
-            passed=False,
-            warnings=[f"Lighthouse unavailable: {e}"],
-            source="unavailable",
-        )
+        except Exception as e:
+            span.error = str(e)
+            logger.warning(f"[forge:performance] Browser layer unavailable: {e}")
+            report = PerformanceReport(
+                lighthouse_performance=0,
+                lighthouse_accessibility=0,
+                lighthouse_best_practices=0,
+                fcp_ms=None, lcp_ms=None, cls=None,
+                passed=False,
+                warnings=[f"Lighthouse unavailable: {e}"],
+                source="unavailable",
+            )
 
     logger.info(
         f"[forge:performance] perf={report.lighthouse_performance} "
@@ -822,6 +858,7 @@ async def run_worker() -> None:
 
         hackathon_id = payload["hackathon_id"]
         inp = payload["input"]
+        set_agent_context(hackathon_id, agent_id)
 
         await redis.set(
             f"task:{hackathon_id}:{agent_id}",
@@ -852,6 +889,11 @@ async def run_worker() -> None:
                 f"task:{hackathon_id}:{agent_id}",
                 json.dumps({"status": "done", "data": output}),
                 ex=604800,
+            )
+
+            await register_artifact(
+                hackathon_id, agent_id, artifact_key, "json",
+                f"{agent_id} output ({len(json.dumps(output))} bytes)",
             )
 
         except Exception as e:

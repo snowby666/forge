@@ -313,7 +313,7 @@ SWE-agent-style PR review. Blocks merges on: TypeScript `any`, hardcoded colors,
 **File:** `agents/python/build/build_verify_agents.py`
 **Tier:** `fast`
 
-Runs Lighthouse CLI (falls back to Playwright if unavailable). Minimum thresholds: Performance ≥ 85, Accessibility ≥ 90. Checks on 4G mobile simulation. Core Web Vitals: FCP < 2.0s, LCP < 3.5s, CLS < 0.1.
+Runs Lighthouse CLI (falls back to Playwright if unavailable). Minimum thresholds: Performance >= 85, Accessibility >= 85. Checks on 4G mobile simulation. Core Web Vitals: FCP < 2.0s, LCP < 3.5s, CLS < 0.1.
 
 **Consumes:** `PreviewURL`
 **Produces:** `PerformanceReport`
@@ -460,7 +460,7 @@ Triggered automatically by Calendar Agent 36 hours after submission deadline. Re
 python agents/python/infra/outcome_tracker.py --hackathon-id devpost-123
 ```
 
-**Produces:** `OutcomeReport` — placement, prize, what worked, what failed, learning for next run, `ANTI_SLOP_RULES`, `DESIGN_PERSONALITIES`, `DESIGN_CRITIQUE_RUBRIC`, `COMPONENT_QUALITY_CHECKLIST`, agent system prompts, `DesignTokens` class
+**Produces:** `OutcomeReport` — placement, prize, what worked, what failed, learning signals fed into `LIVING_KNOWLEDGE` via Memory Keeper
 
 ---
 

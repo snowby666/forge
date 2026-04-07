@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from config.electronhub import complete_json
 from config.agents_config import ALL_AGENTS
+from config.forge_trace import trace_op, register_artifact, set_agent_context
 from config.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,7 @@ async def generate_concepts(
 ) -> ConceptBrief:
     import time as _t
     t0 = _t.monotonic()
+    set_agent_context(hackathon_id, "strategy_director")
     logger.info(f"[forge:strategy] generate_concepts() START (hackathon={hackathon_id})")
 
     # ── Feature 1: Query memory for what worked in past similar hackathons ────
@@ -141,13 +143,15 @@ async def generate_concepts(
         f"| prompt_size≈{prompt_size} chars ({_t.monotonic()-t0:.1f}s)"
     )
 
-    brief = await complete_json(
-        task="generate-concepts",
-        response_model=ConceptBrief,
-        system_prompt=AGENT.system_prompt + memdir_notes,
-        messages=[{
-            "role": "user",
-            "content": f"""Generate exactly 3 project concepts for this hackathon.
+    async with trace_op("llm", "strategy:generate_concepts") as span:
+        span.input = {"hackathon": hackathon_brief.get("name"), "prompt_size": prompt_size}
+        brief = await complete_json(
+            task="generate-concepts",
+            response_model=ConceptBrief,
+            system_prompt=AGENT.system_prompt + memdir_notes,
+            messages=[{
+                "role": "user",
+                "content": f"""Generate exactly 3 project concepts for this hackathon.
 Each concept must be genuinely distinct — not just variations of the same idea.
 
 === HACKATHON BRIEF ===
@@ -178,9 +182,10 @@ REQUIRED: Explain WHY each concept would win. Reference specific judges,
 specific past winner gaps, specific sponsor prize criteria.
 
 rank=1 should be your best recommendation. Be honest about risks.""",
-        }],
-        temperature=0.4,
-    )
+            }],
+            temperature=0.4,
+        )
+        span.output = {"concepts": len(brief.concepts), "top_score": brief.concepts[0].total_score if brief.concepts else 0}
     logger.info(
         f"[forge:strategy] complete_json returned {len(brief.concepts)} concepts "
         f"({_t.monotonic()-t0:.1f}s)"
@@ -192,6 +197,8 @@ rank=1 should be your best recommendation. Be honest about risks.""",
     brief.concepts.sort(key=lambda c: c.total_score, reverse=True)
     for i, concept in enumerate(brief.concepts):
         concept.rank = i + 1
+
+    await register_artifact(hackathon_id, "strategy_director", "concepts", "json", f"{len(brief.concepts)} ranked concepts, top: {brief.concepts[0].project_name}")
 
     logger.info(
         f"[forge:strategy] generate_concepts() DONE in {_t.monotonic()-t0:.1f}s | "
@@ -217,6 +224,7 @@ async def run_worker() -> None:
             continue
 
         hackathon_id = payload["hackathon_id"]
+        set_agent_context(hackathon_id, "strategy_director")
         inp = payload["input"]
 
         await redis.set(f"task:{hackathon_id}:strategy_director", json.dumps({"status": "in-progress"}), ex=604800)

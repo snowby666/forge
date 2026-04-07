@@ -191,4 +191,49 @@ export function runSystemTest() {
   });
 }
 
+// ── Tracing ─────────────────────────────────────────────────────────────────
+
+export function fetchTraces(
+  hackathonId: string,
+  opts?: { agent?: string; op?: string; status?: string; limit?: number; offset?: number },
+) {
+  const params = new URLSearchParams();
+  if (opts?.agent) params.set("agent", opts.agent);
+  if (opts?.op) params.set("op", opts.op);
+  if (opts?.status) params.set("status", opts.status);
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  if (opts?.offset) params.set("offset", String(opts.offset));
+  const qs = params.toString();
+  return apiFetch<import("./types").TraceListResponse>(
+    `/api/hackathon/${hackathonId}/traces${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export function fetchTraceSummary(hackathonId: string) {
+  return apiFetch<import("./types").TraceSummary>(
+    `/api/hackathon/${hackathonId}/traces/summary`,
+  );
+}
+
+export function fetchArtifactRegistry(hackathonId: string) {
+  return apiFetch<import("./types").ArtifactEntry[]>(
+    `/api/hackathon/${hackathonId}/artifact-registry`,
+  );
+}
+
+export function fetchEvents(
+  hackathonId: string,
+  opts?: { kind?: string; agent?: string; limit?: number; offset?: number },
+) {
+  const params = new URLSearchParams();
+  if (opts?.kind) params.set("kind", opts.kind);
+  if (opts?.agent) params.set("agent", opts.agent);
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  if (opts?.offset) params.set("offset", String(opts.offset));
+  const qs = params.toString();
+  return apiFetch<{ total: number; offset: number; limit: number; events: import("./types").UnifiedEvent[] }>(
+    `/api/hackathon/${hackathonId}/events${qs ? `?${qs}` : ""}`,
+  );
+}
+
 export { ApiError };

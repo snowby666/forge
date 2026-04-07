@@ -18,6 +18,7 @@ from redis.asyncio import Redis
 from config.electronhub import complete_json
 from config.agents_config import ALL_AGENTS
 from config.redis_client import get_redis
+from config.forge_trace import trace_op, register_artifact, set_agent_context
 
 logger = logging.getLogger(__name__)
 
@@ -71,13 +72,15 @@ async def create_project_plan(
     run_ctx = await build_run_context(hackathon_id, redis)
     memdir_ctx = await build_memdir_context_for_agent("pm")
 
-    plan = await complete_json(
-        task="create-sprint-plan",
-        response_model=ProjectPlan,
-        system_prompt=AGENT.system_prompt + run_ctx + memdir_ctx,
-        messages=[{
-            "role": "user",
-            "content": f"""Create the detailed project plan for the approved concept.
+    async with trace_op("llm", "pm:create_project_plan", hackathon_id=hackathon_id, agent_id="pm") as span:
+        span.input = {"concept": selected_concept.get("name", ""), "hackathon": brief.get("name", "")}
+        plan = await complete_json(
+            task="create-sprint-plan",
+            response_model=ProjectPlan,
+            system_prompt=AGENT.system_prompt + run_ctx + memdir_ctx,
+            messages=[{
+                "role": "user",
+                "content": f"""Create the detailed project plan for the approved concept.
 
 Hackathon: {brief.get('name')}
 Deadline: {brief.get('deadline')}
@@ -100,11 +103,21 @@ HARD CONSTRAINTS:
 
 CUTSCOPE: Be explicit about what you're NOT building and why.
 Better to know upfront than to run out of time mid-hackathon.""",
-        }],
-        temperature=0.2,
-    )
+            }],
+            temperature=0.2,
+        )
+        span.output = {
+            "project_name": plan.project_name,
+            "feature_count": len(plan.core_features),
+            "total_hours": plan.total_hours_available,
+            "demo_steps": len(plan.demo_golden_path),
+        }
 
     await redis.set(f"hackathon:{hackathon_id}:project_plan", plan.model_dump_json(), ex=604800)
+    await register_artifact(
+        hackathon_id, "pm", "project_plan", "json",
+        f"{plan.project_name}: {len(plan.core_features)} features, {plan.total_hours_available}h",
+    )
     logger.info(f"[forge:pm] Plan created: {plan.project_name}, {len(plan.core_features)} features, {plan.total_hours_available}h available")
     return plan
 
@@ -171,13 +184,15 @@ async def design_architecture(
         api_contract: ApiContract
         dependency_graph: DependencyGraph
 
-    arch = await complete_json(
-        task="design-api-contract",
-        response_model=ArchitectureOutput,
-        system_prompt=AGENT.system_prompt + run_ctx + memdir_ctx,
-        messages=[{
-            "role": "user",
-            "content": f"""Design the complete technical architecture for this project.
+    async with trace_op("llm", "architect:design_architecture", hackathon_id=hackathon_id, agent_id="tech_architect") as span:
+        span.input = {"project": project_plan.get("project_name", ""), "features": [f.get("name") for f in project_plan.get("core_features", [])]}
+        arch = await complete_json(
+            task="design-api-contract",
+            response_model=ArchitectureOutput,
+            system_prompt=AGENT.system_prompt + run_ctx + memdir_ctx,
+            messages=[{
+                "role": "user",
+                "content": f"""Design the complete technical architecture for this project.
 
 Project: {project_plan.get('project_name')} — {project_plan.get('tagline')}
 Features: {json.dumps([f.get('name') for f in project_plan.get('core_features', [])], indent=2)}
@@ -195,20 +210,40 @@ REQUIREMENTS:
 
 PUBLISH IMMEDIATELY: The API contract should be published to Redis right away
 so the frontend engineer can start working in parallel with backend implementation.""",
-        }],
-        temperature=0.1,
-    )
+            }],
+            temperature=0.1,
+        )
+        span.output = {
+            "table_count": len(arch.db_schema.tables),
+            "endpoint_count": len(arch.api_contract.endpoints),
+            "demo_endpoint_count": len(arch.api_contract.demo_endpoints),
+            "parallel_tracks": len(arch.dependency_graph.parallel_tracks),
+        }
 
     # Store all 3 artifacts
     await redis.set(f"hackathon:{hackathon_id}:db_schema", arch.db_schema.model_dump_json(), ex=604800)
     await redis.set(f"hackathon:{hackathon_id}:api_contract", arch.api_contract.model_dump_json(), ex=604800)
     await redis.set(f"hackathon:{hackathon_id}:dependency_graph", arch.dependency_graph.model_dump_json(), ex=604800)
+    await register_artifact(
+        hackathon_id, "tech_architect", "db_schema", "json",
+        f"{len(arch.db_schema.tables)} tables, {len(arch.db_schema.indexes)} indexes",
+    )
+    await register_artifact(
+        hackathon_id, "tech_architect", "api_contract", "json",
+        f"{len(arch.api_contract.endpoints)} endpoints, {len(arch.api_contract.demo_endpoints)} on demo path",
+    )
+    await register_artifact(
+        hackathon_id, "tech_architect", "dependency_graph", "json",
+        f"{len(arch.dependency_graph.parallel_tracks)} parallel tracks",
+    )
 
     # IMMEDIATELY publish api_contract so frontend can unblock
-    await redis.publish("agent:api_contract_ready", json.dumps({
-        "hackathon_id": hackathon_id,
-        "api_contract": arch.api_contract.model_dump(),
-    }))
+    async with trace_op("redis", "architect:publish_api_contract", hackathon_id=hackathon_id, agent_id="tech_architect") as span:
+        await redis.publish("agent:api_contract_ready", json.dumps({
+            "hackathon_id": hackathon_id,
+            "api_contract": arch.api_contract.model_dump(),
+        }))
+        span.output = {"channel": "agent:api_contract_ready"}
 
     logger.info(
         f"[forge:architect] Done: {len(arch.db_schema.tables)} tables, "
@@ -237,6 +272,7 @@ async def run_pm_worker() -> None:
 
         hackathon_id = payload["hackathon_id"]
         inp = payload["input"]
+        set_agent_context(hackathon_id, "pm")
         await redis.set(f"task:{hackathon_id}:pm", json.dumps({"status": "in-progress"}), ex=604800)
 
         try:
@@ -275,6 +311,7 @@ async def run_architect_worker() -> None:
 
         hackathon_id = payload["hackathon_id"]
         inp = payload["input"]
+        set_agent_context(hackathon_id, "tech_architect")
         await redis.set(f"task:{hackathon_id}:tech_architect", json.dumps({"status": "in-progress"}), ex=604800)
 
         try:

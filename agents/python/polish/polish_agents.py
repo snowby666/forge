@@ -26,6 +26,7 @@ from config.electronhub import complete, complete_json
 from config.agents_config import ALL_AGENTS
 from config.redis_client import get_redis
 from config.design_constitution import ANTI_SLOP_RULES, COMPONENT_QUALITY_CHECKLIST
+from config.forge_trace import trace_op, register_artifact, set_agent_context
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +62,14 @@ async def run_polish_agent(
     warnings = ux_audit_report.get("warnings", [])
     anti_slop_violations = ux_audit_report.get("anti_slop_violations", [])
 
-    polish_instructions = await complete(
-        task="generate-component",
-        system_prompt=AGENT.system_prompt,
-        messages=[{
-            "role": "user",
-            "content": f"""Generate specific polish patches for these UX issues.
+    async with trace_op("llm", "polish:apply_fixes") as span:
+        span.input = {"warnings": len(warnings), "anti_slop_violations": len(anti_slop_violations)}
+        polish_instructions = await complete(
+            task="generate-component",
+            system_prompt=AGENT.system_prompt,
+            messages=[{
+                "role": "user",
+                "content": f"""Generate specific polish patches for these UX issues.
 
 {COMPONENT_QUALITY_CHECKLIST}
 
@@ -91,9 +94,10 @@ Focus on:
 - Mobile: remove any fixed widths that cause 375px overflow
 - Meta tags: add og:image, og:title, og:description in layout.tsx
 - favicon: link to /favicon.svg in layout.tsx head""",
-        }],
-        temperature=0.2,
-    )
+            }],
+            temperature=0.2,
+        )
+        span.output = {"instructions_len": len(polish_instructions)}
 
     # Parse PATCH blocks and apply file modifications
     import re as _re
@@ -106,30 +110,32 @@ Focus on:
 
     output_root = Path(output_dir) if output_dir else Path(f"/tmp/hackathon-{hackathon_id}")
 
-    for match in patch_pattern.finditer(polish_instructions):
-        rel_path = match.group(1).strip()
-        find_str = match.group(2).strip()
-        replace_str = match.group(3).strip()
-        target = output_root / rel_path
+    async with trace_op("file", "polish:write_patches") as span:
+        for match in patch_pattern.finditer(polish_instructions):
+            rel_path = match.group(1).strip()
+            find_str = match.group(2).strip()
+            replace_str = match.group(3).strip()
+            target = output_root / rel_path
 
-        if not target.exists():
-            remaining_issues.append(f"File not found: {rel_path}")
-            continue
+            if not target.exists():
+                remaining_issues.append(f"File not found: {rel_path}")
+                continue
 
-        try:
-            content = target.read_text(encoding="utf-8")
-            if find_str in content:
-                target.write_text(content.replace(find_str, replace_str, 1))
-                tasks_completed.append(PolishTask(
-                    file_path=rel_path,
-                    issue="UX audit fix applied",
-                    fix_description=f"Replaced {find_str[:40]}... with polished version",
-                    priority="high",
-                ))
-            else:
-                remaining_issues.append(f"FIND string not found in {rel_path} — may already be fixed")
-        except Exception as e:
-            remaining_issues.append(f"Patch failed for {rel_path}: {e}")
+            try:
+                content = target.read_text(encoding="utf-8")
+                if find_str in content:
+                    target.write_text(content.replace(find_str, replace_str, 1))
+                    tasks_completed.append(PolishTask(
+                        file_path=rel_path,
+                        issue="UX audit fix applied",
+                        fix_description=f"Replaced {find_str[:40]}... with polished version",
+                        priority="high",
+                    ))
+                else:
+                    remaining_issues.append(f"FIND string not found in {rel_path} — may already be fixed")
+            except Exception as e:
+                remaining_issues.append(f"Patch failed for {rel_path}: {e}")
+        span.output = {"applied": len(tasks_completed), "skipped": len(remaining_issues)}
 
     # Always add essential meta tags to layout if not present
     layout_candidates = list(output_root.rglob("layout.tsx")) + list(output_root.rglob("layout.ts"))
@@ -208,13 +214,15 @@ async def run_copy_writer(
         "John Doe", "Jane Smith", "example@email.com", "Company Name",
     ]
 
-    report = await complete_json(
-        task="write-submission-copy",
-        response_model=CopyWriterReport,
-        system_prompt=AGENT.system_prompt,
-        messages=[{
-            "role": "user",
-            "content": f"""Rewrite all generic UI copy in this project to be specific and judge-optimized.
+    async with trace_op("llm", "copy:write_copy") as span:
+        span.input = {"project": project_plan.get("project_name"), "patterns": len(generic_patterns)}
+        report = await complete_json(
+            task="write-submission-copy",
+            response_model=CopyWriterReport,
+            system_prompt=AGENT.system_prompt,
+            messages=[{
+                "role": "user",
+                "content": f"""Rewrite all generic UI copy in this project to be specific and judge-optimized.
 
 Project: {project_plan.get('project_name')} — {project_plan.get('tagline')}
 Problem: {project_plan.get('problem')}
@@ -237,9 +245,10 @@ Apply the rewriting principles:
 - Placeholders: show real examples ("Customer email (e.g. sarah@acme.com)")
 - Errors: what happened + what to do about it
 - Empty states: acknowledge + motivate + action""",
-        }],
-        temperature=0.4,
-    )
+            }],
+            temperature=0.4,
+        )
+        span.output = {"rewrites": len(report.rewrites), "patterns_eliminated": len(report.generic_patterns_eliminated)}
 
     logger.info(f"[forge:copy] {len(report.rewrites)} copy rewrites, {len(report.generic_patterns_eliminated)} patterns eliminated")
     return report
@@ -270,13 +279,15 @@ async def generate_seed_data(
 ) -> SeedScript:
     AGENT = ALL_AGENTS["data_seeder"]
 
-    seed = await complete_json(
-        task="seed-demo-data",
-        response_model=SeedScript,
-        system_prompt=AGENT.system_prompt,
-        messages=[{
-            "role": "user",
-            "content": f"""Generate realistic demo seed data for this product.
+    async with trace_op("llm", "seed:generate_data") as span:
+        span.input = {"project": project_plan.get("project_name")}
+        seed = await complete_json(
+            task="seed-demo-data",
+            response_model=SeedScript,
+            system_prompt=AGENT.system_prompt,
+            messages=[{
+                "role": "user",
+                "content": f"""Generate realistic demo seed data for this product.
 
 Project: {project_plan.get('project_name')}
 Problem solved: {project_plan.get('problem')}
@@ -298,9 +309,10 @@ REQUIREMENTS:
 
 The seed data should make judges think: "This is clearly a real product that people use."
 Not: "Someone put test data in here.""",
-        }],
-        temperature=0.5,  # higher for creative data generation
-    )
+            }],
+            temperature=0.5,
+        )
+        span.output = {"tables": len(seed.entities), "seed_order": seed.seed_order}
 
     # Write seed script to disk
     seed_path = Path(f"/tmp/hackathon-{hackathon_id}/seed_data.json")
@@ -308,6 +320,7 @@ Not: "Someone put test data in here.""",
     seed_path.write_text(seed.model_dump_json(indent=2))
 
     await redis.set(f"hackathon:{hackathon_id}:seed_data", seed.model_dump_json(), ex=604800)
+    await register_artifact(hackathon_id, "data_seeder", "seed_data.json", "json", f"Seed data for {len(seed.entities)} tables")
     logger.info(f"[forge:seed] Generated seed data for {len(seed.entities)} tables")
     return seed
 
@@ -343,13 +356,14 @@ async def create_brand_kit(
     personality = design_spec.get("personality", "consumer_saas")
     primary_color = design_spec.get("tokens", {}).get("primary_shade", "#6366f1")
 
-    # Generate SVG logo
-    logo_svg = await complete(
-        task="generate-logo",
-        system_prompt=AGENT.system_prompt,
-        messages=[{
-            "role": "user",
-            "content": f"""Create an SVG logo for this product.
+    async with trace_op("llm", "brand:generate_logo") as span:
+        span.input = {"product": project_plan.get("project_name"), "color": primary_color}
+        logo_svg = await complete(
+            task="generate-logo",
+            system_prompt=AGENT.system_prompt,
+            messages=[{
+                "role": "user",
+                "content": f"""Create an SVG logo for this product.
 
 Product: {project_plan.get('project_name')}
 Tagline: {project_plan.get('tagline')}
@@ -365,9 +379,10 @@ LOGO REQUIREMENTS:
 
 OUTPUT: Complete SVG markup only. Nothing else.
 The SVG should have viewBox="0 0 200 40" for the wordmark version.""",
-        }],
-        temperature=0.6,
-    )
+            }],
+            temperature=0.6,
+        )
+        span.output = {"svg_len": len(logo_svg)}
 
     # Generate og:image description (actual image created separately)
     og_description = await complete(
@@ -388,6 +403,7 @@ Keep it simple — judges need to read it when it's thumbnail-sized.""",
     logo_path = Path(output_dir) / "brand" / "logo.svg"
     logo_path.parent.mkdir(parents=True, exist_ok=True)
     logo_path.write_text(logo_svg if "<svg" in logo_svg else f"<!-- Logo SVG -->\n{logo_svg}")
+    await register_artifact(hackathon_id, "brand", "logo.svg", "image", "SVG logo and wordmark")
 
     kit = BrandKit(
         logo=BrandAsset(asset_type="logo_svg", file_path=str(logo_path), svg_or_description=logo_svg),
@@ -419,6 +435,7 @@ async def run_all_polish(
     output_dir: str,
 ) -> dict:
     """Run all 4 polish agents in parallel."""
+    set_agent_context(hackathon_id, "polish")
     redis = get_redis()
 
     logger.info(f"[forge:polish] Running all 4 polish agents in parallel")
