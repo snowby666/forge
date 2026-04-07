@@ -139,7 +139,9 @@ done
 log "Redis ready"
 WAITED=0
 
-until curl -sf http://localhost:6333/readyz &>/dev/null 2>&1; do
+CURL_Q=( -sf )
+[[ -n "${QDRANT_API_KEY:-}" ]] && CURL_Q+=( -H "api-key: ${QDRANT_API_KEY}" )
+until curl "${CURL_Q[@]}" http://localhost:6333/readyz &>/dev/null 2>&1; do
   sleep 2; WAITED=$((WAITED+2))
   [[ $WAITED -ge $MAX_WAIT ]] && { warn "Qdrant health check timed out -- continuing"; break; }
 done

@@ -801,11 +801,17 @@ async def cmd_test(args):
     except Exception as e:
         checks.append(("Redis", False, str(e)))
 
-    # Qdrant
+    # Qdrant (requires api-key header when QDRANT_API_KEY is set)
     try:
         import aiohttp
+        _qk = os.environ.get("QDRANT_API_KEY", "").strip()
+        _qh = {"api-key": _qk} if _qk else {}
         async with aiohttp.ClientSession() as s:
-            async with s.get("http://localhost:6333/readyz", timeout=aiohttp.ClientTimeout(total=5)) as r:
+            async with s.get(
+                "http://localhost:6333/readyz",
+                headers=_qh,
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as r:
                 checks.append(("Qdrant", r.status == 200))
     except Exception:
         checks.append(("Qdrant", False, "not running"))

@@ -268,7 +268,11 @@ log "Redis ready"
 
 log "Waiting for Qdrant..."
 for i in $(seq 1 30); do
-  curl -sf http://localhost:6333/readyz &>/dev/null && break
+  if [[ -n "${QDRANT_API_KEY:-}" ]]; then
+    curl -sf -H "api-key: ${QDRANT_API_KEY}" http://localhost:6333/readyz &>/dev/null && break
+  else
+    curl -sf http://localhost:6333/readyz &>/dev/null && break
+  fi
   sleep 2
 done
 log "Qdrant ready"
