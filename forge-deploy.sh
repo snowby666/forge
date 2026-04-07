@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # forge-deploy.sh -- One-shot deploy. Zero interaction. Handles everything.
-# Usage: bash forge-deploy.sh
+# Usage: bash forge-deploy.sh [--clean]
+#   --clean   Deep-clean all Docker artifacts, caches, volumes before deploying
 set -euo pipefail
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -8,6 +9,11 @@ log()  { echo -e "${GREEN}[forge]${NC} $1"; }
 warn() { echo -e "${YELLOW}[warn]${NC} $1"; }
 err()  { echo -e "${RED}[error]${NC} $1"; exit 1; }
 info() { echo -e "${CYAN}[info]${NC} $1"; }
+
+DO_CLEAN=false
+for arg in "$@"; do
+  [[ "$arg" == "--clean" ]] && DO_CLEAN=true
+done
 
 echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════════════╗${NC}"
@@ -207,6 +213,12 @@ EOCONF
 fi
 
 # ── Step 12: Start Docker services ────────────────────────────────────────────
+if [[ "$DO_CLEAN" == "true" ]]; then
+  log "Running deep clean before deploy..."
+  bash scripts/deep-clean.sh
+  log "Deep clean done — continuing deploy..."
+fi
+
 log "Starting Docker services..."
 set -a; source .env 2>/dev/null || true; set +a
 docker compose down -v 2>/dev/null || true
