@@ -68,10 +68,10 @@ services:
     healthcheck:
       test:
         - CMD
-        - bash
+        - /bin/bash
         - -ec
         - >-
-          exec 3<>/dev/tcp/127.0.0.1/6333 || exit 1; if [ -n "$$QDRANT__SERVICE__API_KEY" ]; then printf $$'GET /readyz HTTP/1.1\r\nHost: localhost\r\napi-key: %s\r\nConnection: close\r\n\r\n' "$$QDRANT__SERVICE__API_KEY" >&3; else printf $$'GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; fi; IFS= read -r line <&3 || exit 1; [[ "$$line" == *" 200 "* ]] || exit 1
+          exec 3<>/dev/tcp/127.0.0.1/6333 || exit 1; if [ -n "$$QDRANT__SERVICE__API_KEY" ]; then printf $$'GET /readyz HTTP/1.1\r\nHost: localhost\r\napi-key: %s\r\nConnection: close\r\n\r\n' "$$QDRANT__SERVICE__API_KEY" >&3; else printf $$'GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; fi; IFS= read -r line <&3 || exit 1; [[ "$$line" == *" 200"* ]] || exit 1
       interval: 5s
       timeout: 5s
       retries: 8
@@ -154,6 +154,8 @@ services:
       SEARXNG_URL: "http://searxng:8080"
       DAYTONA_API_URL: "http://daytona-api:3000/api"
       DAYTONA_API_KEY: "${DAYTONA_API_KEY:-}"
+      # Browser layer is NOT in this compose file — run `agents/browser` on the host (port 3100) if you need /register.
+      # Scout treats a dead server as "skip registration" and continues. Override with BROWSER_DOCKER_URL if needed.
       BROWSER_SERVER_URL: "${BROWSER_DOCKER_URL:-http://host.docker.internal:3100}"
     expose:
       - "3001"

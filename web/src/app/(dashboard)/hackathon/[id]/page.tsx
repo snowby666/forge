@@ -218,7 +218,7 @@ export default function HackathonDetailPage({
   const handleTrigger = useCallback(
     async (agentId: string) => {
       try {
-        await triggerAgent(id, agentId)
+      await triggerAgent(id, agentId)
         toast.success(`Triggered ${agentId.replace(/_/g, " ")}`)
       } catch {
         toast.error(`Failed to trigger ${agentId}`)
@@ -230,7 +230,7 @@ export default function HackathonDetailPage({
   const handleRestart = useCallback(
     async (agentId: string) => {
       try {
-        await restartAgent(id, agentId)
+      await restartAgent(id, agentId)
         toast.success(`Restarted ${agentId.replace(/_/g, " ")}`)
       } catch {
         toast.error(`Failed to restart ${agentId}`)
@@ -241,7 +241,7 @@ export default function HackathonDetailPage({
 
   const handleRerollConfirm = useCallback(async () => {
     try {
-      await rerollHackathon(id)
+    await rerollHackathon(id)
       setRerollOpen(false)
       toast.success("Pipeline rerolled")
     } catch {
@@ -251,9 +251,9 @@ export default function HackathonDetailPage({
 
   const handleDeleteConfirm = useCallback(async () => {
     try {
-      await deleteHackathon(id)
+    await deleteHackathon(id)
       toast.success("Hackathon deleted")
-      router.push("/hackathons")
+    router.push("/hackathons")
     } catch {
       toast.error("Failed to delete hackathon")
     }
@@ -263,7 +263,7 @@ export default function HackathonDetailPage({
     async (cp: Checkpoint, data?: Record<string, unknown>) => {
       try {
         await approveCheckpoint(id, cp.checkpoint, data)
-        mutateCheckpoints()
+      mutateCheckpoints()
         toast.success(`${cp.checkpoint.replace(/_/g, " ")} approved`)
       } catch {
         toast.error("Failed to approve checkpoint")
@@ -633,13 +633,13 @@ export default function HackathonDetailPage({
                     : undefined
 
                 return (
-                  <CheckpointCard
-                    key={cp.checkpoint}
-                    checkpoint={cp}
-                    hackathonId={id}
+                <CheckpointCard
+                  key={cp.checkpoint}
+                  checkpoint={cp}
+                  hackathonId={id}
                     concepts={concepts}
                     onApprove={(data) => handleApprove(cp, data)}
-                  />
+                />
                 )
               })}
             </div>

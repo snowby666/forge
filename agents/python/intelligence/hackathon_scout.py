@@ -1003,15 +1003,34 @@ async def call_browser_scrape(platforms: list[str], limit: int = 5) -> list[dict
 
 
 async def call_browser_register(url: str, platform: str, dry_run: bool = False) -> bool:
-    """Ask browser layer to register for a hackathon."""
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            f"{BROWSER_URL}/register",
-            json={"url": url, "platform": platform, "dry_run": dry_run},
-            timeout=aiohttp.ClientTimeout(total=120),
-        ) as resp:
-            data = await resp.json()
-            return data.get("success", False)
+    """Ask browser layer to register for a hackathon.
+
+    Returns False if the browser server is unreachable (e.g. Docker API with no process on :3100).
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{BROWSER_URL}/register",
+                json={"url": url, "platform": platform, "dry_run": dry_run},
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                try:
+                    data = await resp.json(content_type=None)
+                except (aiohttp.ContentTypeError, json.JSONDecodeError):
+                    logger.warning(
+                        "[forge:scout:register] Non-JSON from browser server at %s (HTTP %s)",
+                        BROWSER_URL,
+                        resp.status,
+                    )
+                    return False
+                return bool(data.get("success", False))
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+        logger.warning(
+            "[forge:scout:register] Browser server unavailable at %s (%s); skipping registration",
+            BROWSER_URL,
+            e,
+        )
+        return False
 
 
 # ── Main pipeline ──────────────────────────────────────────────────────────────
@@ -1330,9 +1349,13 @@ async def run_scout(
             span.output = {"stored": True}
 
         prize_total = sum(p.amount or 0 for p in brief.prizes)
-        register_artifact(
-            brief.hackathon_id, "hackathon_scout", "hackathon_brief",
-            brief.name, {
+        await register_artifact(
+            brief.hackathon_id,
+            "hackathon_scout",
+            f"hackathon_brief_{brief.hackathon_id}",
+            "hackathon_brief",
+            f"{brief.name} (score={brief.score}, {brief.platform})",
+            meta={
                 "score": brief.score,
                 "platform": brief.platform,
                 "url": brief.url,
@@ -1342,19 +1365,23 @@ async def run_scout(
             },
         )
 
+        registered_ok = False
         if brief.registration_open:
             async with trace_op("http", "scout:register", hackathon_id=brief.hackathon_id) as span:
                 span.input = {"url": brief.url, "platform": brief.platform, "dry_run": dry_run}
-                registered = await call_browser_register(brief.url, brief.platform, dry_run=dry_run)
-                span.output = {"registered": registered}
-            if registered and not dry_run:
+                registered_ok = await call_browser_register(brief.url, brief.platform, dry_run=dry_run)
+                span.output = {"registered": registered_ok}
+            if registered_ok and not dry_run:
                 await redis.publish("commander:new_hackathon", json.dumps({
                     "hackathon_id": brief.hackathon_id,
                     "brief": brief.model_dump(),
                 }))
                 await emit_log(brief.hackathon_id, "hackathon_scout", "info", f"Registered & notified commander for {brief.name[:40]}")
 
-        logger.info(f"[forge:scout] {brief.name}: score={brief.score}, registered={not dry_run and brief.registration_open}")
+        logger.info(
+            f"[forge:scout] {brief.name}: score={brief.score}, "
+            f"registered={registered_ok if brief.registration_open else False}"
+        )
         await emit_log("", "hackathon_scout", "info", f"Stored: {brief.name[:40]} (score={brief.score}, ${prize_total:,.0f})")
 
     await redis.aclose()
