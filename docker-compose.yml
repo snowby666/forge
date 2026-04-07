@@ -61,10 +61,17 @@ services:
     ports:
       - "6333:6333"
       - "6334:6334"
-    # When QDRANT__SERVICE__API_KEY is set, /readyz requires the api-key header (otherwise always unhealthy).
-    # Short interval: Compose blocks on service_healthy — 15s+ intervals add noticeable "Waiting" time after Qdrant is already up.
+    # Official qdrant/qdrant image has NO curl/wget (debian-slim + static binary only). CMD-SHELL uses /bin/sh;
+    # curl healthchecks always fail → permanently "unhealthy" and block forge-api (depends_on: service_healthy).
+    # Use bash's /dev/tcp + raw HTTP (bash is present — entrypoint.sh is #!/usr/bin/env bash).
+    # When QDRANT__SERVICE__API_KEY is set, /readyz requires the api-key header.
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf -H \"api-key: $$QDRANT__SERVICE__API_KEY\" http://localhost:6333/readyz || exit 1"]
+      test:
+        - CMD
+        - bash
+        - -ec
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/6333 || exit 1; if [ -n "$$QDRANT__SERVICE__API_KEY" ]; then printf $$'GET /readyz HTTP/1.1\r\nHost: localhost\r\napi-key: %s\r\nConnection: close\r\n\r\n' "$$QDRANT__SERVICE__API_KEY" >&3; else printf $$'GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; fi; IFS= read -r line <&3 || exit 1; [[ "$$line" == *" 200 "* ]] || exit 1
       interval: 5s
       timeout: 5s
       retries: 8
