@@ -96,6 +96,27 @@ docker compose up -d
 
 # --- Daytona sandbox infrastructure (if compose file exists) -----------------
 if [ -f docker-compose.daytona.yml ]; then
+  # Generate SSH key pair for Daytona SSH gateway if not set
+  if [ -z "${DAYTONA_SSH_PRIVATE_KEY:-}" ]; then
+    log "Generating SSH key pair for Daytona SSH gateway..."
+    _TMP_KEY=$(mktemp)
+    ssh-keygen -t ed25519 -f "$_TMP_KEY" -N "" -q
+    _PRIV_B64=$(base64 -w0 "$_TMP_KEY" 2>/dev/null || base64 "$_TMP_KEY" | tr -d '\n')
+    _PUB_B64=$(base64 -w0 "${_TMP_KEY}.pub" 2>/dev/null || base64 "${_TMP_KEY}.pub" | tr -d '\n')
+    rm -f "$_TMP_KEY" "${_TMP_KEY}.pub"
+    if grep -q '^DAYTONA_SSH_PRIVATE_KEY=' .env 2>/dev/null; then
+      sed -i "s|^DAYTONA_SSH_PRIVATE_KEY=.*|DAYTONA_SSH_PRIVATE_KEY=${_PRIV_B64}|" .env
+    else
+      echo "DAYTONA_SSH_PRIVATE_KEY=${_PRIV_B64}" >> .env
+    fi
+    export DAYTONA_SSH_PRIVATE_KEY="${_PRIV_B64}"
+    cat > docker/daytona/ssh-keys.env <<SSHEOF
+SSH_PUBLIC_KEY=${_PUB_B64}
+SSH_GATEWAY_PUBLIC_KEY=${_PUB_B64}
+SSHEOF
+    log "SSH keys generated and stored"
+  fi
+
   log "Starting Daytona sandbox infrastructure..."
   docker compose -f docker-compose.daytona.yml up -d 2>&1 | tail -5 || warn "Daytona stack failed to start"
 fi
@@ -202,7 +223,12 @@ if [[ "$DAYTONA_READY" == "true" ]]; then
   DAYTONA_KEY="${DAYTONA_API_KEY:-}"
   if [[ -z "$DAYTONA_KEY" ]]; then
     log "No DAYTONA_API_KEY — attempting auto-generation..."
-    if bash scripts/daytona-keygen.sh 2>&1; then
+    DEX_WAITED=0
+    until curl -sf http://localhost:5556/dex/.well-known/openid-configuration &>/dev/null 2>&1; do
+      sleep 2; DEX_WAITED=$((DEX_WAITED+2))
+      [[ $DEX_WAITED -ge 60 ]] && { warn "Dex OIDC timed out — keygen may fail"; break; }
+    done
+    if VERBOSE=1 bash scripts/daytona-keygen.sh 2>&1; then
       set -a; source .env 2>/dev/null || true; set +a
       log "Daytona API key generated and stored in .env"
     else

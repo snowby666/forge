@@ -95,7 +95,7 @@ services:
       - DEFAULT_ORG_QUOTA_VOLUME_QUOTA=10000
       - SSH_GATEWAY_API_KEY=ssh_secret_api_token
       - SSH_GATEWAY_COMMAND=ssh -p 2222 {{TOKEN}}@localhost
-      - SSH_GATEWAY_PUBLIC_KEY=${SSH_PUBLIC_KEY:-}
+      # SSH_GATEWAY_PUBLIC_KEY provided via ./docker/daytona/ssh-keys.env
       - SSH_GATEWAY_URL=localhost:2222
       - SKIP_USER_EMAIL_VERIFICATION=true
       - RUN_MIGRATIONS=true
@@ -152,7 +152,6 @@ services:
       - DAYTONA_API_URL=http://daytona-api:3000/api
       - RUNNER_DOMAIN=daytona-runner
       - SSH_GATEWAY_ENABLE=true
-      - SSH_PUBLIC_KEY=${SSH_PUBLIC_KEY:-}
       - INTER_SANDBOX_NETWORK_ENABLED=false
     env_file:
       - ./docker/daytona/ssh-keys.env
@@ -163,12 +162,12 @@ services:
   daytona-ssh-gateway:
     image: daytonaio/daytona-ssh-gateway
     container_name: daytona-ssh-gateway
-    restart: unless-stopped
+    restart: on-failure
     environment:
       - API_URL=http://daytona-api:3000/api
       - API_KEY=ssh_secret_api_token
       - SSH_PRIVATE_KEY=${DAYTONA_SSH_PRIVATE_KEY:-}
-      - SSH_HOST_KEY=${DAYTONA_SSH_HOST_KEY:-}
+      - SSH_HOST_KEY=${DAYTONA_SSH_PRIVATE_KEY:-}
       - SSH_GATEWAY_PORT=2222
     ports:
       - "2222:2222"
