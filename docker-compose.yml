@@ -139,6 +139,8 @@ services:
       QDRANT_URL: "http://qdrant:6333"
       QDRANT_API_KEY: "${QDRANT_API_KEY:-change_me}"
       SEARXNG_URL: "http://searxng:8080"
+      DAYTONA_API_URL: "http://daytona-api:3000/api"
+      DAYTONA_API_KEY: "${DAYTONA_API_KEY:-}"
     expose:
       - "3001"
     healthcheck:

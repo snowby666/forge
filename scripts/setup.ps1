@@ -170,11 +170,11 @@ Write-Green "Installing Python core dependencies..."
 if (-not $DryRun) {
     $installed = $false
     if (Get-Command uv -ErrorAction SilentlyContinue) {
-        try { uv pip install -e ".[dev,stitch]"; $installed = $true } catch {}
+        try { uv pip install -e ".[dev,stitch,daytona]"; $installed = $true } catch {}
     }
     if (-not $installed) {
         try {
-            & $PYTHON_CMD -m pip install -e ".[dev,stitch]" --quiet
+            & $PYTHON_CMD -m pip install -e ".[dev,stitch,daytona]" --quiet
             $installed = $true
         } catch {
             Write-Yellow "Full install failed -- trying core only (common on Python 3.13+)"
@@ -240,6 +240,14 @@ if (-not $SkipDocker) {
         } catch {
             Write-Yellow "Docker pull had errors -- ensure Docker Desktop is running"
         }
+        if (Test-Path "docker-compose.daytona.yml") {
+            Write-Green "Pulling Daytona sandbox infrastructure images..."
+            try {
+                docker compose -f docker-compose.daytona.yml pull
+            } catch {
+                Write-Yellow "Daytona image pull had errors (non-critical -- sandbox builds will not work)"
+            }
+        }
     }
 }
 
@@ -284,6 +292,9 @@ Write-Cyan "  3. Start services: bash scripts/start.sh"
 Write-Cyan "     (or in PowerShell: docker compose up -d)"
 Write-Cyan "  4. Test: $PYTHON_CMD scripts/test_run.py --dry-run"
 Write-Host ""
-Write-Yellow "Daytona CLI is not available on native Windows."
-Write-Yellow "For full GPU + Daytona support, run Forge in WSL2:"
-Write-Yellow "  https://docs.microsoft.com/windows/wsl/install"
+Write-Cyan "Daytona sandbox infrastructure:"
+Write-Cyan "  docker compose -f docker-compose.daytona.yml up -d"
+Write-Cyan "  Open http://localhost:3986 (login: dev@daytona.io / password)"
+Write-Cyan "  Generate API key -> set DAYTONA_API_KEY in .env"
+Write-Host ""
+Write-Yellow "For GPU access, use WSL2: https://docs.microsoft.com/windows/wsl/install"

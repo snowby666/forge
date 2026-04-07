@@ -145,7 +145,7 @@ log "Python: $($PYTHON_CMD --version) | pip: $(pip --version | cut -d' ' -f2)"
 
 # ── Step 8: Install ALL Python dependencies ───────────────────────────────────
 log "Installing core dependencies (1-3 min)..."
-pip install -e ".[dev,stitch]" 2>&1 | tail -3
+pip install -e ".[dev,stitch,daytona]" 2>&1 | tail -3
 
 log "Installing crawl4ai..."
 pip install "crawl4ai>=0.4.0" 2>&1 | tail -3 || warn "crawl4ai install failed — lightweight HTTP fallback will be used"
@@ -212,6 +212,12 @@ set -a; source .env 2>/dev/null || true; set +a
 docker compose down -v 2>/dev/null || true
 docker compose up -d
 
+# --- Daytona sandbox infrastructure -----------------------------------------
+if [ -f docker-compose.daytona.yml ]; then
+  log "Starting Daytona sandbox infrastructure..."
+  docker compose -f docker-compose.daytona.yml up -d 2>&1 | tail -5 || warn "Daytona stack failed to start"
+fi
+
 log "Waiting for PostgreSQL..."
 for i in $(seq 1 60); do
   docker exec forge-postgres pg_isready -U "${POSTGRES_USER:-backbone}" &>/dev/null && break
@@ -264,9 +270,26 @@ until curl -sf "http://localhost:${FORGE_WEB_PORT}/" &>/dev/null 2>&1; do
 done
 [[ $WAITED -lt 30 ]] && log "Web dashboard ready (port ${FORGE_WEB_PORT})"
 
+# --- Daytona health check ----------------------------------------------------
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'daytona-api'; then
+  WAITED=0
+  until curl -sf http://localhost:3986/health &>/dev/null 2>&1; do
+    sleep 2; WAITED=$((WAITED+2))
+    [[ $WAITED -ge 60 ]] && { warn "Daytona API health check timed out"; break; }
+  done
+  [[ $WAITED -lt 60 ]] && log "Daytona API ready (http://localhost:3986)"
+fi
+
 info "Next:"
 info "  1. Edit .env — add ELECTRONHUB_API_KEY"
 info "  2. source .venv/bin/activate"
 info "  3. forge scout --dry-run"
 info "  4. forge test"
+DAYTONA_KEY="${DAYTONA_API_KEY:-}"
+if [[ -z "$DAYTONA_KEY" ]] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'daytona-api'; then
+  echo ""
+  info "Daytona sandbox setup:"
+  info "  Open http://localhost:3986 (login: dev@daytona.io / password)"
+  info "  Generate API key → set DAYTONA_API_KEY in .env"
+fi
 echo ""

@@ -44,13 +44,14 @@ rsync -a --delete \
 
 # Fix line endings on anything that might have CRLF
 find "$DST" -maxdepth 1 -name "*.py" -exec sed -i 's/\r$//' {} + 2>/dev/null || true
-find "$DST/agents" "$DST/config" "$DST/scripts" "$DST/devpost_api" -type f \( -name "*.py" -o -name "*.sh" \) -exec sed -i 's/\r$//' {} + 2>/dev/null || true
-sed -i 's/\r$//' "$DST/docker-compose.yml" 2>/dev/null || true
+find "$DST/agents" "$DST/config" "$DST/scripts" -type f \( -name "*.py" -o -name "*.sh" \) -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+find "$DST/docker" -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.env" \) -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+sed -i 's/\r$//' "$DST/docker-compose.yml" "$DST/docker-compose.daytona.yml" 2>/dev/null || true
 
 # Re-install in editable mode (picks up new deps in pyproject.toml, ~2s if nothing changed)
 cd "$DST"
 source .venv/bin/activate
-pip install -e ".[dev,calendar,stitch]" --quiet 2>&1 | tail -1
+pip install -e ".[dev,calendar,stitch,daytona]" --quiet 2>&1 | tail -1
 
 # Ensure Playwright Chromium is installed (Crawl4AI needs it)
 log "Installing Playwright system deps..."
@@ -105,8 +106,13 @@ if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; the
   else
     log "${DIM}Web dashboard may still be starting (check: docker logs forge-web)${NC}"
   fi
+  # Restart Daytona stack if it's running (picks up any config changes)
+  if [ -f "$DST/docker-compose.daytona.yml" ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'daytona-api'; then
+    log "Restarting Daytona sandbox stack..."
+    docker compose -f "$DST/docker-compose.daytona.yml" up -d 2>&1 | tail -3
+  fi
 else
-  log "${DIM}Docker not available — skipping web container rebuild${NC}"
+  log "${DIM}Docker not available — skipping container rebuild${NC}"
   log "${DIM}Run manually: docker compose up -d --build api web${NC}"
 fi
 

@@ -94,6 +94,12 @@ export PYTHONUTF8=1
 log "Starting Docker services..."
 docker compose up -d
 
+# --- Daytona sandbox infrastructure (if compose file exists) -----------------
+if [ -f docker-compose.daytona.yml ]; then
+  log "Starting Daytona sandbox infrastructure..."
+  docker compose -f docker-compose.daytona.yml up -d 2>&1 | tail -5 || warn "Daytona stack failed to start"
+fi
+
 log "Waiting for services..."
 MAX_WAIT=60
 WAITED=0
@@ -169,6 +175,17 @@ until curl -sf "http://localhost:${FORGE_WEB_PORT}/" &>/dev/null 2>&1; do
 done
 [[ $WAITED -lt 30 ]] && log "Web dashboard ready (port ${FORGE_WEB_PORT})"
 
+# --- Daytona health check ----------------------------------------------------
+DAYTONA_READY=false
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'daytona-api'; then
+  WAITED=0
+  until curl -sf http://localhost:3986/health &>/dev/null 2>&1; do
+    sleep 2; WAITED=$((WAITED+2))
+    [[ $WAITED -ge 60 ]] && { warn "Daytona API health check timed out — check: docker logs daytona-api"; break; }
+  done
+  [[ $WAITED -lt 60 ]] && { log "Daytona API ready"; DAYTONA_READY=true; }
+fi
+
 echo ""
 log "All services running:"
 info "  Qdrant:    http://localhost:6333"
@@ -177,5 +194,14 @@ info "  n8n:       http://localhost:5678"
 info "  Temporal:  http://localhost:8080"
 info "  SearXNG:   http://localhost:8081"
 info "  Dashboard: http://localhost:${FORGE_WEB_PORT}  (sentinelhive.dev)"
+if [[ "$DAYTONA_READY" == "true" ]]; then
+  info "  Daytona:   http://localhost:3986  (login: dev@daytona.io / password)"
+fi
 echo ""
+if [[ "$DAYTONA_READY" == "true" ]]; then
+  DAYTONA_KEY="${DAYTONA_API_KEY:-}"
+  if [[ -z "$DAYTONA_KEY" ]]; then
+    warn "DAYTONA_API_KEY not set. Generate one at http://localhost:3986 and add to .env"
+  fi
+fi
 log "Run: python scripts/test_run.py --dry-run"

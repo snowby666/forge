@@ -16,7 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from config.electronhub import complete, complete_batch
-from config.forge_trace import trace_op, register_artifact, set_agent_context
+from config.forge_trace import trace_op, emit_log, register_artifact, set_agent_context
 from config.redis_client import get_redis
 from config.agents_config import ALL_AGENTS
 from config.design_constitution import SYSTEM_PROMPT_FRONTEND_AGENT
@@ -44,12 +44,31 @@ def _ensure_daytona():
 
 
 def get_daytona():
-    """Return an AsyncDaytona client configured from environment."""
+    """Return an AsyncDaytona client configured from environment.
+
+    Reads DAYTONA_API_URL and DAYTONA_API_KEY from environment.
+    Self-hosted URL should include the /api suffix (e.g. http://localhost:3986/api).
+    """
     _ensure_daytona()
     from daytona_sdk import AsyncDaytona, DaytonaConfig
+
+    api_url = (
+        os.environ.get("DAYTONA_API_URL")
+        or os.environ.get("DAYTONA_SERVER_URL")
+    )
+    if api_url and not api_url.rstrip("/").endswith("/api"):
+        api_url = api_url.rstrip("/") + "/api"
+
+    api_key = os.environ.get("DAYTONA_API_KEY", "")
+    if not api_key:
+        raise RuntimeError(
+            "DAYTONA_API_KEY is not set. Generate one from the Daytona dashboard "
+            "(http://localhost:3986 → Settings → API Keys) and add it to .env"
+        )
+
     return AsyncDaytona(DaytonaConfig(
-        api_url=os.environ.get("DAYTONA_API_URL", os.environ.get("DAYTONA_SERVER_URL", "http://localhost:3986")),
-        api_key=os.environ.get("DAYTONA_API_KEY", ""),
+        api_url=api_url or "http://localhost:3986/api",
+        api_key=api_key,
     ))
 
 
@@ -111,15 +130,22 @@ async def run_frontend_engineer(
     repo_name = f"hack-{hackathon_id[:8]}-frontend"
     repo_path = f"/workspace/{repo_name}"
 
-    sandbox = await daytona.create(CreateSandboxFromImageParams(
-        language="typescript",
-        image=Image.base("node:20-alpine"),
-        env_vars={
-            "GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", ""),
-            "NEXT_PUBLIC_DEMO_MODE": "true",
-            "NEXT_PUBLIC_API_URL": api_contract.get("base_url", "http://localhost:8000") if api_contract else "http://localhost:8000",
-        },
-    ))
+    logger.info(f"[forge:frontend] Creating Daytona sandbox (node:20-alpine) for {repo_name}")
+    await emit_log(hackathon_id, "frontend_engineer", "info", f"Creating Daytona sandbox for {repo_name}")
+    async with trace_op("daytona", "frontend:create_sandbox") as span:
+        span.input = {"image": "node:20-alpine", "language": "typescript", "repo_name": repo_name}
+        sandbox = await daytona.create(CreateSandboxFromImageParams(
+            language="typescript",
+            image=Image.base("node:20-alpine"),
+            env_vars={
+                "GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", ""),
+                "NEXT_PUBLIC_DEMO_MODE": "true",
+                "NEXT_PUBLIC_API_URL": api_contract.get("base_url", "http://localhost:8000") if api_contract else "http://localhost:8000",
+            },
+        ))
+        span.output = {"sandbox_id": getattr(sandbox, "id", "unknown")}
+    logger.info(f"[forge:frontend] Sandbox created: {getattr(sandbox, 'id', 'unknown')}")
+    await emit_log(hackathon_id, "frontend_engineer", "info", f"Sandbox created: {getattr(sandbox, 'id', 'unknown')}")
 
     try:
         # 1. Scaffold with exact stack
@@ -141,7 +167,10 @@ async def run_frontend_engineer(
                 timeout=60,
             )
 
+        await emit_log(hackathon_id, "frontend_engineer", "info", "Scaffold complete")
+
         # 2. Write design tokens
+        logger.debug(f"[forge:frontend] Uploading design tokens ({len(design_tokens_content)} chars)")
         await sandbox.fs.upload_file(design_tokens_content.encode(), f"{repo_path}/src/lib/tokens.ts")
 
         # 3. Write tailwind config with design tokens
@@ -196,15 +225,19 @@ Output the complete .tsx file only.""",
         ]
 
         logger.info(f"[forge:frontend] Generating {len(component_tasks)} components...")
+        await emit_log(hackathon_id, "frontend_engineer", "info", f"Generating {len(component_tasks)} components via LLM")
         async with trace_op("llm", "frontend:generate_components") as span:
+            span.input = {"component_count": len(component_tasks), "concurrency": 4}
             component_codes = await complete_batch(component_tasks, concurrency=4)
-            span.output = {"component_count": len(component_codes)}
+            span.output = {"component_count": len(component_codes), "total_chars": sum(len(c) for c in component_codes)}
 
         for spec, code in zip(components_to_build, component_codes):
             file_path = spec.get("file_path", f"components/{spec['name'].lower()}.tsx")
             full_path = f"{repo_path}/src/{file_path}"
             await sandbox.process.exec(f"mkdir -p {os.path.dirname(full_path)}")
             await sandbox.fs.upload_file(code.encode(), full_path)
+            logger.debug(f"[forge:frontend] Uploaded {file_path} ({len(code)} chars)")
+        await emit_log(hackathon_id, "frontend_engineer", "info", f"Uploaded {len(component_codes)} components to sandbox")
 
         # 6. Generate pages
         screens = design_spec.get("screens", [])
@@ -240,6 +273,7 @@ Start your response with --- FILE: app/{route}/page.tsx ---""",
             await sandbox.fs.upload_file(page_code.encode(), f"{page_dir}/page.tsx")
 
         # 7. Quality gates with auto-fix
+        await emit_log(hackathon_id, "frontend_engineer", "info", "Running quality gates (TypeScript, ESLint, Build)")
         async with trace_op("subprocess", "frontend:quality_gates") as span:
             for attempt in range(1, 4):
                 passed, errors = await run_fe_quality_gates(sandbox, repo_path)
@@ -262,7 +296,9 @@ Start your response with --- FILE: app/{route}/page.tsx ---""",
                         await sandbox.fs.upload_file(code.encode(), f"{repo_path}/src/{fp}")
 
         # 8. Deploy
+        span.output = {"passed": passed, "attempts": attempt if 'attempt' in dir() else 0}
         if passed:
+            await emit_log(hackathon_id, "frontend_engineer", "info", "Quality gates passed — deploying to GitHub")
             await sandbox.process.exec(
                 f"cd {repo_path} && git init "
                 f"&& git remote add origin https://{os.environ.get('GITHUB_TOKEN')}@github.com/{GITHUB_ORG}/{repo_name}.git "
@@ -273,12 +309,19 @@ Start your response with --- FILE: app/{route}/page.tsx ---""",
             )
             preview_url = await _get_vercel_preview(repo_name)
             logger.info(f"[forge:frontend] ✓ Deployed: {preview_url}")
+            await emit_log(hackathon_id, "frontend_engineer", "info", f"Deployed: {preview_url}")
+            register_artifact(hackathon_id, "frontend_engineer", "preview_url", preview_url, {"repo": repo_name})
             return {"preview_url": preview_url, "repo_url": f"https://github.com/{GITHUB_ORG}/{repo_name}"}
         else:
+            await emit_log(hackathon_id, "frontend_engineer", "error", f"Quality gates failed after 3 attempts: {errors[:2]}")
             raise RuntimeError(f"Quality gates failed after 3 attempts: {errors}")
 
     finally:
-        await daytona.delete(sandbox)
+        logger.info(f"[forge:frontend] Cleaning up sandbox {getattr(sandbox, 'id', 'unknown')}")
+        await emit_log(hackathon_id, "frontend_engineer", "info", "Deleting Daytona sandbox")
+        async with trace_op("daytona", "frontend:delete_sandbox") as span:
+            span.input = {"sandbox_id": getattr(sandbox, "id", "unknown")}
+            await daytona.delete(sandbox)
         await daytona.close()
 
 
@@ -319,11 +362,18 @@ async def run_backend_engineer(
     repo_path = f"/workspace/{repo_name}"
     redis = get_redis()
 
-    sandbox = await daytona.create(CreateSandboxFromImageParams(
-        language="python",
-        image=Image.base("python:3.11-slim"),
-        env_vars={"DATABASE_URL": os.environ.get("DATABASE_URL", ""), "GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", "")},
-    ))
+    logger.info(f"[forge:backend] Creating Daytona sandbox (python:3.11-slim) for {repo_name}")
+    await emit_log(hackathon_id, "backend_engineer", "info", f"Creating Daytona sandbox for {repo_name}")
+    async with trace_op("daytona", "backend:create_sandbox") as span:
+        span.input = {"image": "python:3.11-slim", "language": "python", "repo_name": repo_name}
+        sandbox = await daytona.create(CreateSandboxFromImageParams(
+            language="python",
+            image=Image.base("python:3.11-slim"),
+            env_vars={"DATABASE_URL": os.environ.get("DATABASE_URL", ""), "GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", "")},
+        ))
+        span.output = {"sandbox_id": getattr(sandbox, "id", "unknown")}
+    logger.info(f"[forge:backend] Sandbox created: {getattr(sandbox, 'id', 'unknown')}")
+    await emit_log(hackathon_id, "backend_engineer", "info", f"Sandbox created: {getattr(sandbox, 'id', 'unknown')}")
 
     try:
         # IMMEDIATE: design and publish API contract
@@ -357,8 +407,11 @@ Include /health and /demo/seed endpoints.""",
             "api_contract": json.loads(contract_clean),
         }))
         logger.info(f"[forge:backend] ✓ API contract published — frontend can now start")
+        await emit_log(hackathon_id, "backend_engineer", "info", "API contract published to Redis — frontend unblocked")
+        register_artifact(hackathon_id, "backend_engineer", "api_contract", contract_clean[:500], {"full_length": len(contract_clean)})
 
         # Scaffold FastAPI project
+        await emit_log(hackathon_id, "backend_engineer", "info", "Scaffolding FastAPI project in sandbox")
         await sandbox.process.exec(
             f"mkdir -p {repo_path}/app/routers {repo_path}/tests "
             f"&& cd {repo_path} "
@@ -382,6 +435,7 @@ Complete app/models.py file. AsyncAttrs mixin, UUID PKs, timestamps, relationshi
                 temperature=0.0,
             )
         await sandbox.fs.upload_file(models_code.encode(), f"{repo_path}/app/models.py")
+        logger.debug(f"[forge:backend] Uploaded models.py ({len(models_code)} chars)")
 
         # Parse contract and generate routers
         try:
@@ -429,6 +483,7 @@ async def health() -> dict:
         await sandbox.fs.upload_file(main_py.encode(), f"{repo_path}/app/main.py")
 
         # Quality gates
+        await emit_log(hackathon_id, "backend_engineer", "info", "Running quality gates (pytest, startup check)")
         for attempt in range(1, 4):
             passed, errors = await run_be_quality_gates(sandbox, repo_path)
             if passed:
@@ -461,22 +516,32 @@ async def health() -> dict:
             logger.debug(f"[forge:backend] Contract delta publish failed (non-critical): {e}")
 
         # Deploy
-        await sandbox.process.exec(
-            f"cd {repo_path} && git init "
-            f"&& git remote add origin https://{os.environ.get('GITHUB_TOKEN')}@github.com/{GITHUB_ORG}/{repo_name}.git "
-            f"&& git add . "
-            f'&& git commit -m "feat: backend api" '
-            f"&& git push -u origin main",
-            timeout=120,
-        )
+        await emit_log(hackathon_id, "backend_engineer", "info", "Deploying backend to GitHub")
+        async with trace_op("subprocess", "backend:git_push") as span:
+            span.input = {"repo_name": repo_name, "org": GITHUB_ORG}
+            await sandbox.process.exec(
+                f"cd {repo_path} && git init "
+                f"&& git remote add origin https://{os.environ.get('GITHUB_TOKEN')}@github.com/{GITHUB_ORG}/{repo_name}.git "
+                f"&& git add . "
+                f'&& git commit -m "feat: backend api" '
+                f"&& git push -u origin main",
+                timeout=120,
+            )
+            span.output = {"repo_url": f"https://github.com/{GITHUB_ORG}/{repo_name}"}
 
-        return {
-            "repo_url": f"https://github.com/{GITHUB_ORG}/{repo_name}",
-            "api_contract_stored": True,
-        }
+        repo_url = f"https://github.com/{GITHUB_ORG}/{repo_name}"
+        logger.info(f"[forge:backend] ✓ Deployed: {repo_url}")
+        await emit_log(hackathon_id, "backend_engineer", "info", f"Deployed: {repo_url}")
+        register_artifact(hackathon_id, "backend_engineer", "repo_url", repo_url, {"endpoints": len(endpoints)})
+
+        return {"repo_url": repo_url, "api_contract_stored": True}
 
     finally:
-        await daytona.delete(sandbox)
+        logger.info(f"[forge:backend] Cleaning up sandbox {getattr(sandbox, 'id', 'unknown')}")
+        await emit_log(hackathon_id, "backend_engineer", "info", "Deleting Daytona sandbox")
+        async with trace_op("daytona", "backend:delete_sandbox") as span:
+            span.input = {"sandbox_id": getattr(sandbox, "id", "unknown")}
+            await daytona.delete(sandbox)
         await daytona.close()
         await redis.aclose()
 
@@ -521,6 +586,7 @@ async def run_frontend_worker() -> None:
                     await redis.set(f"task:{hackathon_id}:frontend_engineer", json.dumps({"status": "done", "data": result}), ex=604800)
                 except Exception as e:
                     logger.error(f"[forge:frontend] Failed: {e}")
+                    await emit_log(hackathon_id, "frontend_engineer", "error", f"Frontend engineer failed: {e}")
                     await redis.set(f"task:{hackathon_id}:frontend_engineer", json.dumps({"status": "failed", "error": str(e)}), ex=604800)
 
         # Feature 5: Backend finalised contract — regenerate only the API client layer
@@ -602,6 +668,7 @@ async def run_backend_worker() -> None:
             await redis.set(f"task:{hackathon_id}:backend_engineer", json.dumps({"status": "done", "data": result}), ex=604800)
         except Exception as e:
             logger.error(f"[forge:backend] Failed: {e}")
+            await emit_log(hackathon_id, "backend_engineer", "error", f"Backend engineer failed: {e}")
             await redis.set(f"task:{hackathon_id}:backend_engineer", json.dumps({"status": "failed", "error": str(e)}), ex=604800)
 
     await redis.aclose()

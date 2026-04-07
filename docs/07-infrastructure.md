@@ -208,6 +208,34 @@ sequenceDiagram
 
 Each build creates an isolated Daytona sandbox. Frontend and Backend each get their own sandbox with no shared state. After deployment, sandboxes are deleted to free resources. This means the server's disk doesn't fill up across many hackathon runs.
 
+### Self-hosted Daytona setup
+
+Daytona runs as a separate Docker Compose stack on the same `forge-network`:
+
+```bash
+# 1. Start the main Forge stack first (creates forge-network)
+docker compose up -d
+
+# 2. Start the Daytona sandbox infrastructure
+docker compose -f docker-compose.daytona.yml up -d
+```
+
+Services started: `daytona-api` (port 3986), `daytona-runner`, `daytona-proxy` (port 4000), `daytona-ssh-gateway` (port 2222), `daytona-dex` (port 5556), `daytona-db`, `daytona-redis`, `daytona-registry` (port 6000), `daytona-minio` (port 9001).
+
+**Generate an API key:**
+
+1. Open [http://localhost:3986](http://localhost:3986) in a browser
+2. Log in with `dev@daytona.io` / `password`
+3. Go to Settings → API Keys → Generate
+4. Copy the key and set it in `.env`:
+   ```
+   DAYTONA_API_KEY=your_generated_key
+   DAYTONA_API_URL=http://localhost:3986/api
+   ```
+5. Restart the API container: `docker compose restart api`
+
+**From inside Docker:** The forge-api container can reach Daytona at `http://daytona-api:3000/api` (internal network).
+
 ---
 
 ## n8n workflows

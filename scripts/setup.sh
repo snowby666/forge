@@ -256,10 +256,10 @@ fi
 
 log "Installing Python core dependencies (this takes 1-3 minutes)..."
 if command -v uv &>/dev/null; then
-  uv pip install --python "$VENV_PYTHON" $PIP_EDIT_FLAG ".[dev,stitch]" \
+  uv pip install --python "$VENV_PYTHON" $PIP_EDIT_FLAG ".[dev,stitch,daytona]" \
     || { uv pip install --python "$VENV_PYTHON" $PIP_EDIT_FLAG "."; uv pip install --python "$VENV_PYTHON" pytest pytest-asyncio; }
 else
-  $PIP_CMD install $PIP_EDIT_FLAG ".[dev,stitch]" 2>&1 || {
+  $PIP_CMD install $PIP_EDIT_FLAG ".[dev,stitch,daytona]" 2>&1 || {
     warn "Full install failed -- trying core only"
     $PIP_CMD install $PIP_EDIT_FLAG "." 2>&1 || {
       err "pip install failed. Check errors above.
@@ -304,25 +304,28 @@ fi
 log "Installing browser layer..."
 cd agents/browser && npm install --silent && cd ../..
 
+# --- Daytona SDK (sandbox build environments) --------------------------------
+log "Installing Daytona SDK..."
+$PIP_CMD install "daytona-sdk>=0.100.0" 2>&1 | tail -3 \
+  || warn "daytona-sdk install failed — build agents (frontend/backend engineer) will not work"
+
 # --- Docker images -----------------------------------------------------------
 log "Pulling Docker images..."
-# Load .env so docker-compose variable substitution works
 set -a; source .env 2>/dev/null || true; set +a
 docker compose pull 2>&1 \
   | grep -E "^(Pulling|pulled|up to date|Error)" \
   || true
 
-# --- Daytona CLI -------------------------------------------------------------
-if ! command -v daytona &>/dev/null; then
-  if [[ "$OS_TYPE" == "windows" ]]; then
-    warn "Daytona CLI: not available for native Windows Git Bash.
-  Use WSL2 or install manually: https://www.daytona.io/docs/installation/installation/"
-  elif command -v sudo &>/dev/null; then
-    log "Installing Daytona CLI..."
-    curl -sf -L https://download.daytona.io/daytona/install.sh | sudo bash
-  else
-    warn "Daytona CLI: sudo not available. Manual install: https://www.daytona.io/docs/installation/installation/"
-  fi
+# --- Daytona self-hosted (sandbox infrastructure) ----------------------------
+if [ -f docker-compose.daytona.yml ]; then
+  log "Pulling Daytona sandbox infrastructure images..."
+  docker compose -f docker-compose.daytona.yml pull 2>&1 \
+    | grep -E "^(Pulling|pulled|up to date|Error)" \
+    || true
+  info "Daytona self-hosted stack available. Start with:"
+  info "  docker compose -f docker-compose.daytona.yml up -d"
+  info "  Then open http://localhost:3986 (login: dev@daytona.io / password)"
+  info "  Generate an API key and set DAYTONA_API_KEY in .env"
 fi
 
 # --- Lighthouse CLI ----------------------------------------------------------
@@ -369,7 +372,7 @@ if [[ "$OS_TYPE" == "windows" ]]; then
   info "  4. bash scripts/start.sh"
   info "  5. python scripts/test_run.py --dry-run"
   echo ""
-  warn "Windows: For GPU access, Daytona, and full Linux tooling, use WSL2."
+  warn "Windows: For GPU access and Daytona sandboxes, use WSL2."
 else
   info "  1. source .venv/bin/activate"
   info "  2. Edit .env -- add your ELECTRONHUB_API_KEY"

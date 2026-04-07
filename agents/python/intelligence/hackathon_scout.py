@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from config.agents_config import ALL_AGENTS
 from config.electronhub import complete_json
 from config.redis_client import get_redis
-from config.forge_trace import trace_op, register_artifact, set_agent_context
+from config.forge_trace import trace_op, emit_log, register_artifact, set_agent_context
 
 logger = logging.getLogger(__name__)
 AGENT = ALL_AGENTS["hackathon_scout"]
@@ -165,6 +165,7 @@ async def deep_scrape_hackathon(brief: HackathonBrief) -> HackathonBrief:
     For others: uses Crawl4AI for page content, then LLM for structured extraction.
     """
     logger.info(f"[forge:scout:deep] Scraping detail page: {brief.url}")
+    await emit_log("", "hackathon_scout", "debug", f"Deep scraping: {brief.name[:50]} ({brief.url[:80]})")
 
     # Devpost: use our custom client — scrapes /rules, /details/faq, main page in parallel
     if brief.platform == "devpost":
@@ -859,8 +860,8 @@ async def scrape_devpost_api(limit: int = 15) -> list[dict]:
     """
     try:
         from config.devpost import ForgeDevpostClient, _parse_time_left
+        await emit_log("", "hackathon_scout", "debug", f"Devpost JSON API: fetching up to {limit} hackathons (8 pages)")
         async with ForgeDevpostClient() as client:
-            # Fetch all open hackathons across all pages
             hackathons = await client.list_hackathons(status="open", pages=8)
 
             # Filter out invite-only and winners-announced
@@ -1048,11 +1049,13 @@ async def run_scout(
 
     # ── Phase 1: Discover ────────────────────────────────────────────────────
     logger.info(f"[forge:scout] ═══ Phase 1: DISCOVER — scraping {platforms} ═══")
+    await emit_log("", "hackathon_scout", "info", f"Phase 1: DISCOVER — scraping {platforms}")
     async with trace_op("http", "scout:browser_scrape") as span:
         span.input = {"platforms": platforms, "limit": 20}
         raw_listings = await call_browser_scrape(platforms, limit=20)
         span.output = {"listings_count": len(raw_listings)}
     logger.info(f"[forge:scout] Discovered {len(raw_listings)} raw listings")
+    await emit_log("", "hackathon_scout", "info", f"Discovered {len(raw_listings)} raw listings")
 
     # Convert to HackathonBrief objects
     briefs: list[HackathonBrief] = []
@@ -1108,9 +1111,11 @@ async def run_scout(
             continue
 
     logger.info(f"[forge:scout] Phase 1 complete: {len(briefs)} hackathons parsed ({skipped} skipped)")
+    await emit_log("", "hackathon_scout", "info", f"Phase 1 complete: {len(briefs)} parsed, {skipped} skipped")
 
     if not briefs:
         logger.warning("[forge:scout] No hackathons found in Phase 1")
+        await emit_log("", "hackathon_scout", "warn", "No hackathons found — aborting")
         await redis.aclose()
         if return_all:
             return [], []
@@ -1119,39 +1124,49 @@ async def run_scout(
     # ── Phase 2: Deep Scrape (parallel, batched to avoid flooding LLM) ──────
     if deep:
         logger.info(f"[forge:scout] ═══ Phase 2: DEEP SCRAPE — extracting detail pages ═══")
+        await emit_log("", "hackathon_scout", "info", f"Phase 2: DEEP SCRAPE — {len(briefs)} hackathons")
         BATCH_SIZE = 20
         all_deep: list[HackathonBrief] = []
         for batch_start in range(0, len(briefs), BATCH_SIZE):
             batch = briefs[batch_start:batch_start + BATCH_SIZE]
-            logger.info(f"[forge:scout] Deep scrape batch {batch_start // BATCH_SIZE + 1} ({len(batch)} hackathons)")
+            batch_num = batch_start // BATCH_SIZE + 1
+            logger.info(f"[forge:scout] Deep scrape batch {batch_num} ({len(batch)} hackathons)")
+            await emit_log("", "hackathon_scout", "debug", f"Deep scrape batch {batch_num}: {len(batch)} hackathons")
             try:
                 async with trace_op("http", "scout:deep_scrape") as span:
-                    span.input = {"batch_size": len(batch), "batch_num": batch_start // BATCH_SIZE + 1}
+                    span.input = {"batch_size": len(batch), "batch_num": batch_num}
                     deep_tasks = [asyncio.wait_for(deep_scrape_hackathon(b), timeout=60.0) for b in batch]
                     results = await asyncio.gather(*deep_tasks, return_exceptions=True)
-                    span.output = {"batch_size": len(batch)}
+                    successes = sum(1 for r in results if isinstance(r, HackathonBrief))
+                    span.output = {"batch_size": len(batch), "succeeded": successes, "failed": len(batch) - successes}
                 for idx, r in enumerate(results):
                     if isinstance(r, HackathonBrief):
                         all_deep.append(r)
                     else:
-                        # Keep the original brief even if deep scrape failed
                         logger.warning(f"[forge:scout] Deep scrape failed for {batch[idx].name[:40]}: {r}")
+                        await emit_log("", "hackathon_scout", "warn", f"Deep scrape failed: {batch[idx].name[:40]}: {r}")
                         all_deep.append(batch[idx])
             except Exception as e:
                 logger.warning(f"[forge:scout] Deep scrape batch failed: {e}")
+                await emit_log("", "hackathon_scout", "error", f"Deep scrape batch failed: {e}")
                 all_deep.extend(batch)
         briefs = all_deep if all_deep else briefs
-        logger.info(f"[forge:scout] Phase 2 complete: {sum(1 for b in briefs if b.deep_scraped)}/{len(briefs)} deep-scraped")
+        deep_count = sum(1 for b in briefs if b.deep_scraped)
+        logger.info(f"[forge:scout] Phase 2 complete: {deep_count}/{len(briefs)} deep-scraped")
+        await emit_log("", "hackathon_scout", "info", f"Phase 2 complete: {deep_count}/{len(briefs)} deep-scraped")
 
     # ── Phase 5: Score (before community/research so we can prioritize) ─────
     logger.info(f"[forge:scout] ═══ Phase 5: SCORE — evaluating all hackathons ═══")
+    await emit_log("", "hackathon_scout", "info", f"Phase 5: SCORE — evaluating {len(briefs)} hackathons")
     SCORE_BATCH = 20
     scored_briefs: list[HackathonBrief] = []
     for batch_start in range(0, len(briefs), SCORE_BATCH):
         batch = briefs[batch_start:batch_start + SCORE_BATCH]
-        logger.info(f"[forge:scout] Score batch {batch_start // SCORE_BATCH + 1} ({len(batch)} hackathons)")
+        batch_num = batch_start // SCORE_BATCH + 1
+        logger.info(f"[forge:scout] Score batch {batch_num} ({len(batch)} hackathons)")
+        await emit_log("", "hackathon_scout", "debug", f"Score batch {batch_num}: {len(batch)} hackathons")
         async with trace_op("llm", "scout:score_hackathon") as span:
-            span.input = {"batch_size": len(batch), "batch_num": batch_start // SCORE_BATCH + 1}
+            span.input = {"batch_size": len(batch), "batch_num": batch_num}
             score_tasks = [asyncio.wait_for(score_hackathon(b), timeout=30.0) for b in batch]
             results = await asyncio.gather(*score_tasks, return_exceptions=True)
             span.output = {"batch_scored": len(batch)}
@@ -1181,12 +1196,14 @@ async def run_scout(
                 )
             else:
                 logger.warning(f"[forge:scout] Scoring failed for {batch[idx].name}: {r}")
+                await emit_log("", "hackathon_scout", "warn", f"Scoring failed: {batch[idx].name[:40]}: {r}")
                 batch[idx].score = 0
                 scored_briefs.append(batch[idx])
 
     briefs = scored_briefs
     briefs.sort(key=lambda b: b.score, reverse=True)
     qualified = [b for b in briefs if b.score >= min_score]
+    await emit_log("", "hackathon_scout", "info", f"Scoring done: {len(qualified)}/{len(briefs)} qualify (≥ {min_score})")
 
     # ── Phase 3 & 4: Community + Research (only for top candidates) ──────────
     if deep:
@@ -1194,6 +1211,7 @@ async def run_scout(
 
         # Phase 3: Community — per-hackathon 15s timeout, 30s global
         logger.info(f"[forge:scout] ═══ Phase 3: COMMUNITY INTEL — searching {len(top_for_deep)} hackathons ═══")
+        await emit_log("", "hackathon_scout", "info", f"Phase 3: COMMUNITY INTEL — {len(top_for_deep)} hackathons")
         try:
             async with trace_op("http", "scout:discover_community") as span:
                 span.input = {"hackathon_count": len(top_for_deep)}
@@ -1204,21 +1222,26 @@ async def run_scout(
                 results = await asyncio.wait_for(
                     asyncio.gather(*community_tasks, return_exceptions=True), timeout=30.0,
                 )
-                span.output = {"tasks_completed": len(results)}
+                successes = sum(1 for r in results if isinstance(r, HackathonBrief))
+                span.output = {"tasks_completed": len(results), "succeeded": successes}
             enriched = []
             for idx, r in enumerate(results):
                 if isinstance(r, HackathonBrief):
                     enriched.append(r)
                 else:
                     logger.warning(f"[forge:scout] Community failed for {top_for_deep[idx].name[:40]}: {r}")
+                    await emit_log("", "hackathon_scout", "warn", f"Community intel failed: {top_for_deep[idx].name[:40]}")
                     enriched.append(top_for_deep[idx])
             top_for_deep = enriched
             logger.info(f"[forge:scout] Phase 3 complete: {len(top_for_deep)} enriched")
+            await emit_log("", "hackathon_scout", "info", f"Phase 3 complete: {len(top_for_deep)} enriched")
         except asyncio.TimeoutError:
             logger.warning("[forge:scout] Phase 3 TIMED OUT (30s) — continuing with what we have")
+            await emit_log("", "hackathon_scout", "warn", "Phase 3 TIMED OUT (30s) — skipping")
 
         # Phase 4: Research — per-hackathon 20s timeout, 45s global
         logger.info(f"[forge:scout] ═══ Phase 4: RESEARCH — finding papers/repos/tutorials ═══")
+        await emit_log("", "hackathon_scout", "info", f"Phase 4: RESEARCH — {len(top_for_deep)} hackathons")
         try:
             async with trace_op("http", "scout:research") as span:
                 span.input = {"hackathon_count": len(top_for_deep)}
@@ -1229,18 +1252,22 @@ async def run_scout(
                 results = await asyncio.wait_for(
                     asyncio.gather(*research_tasks, return_exceptions=True), timeout=45.0,
                 )
-                span.output = {"tasks_completed": len(results)}
+                successes = sum(1 for r in results if isinstance(r, HackathonBrief))
+                span.output = {"tasks_completed": len(results), "succeeded": successes}
             enriched = []
             for idx, r in enumerate(results):
                 if isinstance(r, HackathonBrief):
                     enriched.append(r)
                 else:
                     logger.warning(f"[forge:scout] Research failed for {top_for_deep[idx].name[:40]}: {r}")
+                    await emit_log("", "hackathon_scout", "warn", f"Research failed: {top_for_deep[idx].name[:40]}")
                     enriched.append(top_for_deep[idx])
             top_for_deep = enriched
             logger.info(f"[forge:scout] Phase 4 complete: {len(top_for_deep)} researched")
+            await emit_log("", "hackathon_scout", "info", f"Phase 4 complete: {len(top_for_deep)} researched")
         except asyncio.TimeoutError:
             logger.warning("[forge:scout] Phase 4 TIMED OUT (45s) — continuing with what we have")
+            await emit_log("", "hackathon_scout", "warn", "Phase 4 TIMED OUT (45s) — skipping")
 
         # Merge enriched data back into briefs
         enriched_ids = {b.hackathon_id for b in top_for_deep}
@@ -1248,14 +1275,18 @@ async def run_scout(
         briefs.sort(key=lambda b: b.score, reverse=True)
         qualified = [b for b in briefs if b.score >= min_score]
 
-    logger.info(
-        f"[forge:scout] ═══ RESULTS: {len(raw_listings)} scraped → "
+    summary_msg = (
+        f"RESULTS: {len(raw_listings)} scraped → "
         f"{len(briefs)} scored ({skipped} skipped) → "
-        f"{len(qualified)} qualify (score ≥ {min_score}) ═══"
+        f"{len(qualified)} qualify (score ≥ {min_score})"
     )
+    logger.info(f"[forge:scout] ═══ {summary_msg} ═══")
+    await emit_log("", "hackathon_scout", "info", summary_msg)
 
     # ── Dedup: check which hackathon URLs are already tracked in Redis ──
-    existing_keys = await redis.keys("hackathon:*:brief")
+    async with trace_op("redis", "scout:dedup_check") as span:
+        existing_keys = await redis.keys("hackathon:*:brief")
+        span.input = {"existing_count": len(existing_keys)}
     existing_urls: set[str] = set()
     if existing_keys:
         raw_briefs = await asyncio.gather(*(redis.get(k) for k in existing_keys))
@@ -1274,19 +1305,22 @@ async def run_scout(
         new_qualified.append(brief)
         existing_urls.add(brief.url)
 
+    span.output = {"qualified": len(qualified), "new": len(new_qualified), "duplicates": len(qualified) - len(new_qualified)}
     if len(qualified) != len(new_qualified):
-        logger.info(
-            f"[forge:scout] Dedup: {len(qualified)} qualified → {len(new_qualified)} new "
+        dedup_msg = (
+            f"Dedup: {len(qualified)} qualified → {len(new_qualified)} new "
             f"({len(qualified) - len(new_qualified)} already tracked)"
         )
+        logger.info(f"[forge:scout] {dedup_msg}")
+        await emit_log("", "hackathon_scout", "info", dedup_msg)
 
     # Process top 3 NEW qualified
+    await emit_log("", "hackathon_scout", "info", f"Processing top {min(3, len(new_qualified))} new qualified hackathons")
     for brief in new_qualified[:3]:
         async with trace_op("redis", "scout:store_brief", hackathon_id=brief.hackathon_id) as span:
             span.input = {"hackathon_id": brief.hackathon_id, "name": brief.name, "score": brief.score}
             await redis.set(f"hackathon:{brief.hackathon_id}:brief", brief.model_dump_json(), ex=604800)
             await memory.store_hackathon_brief(brief.hackathon_id, brief.model_dump())
-            # Mark scout + memory_keeper as done so `forge status` / web dashboard show ✓
             for _aid in ("hackathon_scout", "memory_keeper"):
                 await redis.set(
                     f"task:{brief.hackathon_id}:{_aid}",
@@ -1294,6 +1328,19 @@ async def run_scout(
                     ex=604800,
                 )
             span.output = {"stored": True}
+
+        prize_total = sum(p.amount or 0 for p in brief.prizes)
+        register_artifact(
+            brief.hackathon_id, "hackathon_scout", "hackathon_brief",
+            brief.name, {
+                "score": brief.score,
+                "platform": brief.platform,
+                "url": brief.url,
+                "prize_total": prize_total,
+                "days_left": brief.days_until_deadline,
+                "deep_scraped": brief.deep_scraped,
+            },
+        )
 
         if brief.registration_open:
             async with trace_op("http", "scout:register", hackathon_id=brief.hackathon_id) as span:
@@ -1305,10 +1352,13 @@ async def run_scout(
                     "hackathon_id": brief.hackathon_id,
                     "brief": brief.model_dump(),
                 }))
+                await emit_log(brief.hackathon_id, "hackathon_scout", "info", f"Registered & notified commander for {brief.name[:40]}")
 
         logger.info(f"[forge:scout] {brief.name}: score={brief.score}, registered={not dry_run and brief.registration_open}")
+        await emit_log("", "hackathon_scout", "info", f"Stored: {brief.name[:40]} (score={brief.score}, ${prize_total:,.0f})")
 
     await redis.aclose()
+    await emit_log("", "hackathon_scout", "info", f"Scout complete — {len(new_qualified)} new hackathons stored")
     if return_all:
         return qualified, briefs
     return qualified
@@ -1318,11 +1368,13 @@ async def run_scout(
 
 async def run_worker() -> None:
     logger.info("[forge:scout] Starting daily discovery worker")
+    await emit_log("", "hackathon_scout", "info", "Starting daily discovery worker (6h interval)")
     while True:
         try:
             await run_scout(dry_run=os.environ.get("DRY_RUN") == "true")
         except Exception as e:
             logger.error(f"[forge:scout] Discovery cycle failed: {e}", exc_info=True)
+            await emit_log("", "hackathon_scout", "error", f"Discovery cycle failed: {e}")
         await asyncio.sleep(6 * 60 * 60)
 
 
