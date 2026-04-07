@@ -19,7 +19,8 @@ RUN pip install --no-cache-dir \
     "python-dotenv>=1.0.0" \
     "websockets>=14.0" \
     "httpx>=0.28.0" \
-    "pydantic>=2.0.0"
+    "pydantic>=2.0.0" \
+    "daytona-sdk>=0.100.0"
 
 COPY pyproject.toml README.md ./
 COPY forge.py ./

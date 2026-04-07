@@ -73,7 +73,7 @@ temporal = [
     "temporalio>=1.7.0",                  # Temporal workflow orchestration (Linux/WSL recommended)
 ]
 daytona = [
-    "daytona-sdk>=0.10.0",               # Daytona sandbox SDK (Linux/WSL only)
+    "daytona-sdk>=0.100.0",              # Daytona sandbox SDK (async API)
 ]
 calendar = [
     "google-auth-oauthlib>=1.0.0",        # Only needed for OAuth browser flow (not service account)

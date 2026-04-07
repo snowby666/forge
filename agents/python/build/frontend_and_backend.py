@@ -13,7 +13,6 @@ import logging
 import os
 from pathlib import Path
 
-from daytona_sdk import Daytona, DaytonaConfig, CreateWorkspaceParams, CodeLanguage
 from pydantic import BaseModel
 
 from config.electronhub import complete, complete_batch
@@ -25,10 +24,31 @@ from config.design_constitution import SYSTEM_PROMPT_FRONTEND_AGENT
 logger = logging.getLogger(__name__)
 GITHUB_ORG = os.environ.get("GITHUB_ORG", "hackathon-agent")
 
+_daytona_available: bool | None = None
 
-def get_daytona() -> Daytona:
-    return Daytona(DaytonaConfig(
-        server_url=os.environ.get("DAYTONA_SERVER_URL", "http://localhost:3986"),
+
+def _ensure_daytona():
+    """Lazy-check that daytona_sdk is importable; raises clear error if not."""
+    global _daytona_available
+    if _daytona_available is None:
+        try:
+            import daytona_sdk  # noqa: F401
+            _daytona_available = True
+        except ImportError:
+            _daytona_available = False
+    if not _daytona_available:
+        raise RuntimeError(
+            "daytona-sdk is required for build agents. "
+            "Install it with: pip install -e \".[daytona]\" or pip install daytona-sdk"
+        )
+
+
+def get_daytona():
+    """Return an AsyncDaytona client configured from environment."""
+    _ensure_daytona()
+    from daytona_sdk import AsyncDaytona, DaytonaConfig
+    return AsyncDaytona(DaytonaConfig(
+        api_url=os.environ.get("DAYTONA_API_URL", os.environ.get("DAYTONA_SERVER_URL", "http://localhost:3986")),
         api_key=os.environ.get("DAYTONA_API_KEY", ""),
     ))
 
@@ -37,7 +57,7 @@ def get_daytona() -> Daytona:
 # SHARED: QUALITY GATE RUNNER
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_fe_quality_gates(workspace, repo_path: str) -> tuple[bool, list[str]]:
+async def run_fe_quality_gates(sandbox, repo_path: str) -> tuple[bool, list[str]]:
     errors = []
     checks = [
         ("TypeScript", f"cd {repo_path} && npx tsc --noEmit 2>&1"),
@@ -45,24 +65,24 @@ async def run_fe_quality_gates(workspace, repo_path: str) -> tuple[bool, list[st
         ("Build",      f"cd {repo_path} && npm run build 2>&1"),
     ]
     for name, cmd in checks:
-        result = await workspace.process.exec(cmd, timeout=120)
+        result = await sandbox.process.exec(cmd, timeout=120)
         if result.exit_code != 0:
-            errors.append(f"{name}: {result.output[-800:]}")
+            errors.append(f"{name}: {(result.result or '')[-800:]}")
             logger.warning(f"[forge:frontend] {name} gate failed")
         else:
             logger.info(f"[forge:frontend] ✓ {name}")
     return len(errors) == 0, errors
 
 
-async def run_be_quality_gates(workspace, repo_path: str) -> tuple[bool, list[str]]:
+async def run_be_quality_gates(sandbox, repo_path: str) -> tuple[bool, list[str]]:
     errors = []
     checks = [
         ("pytest",  f"cd {repo_path} && python -m pytest -x -q --timeout=30 2>&1"),
         ("startup", f"cd {repo_path} && timeout 8 uvicorn app.main:app --host 0.0.0.0 --port 8001 &>/dev/null & sleep 6 && curl -sf http://localhost:8001/health || echo FAILED"),
     ]
     for name, cmd in checks:
-        result = await workspace.process.exec(cmd, timeout=90)
-        output = result.output or ""
+        result = await sandbox.process.exec(cmd, timeout=90)
+        output = result.result or ""
         if result.exit_code != 0 or "FAILED" in output:
             errors.append(f"{name}: {output[-500:]}")
         else:
@@ -85,14 +105,15 @@ async def run_frontend_engineer(
     simplify: bool = False,
 ) -> dict:
     set_agent_context(hackathon_id, "frontend_engineer")
+    from daytona_sdk import CreateSandboxFromImageParams, Image
     AGENT = ALL_AGENTS["frontend_engineer"]
     daytona = get_daytona()
     repo_name = f"hack-{hackathon_id[:8]}-frontend"
     repo_path = f"/workspace/{repo_name}"
 
-    workspace = await daytona.create(CreateWorkspaceParams(
-        language=CodeLanguage.TYPESCRIPT,
-        image="node:20-alpine",
+    sandbox = await daytona.create(CreateSandboxFromImageParams(
+        language="typescript",
+        image=Image.base("node:20-alpine"),
         env_vars={
             "GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", ""),
             "NEXT_PUBLIC_DEMO_MODE": "true",
@@ -104,24 +125,24 @@ async def run_frontend_engineer(
         # 1. Scaffold with exact stack
         logger.info(f"[forge:frontend] Scaffolding {repo_name}...")
         async with trace_op("subprocess", "frontend:scaffold") as span:
-            await workspace.process.exec(
+            await sandbox.process.exec(
                 f"npx create-next-app@latest {repo_name} "
                 f"--typescript --tailwind --app --yes "
                 f"--import-alias '@/*' "
                 f"--use-npm",
                 timeout=180,
             )
-            await workspace.process.exec(
+            await sandbox.process.exec(
                 f"cd {repo_path} && npx shadcn@latest init --yes --defaults",
                 timeout=120,
             )
-            await workspace.process.exec(
+            await sandbox.process.exec(
                 f"cd {repo_path} && npm install @tanstack/react-query zod clsx tailwind-merge class-variance-authority lucide-react",
                 timeout=60,
             )
 
         # 2. Write design tokens
-        await workspace.fs.upload_file(f"{repo_path}/src/lib/tokens.ts", design_tokens_content.encode())
+        await sandbox.fs.upload_file(design_tokens_content.encode(), f"{repo_path}/src/lib/tokens.ts")
 
         # 3. Write tailwind config with design tokens
         tailwind_extension = design_spec.get("tokens", {}).get("tailwind_config_extension", "")
@@ -134,13 +155,13 @@ that uses these theme extensions:
 
 Output ONLY the complete TypeScript file, starting with: import type {{ Config }} from 'tailwindcss'"""}],
             )
-            await workspace.fs.upload_file(f"{repo_path}/tailwind.config.ts", tailwind_config.encode())
+            await sandbox.fs.upload_file(tailwind_config.encode(), f"{repo_path}/tailwind.config.ts")
 
         # 4. Write CSS variables
         css_vars = design_spec.get("tokens", {}).get("css_variables", "")
         if css_vars:
             globals_css = f"@tailwind base;\n@tailwind components;\n@tailwind utilities;\n\n{css_vars}"
-            await workspace.fs.upload_file(f"{repo_path}/src/app/globals.css", globals_css.encode())
+            await sandbox.fs.upload_file(globals_css.encode(), f"{repo_path}/src/app/globals.css")
 
         # 5. Generate components from specs
         components_to_build = component_specs
@@ -182,8 +203,8 @@ Output the complete .tsx file only.""",
         for spec, code in zip(components_to_build, component_codes):
             file_path = spec.get("file_path", f"components/{spec['name'].lower()}.tsx")
             full_path = f"{repo_path}/src/{file_path}"
-            await workspace.process.exec(f"mkdir -p {os.path.dirname(full_path)}")
-            await workspace.fs.upload_file(full_path, code.encode())
+            await sandbox.process.exec(f"mkdir -p {os.path.dirname(full_path)}")
+            await sandbox.fs.upload_file(code.encode(), full_path)
 
         # 6. Generate pages
         screens = design_spec.get("screens", [])
@@ -215,13 +236,13 @@ Start your response with --- FILE: app/{route}/page.tsx ---""",
                 )
 
             page_dir = f"{repo_path}/src/app/{route}"
-            await workspace.process.exec(f"mkdir -p {page_dir}")
-            await workspace.fs.upload_file(f"{page_dir}/page.tsx", page_code.encode())
+            await sandbox.process.exec(f"mkdir -p {page_dir}")
+            await sandbox.fs.upload_file(page_code.encode(), f"{page_dir}/page.tsx")
 
         # 7. Quality gates with auto-fix
         async with trace_op("subprocess", "frontend:quality_gates") as span:
             for attempt in range(1, 4):
-                passed, errors = await run_fe_quality_gates(workspace, repo_path)
+                passed, errors = await run_fe_quality_gates(sandbox, repo_path)
                 if passed:
                     break
                 logger.warning(f"[forge:frontend] Gates failed (attempt {attempt}/3), auto-fixing...")
@@ -238,11 +259,11 @@ Start your response with --- FILE: app/{route}/page.tsx ---""",
                     if lines and lines[0].startswith("FILE:"):
                         fp = lines[0].replace("FILE:", "").strip()
                         code = "\n".join(lines[1:])
-                        await workspace.fs.upload_file(f"{repo_path}/src/{fp}", code.encode())
+                        await sandbox.fs.upload_file(code.encode(), f"{repo_path}/src/{fp}")
 
         # 8. Deploy
         if passed:
-            await workspace.process.exec(
+            await sandbox.process.exec(
                 f"cd {repo_path} && git init "
                 f"&& git remote add origin https://{os.environ.get('GITHUB_TOKEN')}@github.com/{GITHUB_ORG}/{repo_name}.git "
                 f"&& git add . "
@@ -257,7 +278,8 @@ Start your response with --- FILE: app/{route}/page.tsx ---""",
             raise RuntimeError(f"Quality gates failed after 3 attempts: {errors}")
 
     finally:
-        await daytona.delete(workspace.id)
+        await daytona.delete(sandbox)
+        await daytona.close()
 
 
 async def _get_vercel_preview(repo_name: str) -> str:
@@ -290,15 +312,16 @@ async def run_backend_engineer(
     simplify: bool = False,
 ) -> dict:
     set_agent_context(hackathon_id, "backend_engineer")
+    from daytona_sdk import CreateSandboxFromImageParams, Image
     AGENT = ALL_AGENTS["backend_engineer"]
     daytona = get_daytona()
     repo_name = f"hack-{hackathon_id[:8]}-backend"
     repo_path = f"/workspace/{repo_name}"
     redis = get_redis()
 
-    workspace = await daytona.create(CreateWorkspaceParams(
-        language=CodeLanguage.PYTHON,
-        image="python:3.11-slim",
+    sandbox = await daytona.create(CreateSandboxFromImageParams(
+        language="python",
+        image=Image.base("python:3.11-slim"),
         env_vars={"DATABASE_URL": os.environ.get("DATABASE_URL", ""), "GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", "")},
     ))
 
@@ -336,7 +359,7 @@ Include /health and /demo/seed endpoints.""",
         logger.info(f"[forge:backend] ✓ API contract published — frontend can now start")
 
         # Scaffold FastAPI project
-        await workspace.process.exec(
+        await sandbox.process.exec(
             f"mkdir -p {repo_path}/app/routers {repo_path}/tests "
             f"&& cd {repo_path} "
             f"&& pip install fastapi uvicorn sqlalchemy asyncpg pydantic pydantic-settings "
@@ -358,7 +381,7 @@ Complete app/models.py file. AsyncAttrs mixin, UUID PKs, timestamps, relationshi
                 }],
                 temperature=0.0,
             )
-        await workspace.fs.upload_file(f"{repo_path}/app/models.py", models_code.encode())
+        await sandbox.fs.upload_file(models_code.encode(), f"{repo_path}/app/models.py")
 
         # Parse contract and generate routers
         try:
@@ -381,7 +404,7 @@ Output complete app/routers/main.py""",
                 }],
                 temperature=0.1,
             )
-            await workspace.fs.upload_file(f"{repo_path}/app/routers/main.py", router_code.encode())
+            await sandbox.fs.upload_file(router_code.encode(), f"{repo_path}/app/routers/main.py")
 
         # main.py
         main_py = f'''"""FastAPI app — {project_plan.get('project_name')}"""
@@ -403,11 +426,11 @@ app.include_router(router, prefix="/api/v1")
 async def health() -> dict:
     return {{"status": "ok", "version": "1.0.0"}}
 '''
-        await workspace.fs.upload_file(f"{repo_path}/app/main.py", main_py.encode())
+        await sandbox.fs.upload_file(main_py.encode(), f"{repo_path}/app/main.py")
 
         # Quality gates
         for attempt in range(1, 4):
-            passed, errors = await run_be_quality_gates(workspace, repo_path)
+            passed, errors = await run_be_quality_gates(sandbox, repo_path)
             if passed:
                 break
             for error in errors[:2]:
@@ -419,7 +442,7 @@ async def health() -> dict:
                 if lines and lines[0].startswith("FILE:"):
                     fp = lines[0].replace("FILE:", "").strip()
                     code = "\n".join(lines[1:])
-                    await workspace.fs.upload_file(f"{repo_path}/{fp}", code.encode())
+                    await sandbox.fs.upload_file(code.encode(), f"{repo_path}/{fp}")
 
         # Feature 5: Publish contract delta so Frontend can re-generate affected API clients.
         # If router generation added or modified endpoints vs the initial contract, notify frontend.
@@ -438,7 +461,7 @@ async def health() -> dict:
             logger.debug(f"[forge:backend] Contract delta publish failed (non-critical): {e}")
 
         # Deploy
-        await workspace.process.exec(
+        await sandbox.process.exec(
             f"cd {repo_path} && git init "
             f"&& git remote add origin https://{os.environ.get('GITHUB_TOKEN')}@github.com/{GITHUB_ORG}/{repo_name}.git "
             f"&& git add . "
@@ -453,7 +476,8 @@ async def health() -> dict:
         }
 
     finally:
-        await daytona.delete(workspace.id)
+        await daytona.delete(sandbox)
+        await daytona.close()
         await redis.aclose()
 
 

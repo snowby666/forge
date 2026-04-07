@@ -194,8 +194,8 @@ sequenceDiagram
     participant GH as GitHub
     participant VCL as Vercel
 
-    FE->>DYT: Create workspace (node:20-alpine)
-    DYT-->>FE: workspace_id + API
+    FE->>DYT: Create sandbox (node:20-alpine)
+    DYT-->>FE: sandbox_id + API
     FE->>SBX: exec("npx create-next-app@latest ...")
     FE->>SBX: fs.upload_file(design-tokens.ts)
     FE->>SBX: exec("npm run build") [quality gate]
@@ -203,10 +203,10 @@ sequenceDiagram
     SBX->>GH: Push commits
     GH->>VCL: Webhook -> auto-deploy
     VCL-->>FE: Preview URL
-    FE->>DYT: Delete workspace (cleanup)
+    FE->>DYT: Delete sandbox (cleanup)
 ```
 
-Each build creates an isolated Daytona workspace. Frontend and Backend each get their own sandbox with no shared state. After deployment, sandboxes are deleted to free resources. This means the server's disk doesn't fill up across many hackathon runs.
+Each build creates an isolated Daytona sandbox. Frontend and Backend each get their own sandbox with no shared state. After deployment, sandboxes are deleted to free resources. This means the server's disk doesn't fill up across many hackathon runs.
 
 ---
 
