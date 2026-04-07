@@ -14,8 +14,8 @@ import logging
 import os
 import warnings
 from datetime import datetime, timezone
+from typing import Any
 
-from mem0 import Memory
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams, Filter, FieldCondition, MatchValue
 
@@ -60,7 +60,10 @@ def get_qdrant() -> AsyncQdrantClient:
         )
 
 
-def get_mem0() -> Memory:
+def get_mem0() -> Any:
+    # Lazy import so `ensure_collections` / deploy hooks work with only qdrant-client installed.
+    from mem0 import Memory
+
     return Memory.from_config({
         "vector_store": {
             "provider": "qdrant",
@@ -94,7 +97,7 @@ class MemoryKeeper:
 
     def __init__(self) -> None:
         self._qdrant: AsyncQdrantClient | None = None
-        self._mem0: Memory | None = None
+        self._mem0: Any = None
         self._collections_ready = False
 
     @property
@@ -104,7 +107,7 @@ class MemoryKeeper:
         return self._qdrant
 
     @property
-    def mem0(self) -> Memory:
+    def mem0(self) -> Any:
         if self._mem0 is None:
             self._mem0 = get_mem0()
         return self._mem0

@@ -280,9 +280,10 @@ log "Qdrant ready"
 # ── Step 13: Initialize Qdrant collections ────────────────────────────────────
 log "Initializing Qdrant collections..."
 _PY="${SCRIPT_DIR}/.venv/bin/python"
-[[ -x "$_PY" ]] || _PY="$PYTHON_CMD"
-[[ -x "$_PY" ]] || _PY="python3"
-"$_PY" -c "
+if [[ ! -x "$_PY" ]]; then
+  warn "No executable .venv/bin/python — skipping Qdrant init (run: $PYTHON_CMD -m venv .venv && source .venv/bin/activate && pip install -e .)"
+else
+  "$_PY" -c "
 import asyncio, sys
 sys.path.insert(0, '.')
 async def main():
@@ -291,6 +292,7 @@ async def main():
     print('Collections ready')
 asyncio.run(main())
 " 2>&1 || warn "Qdrant collection init failed (may already exist)"
+fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
