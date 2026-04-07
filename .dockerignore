@@ -1,4 +1,4 @@
-# Keep the Docker build context small — Dockerfile.web only copies 2 files.
+# Keep the Docker build context small (large context = slow `docker compose build`, especially on WSL/NTFS).
 __pycache__
 *.pyc
 .env
@@ -8,6 +8,14 @@ __pycache__
 .vscode
 .cursor
 node_modules
+**/node_modules
+web/.next
+web/node_modules
+.venv
+**/.venv
+logs
+*.log
+docker/daytona
 *.egg-info
 dist
 build
