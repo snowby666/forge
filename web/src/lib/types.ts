@@ -76,6 +76,9 @@ export interface AgentStatus {
   phase: AgentPhaseName;
   updated_at?: string;
   error?: string;
+  started_at?: string;
+  finished_at?: string;
+  elapsed_s?: number;
 }
 
 export interface AgentPhase {

@@ -266,13 +266,42 @@ async def _set_task_status(hackathon_id: str, agent_id: str, payload: dict) -> N
         await r.aclose()
 
 
+async def _push_log(hackathon_id: str, agent_id: str, level: str, message: str, data: dict | None = None) -> None:
+    """Push a structured log entry to the hackathon's log list in Redis."""
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "agent_id": agent_id,
+        "level": level,
+        "message": message,
+    }
+    if data:
+        entry["data"] = data
+    try:
+        r = get_redis()
+        try:
+            await r.rpush(f"logs:{hackathon_id}", json.dumps(entry))
+            await r.ltrim(f"logs:{hackathon_id}", -2000, -1)
+        finally:
+            await r.aclose()
+    except Exception:
+        pass
+
+
 async def _run_agent_inline(hackathon_id: str, agent_id: str, input_data: dict) -> None:
     """Execute an agent function in-process and store result in Redis."""
     import time as _t
+    from config.electronhub import set_llm_context
     t0 = _t.monotonic()
+    started_at = datetime.now(timezone.utc).isoformat()
     logger.info(f"[forge:worker] ▶ {agent_id} starting inline (hackathon={hackathon_id})")
+    await _push_log(hackathon_id, agent_id, "info", f"Agent {agent_id} started")
     try:
-        await _set_task_status(hackathon_id, agent_id, {"status": "in-progress"})
+        await _set_task_status(hackathon_id, agent_id, {
+            "status": "in-progress",
+            "started_at": started_at,
+        })
+
+        set_llm_context(hackathon_id, agent_id)
 
         redis = get_redis()
         try:
@@ -281,24 +310,41 @@ async def _run_agent_inline(hackathon_id: str, agent_id: str, input_data: dict) 
             await redis.aclose()
 
         elapsed = _t.monotonic() - t0
+        finished_at = datetime.now(timezone.utc).isoformat()
         output = result.model_dump() if hasattr(result, "model_dump") else (result or {})
-        await _set_task_status(hackathon_id, agent_id, {"status": "done", "data": output})
+        await _set_task_status(hackathon_id, agent_id, {
+            "status": "done",
+            "data": output,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "elapsed_s": round(elapsed, 1),
+        })
+        await _push_log(hackathon_id, agent_id, "info", f"Agent {agent_id} completed in {elapsed:.1f}s")
         logger.info(f"[forge:worker] ✓ {agent_id} completed inline ({elapsed:.1f}s)")
     except Exception as e:
         elapsed = _t.monotonic() - t0
+        finished_at = datetime.now(timezone.utc).isoformat()
         logger.error(
             f"[forge:worker] ✗ {agent_id} failed after {elapsed:.1f}s: "
             f"{type(e).__name__}: {e}",
             exc_info=True,
         )
+        await _push_log(hackathon_id, agent_id, "error", f"Agent {agent_id} failed: {e}")
         try:
-            await _set_task_status(hackathon_id, agent_id, {"status": "failed", "error": str(e)})
+            await _set_task_status(hackathon_id, agent_id, {
+                "status": "failed",
+                "error": str(e),
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "elapsed_s": round(elapsed, 1),
+            })
         except Exception:
             logger.error(f"[forge:worker] Could not write failure status to Redis for {agent_id}")
 
 
 async def trigger_agent(redis: Redis, hackathon_id: str, agent_id: str, input_data: dict) -> None:
     logger.info(f"[forge:commander]   → Triggering {agent_id}")
+    await _push_log(hackathon_id, agent_id, "info", f"Agent {agent_id} queued")
     await redis.set(f"task:{hackathon_id}:{agent_id}", json.dumps({"status": "pending"}), ex=604800)
     task = asyncio.create_task(_run_agent_inline(hackathon_id, agent_id, input_data))
     _INLINE_TASKS.add(task)
@@ -406,8 +452,14 @@ async def run_intelligence(state: HackathonState) -> dict:
         logger.warning(f"[forge:commander] Calendar scheduling failed: {e}")
         await _set_task_status(state["hackathon_id"], "calendar", {"status": "failed", "error": str(e)})
     logger.info(f"[forge:commander]   Starting 4 intelligence agents in parallel...")
+    await _push_log(state["hackathon_id"], "commander", "info", "Starting intelligence phase — 4 agents in parallel")
     intel = await run_all_intelligence(state["hackathon_id"], state["brief"])
     elapsed = _time.monotonic() - t0
+    await _push_log(state["hackathon_id"], "commander", "info",
+                    f"Intelligence phase complete in {elapsed:.0f}s",
+                    {"comp_report": bool(intel.get("comp_report")),
+                     "judge_profile": bool(intel.get("judge_profile")),
+                     "sponsor_map": bool(intel.get("sponsor_map"))})
     logger.info(
         f"[forge:commander]   Intelligence complete in {elapsed:.0f}s\n"
         f"[forge:commander]   CompReport: {'yes' if intel.get('comp_report') else 'no'}\n"
@@ -421,6 +473,7 @@ async def run_intelligence(state: HackathonState) -> dict:
 async def generate_concepts(state: HackathonState) -> dict:
     """Trigger Strategy Director, wait for concepts, notify human."""
     logger.info(f"[forge:commander] ━━━ Phase 1b: CONCEPT GENERATION ━━━")
+    await _push_log(state["hackathon_id"], "commander", "info", "Starting concept generation phase")
     redis = get_redis()
 
     await trigger_agent(redis, state["hackathon_id"], "strategy_director", {
@@ -520,6 +573,7 @@ async def run_planning(state: HackathonState) -> dict:
 
 async def run_design(state: HackathonState) -> dict:
     """Trigger UI/UX Designer, wait, notify human for design approval."""
+    await _push_log(state["hackathon_id"], "commander", "info", "Starting design phase — UI/UX Designer")
     logger.info(
         f"[forge:commander] ━━━ Phase 2b: DESIGN ━━━\n"
         f"[forge:commander]   Running: UI/UX Designer\n"
@@ -648,6 +702,7 @@ async def run_build(state: HackathonState) -> dict:
     Uses forge_tools.get_runnable_now() — adapted from Claude Code's
     isConcurrencySafe() concurrency scheduling pattern.
     """
+    await _push_log(state["hackathon_id"], "commander", "info", "Starting build phase")
     logger.info(
         f"[forge:commander] ━━━ Phase 3: BUILD ━━━\n"
         f"[forge:commander]   Running: Frontend, Backend, Integration, Test, DevOps, Security\n"
@@ -755,6 +810,7 @@ async def run_build(state: HackathonState) -> dict:
 
 async def run_verification(state: HackathonState) -> dict:
     """Run Code Reviewer + UX Auditor + Performance in parallel."""
+    await _push_log(state["hackathon_id"], "commander", "info", "Starting verification phase — Code Review, UX Audit, Performance")
     logger.info(
         f"[forge:commander] ━━━ Phase 4: VERIFICATION ━━━\n"
         f"[forge:commander]   Running: Code Reviewer, UX Auditor [veto], Performance Agent\n"
@@ -840,6 +896,7 @@ async def wait_quality_review(state: HackathonState) -> dict:
 
 async def run_polish(state: HackathonState) -> dict:
     """Run all 4 polish agents in parallel."""
+    await _push_log(state["hackathon_id"], "commander", "info", "Starting polish phase")
     logger.info(
         f"[forge:commander] ━━━ Phase 5: POLISH ━━━\n"
         f"[forge:commander]   Running: Polish Agent, Copy Writer, Data Seeder, Brand Agent (parallel)"
@@ -873,6 +930,7 @@ async def run_polish(state: HackathonState) -> dict:
 
 async def run_submission(state: HackathonState) -> dict:
     """Run demo producer + pitch writer in parallel, then submit."""
+    await _push_log(state["hackathon_id"], "commander", "info", "Starting submission phase — Demo, Pitch, Submit")
     logger.info(
         f"[forge:commander] ━━━ Phase 6: SUBMISSION ━━━\n"
         f"[forge:commander]   Running: Demo Producer + Pitch Writer (parallel), then Submission Agent\n"

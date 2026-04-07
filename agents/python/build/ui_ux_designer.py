@@ -804,7 +804,14 @@ async def run_worker() -> None:
         hackathon_id = payload["hackathon_id"]
         inp = payload["input"]
 
-        await redis.set(f"task:{hackathon_id}:ui_ux_designer", json.dumps({"status": "in-progress"}), ex=604800)
+        from config.electronhub import set_llm_context
+        from datetime import datetime, timezone
+        started_at = datetime.now(timezone.utc).isoformat()
+        set_llm_context(hackathon_id, "ui_ux_designer")
+        await redis.set(f"task:{hackathon_id}:ui_ux_designer", json.dumps({
+            "status": "in-progress",
+            "started_at": started_at,
+        }), ex=604800)
 
         try:
             output_dir = f"/tmp/hackathon-{hackathon_id}"
@@ -815,16 +822,29 @@ async def run_worker() -> None:
                 hackathon_brief=inp.get("brief", {}),
                 output_dir=output_dir,
             )
+            import time as _t
+            finished_at = datetime.now(timezone.utc).isoformat()
             await redis.set(
                 f"task:{hackathon_id}:ui_ux_designer",
-                json.dumps({"status": "done", "data": result}),
+                json.dumps({
+                    "status": "done",
+                    "data": result,
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                }),
                 ex=604800,
             )
         except Exception as e:
             logger.error(f"[forge:design] Failed: {e}", exc_info=True)
+            finished_at = datetime.now(timezone.utc).isoformat()
             await redis.set(
                 f"task:{hackathon_id}:ui_ux_designer",
-                json.dumps({"status": "failed", "error": str(e)}),
+                json.dumps({
+                    "status": "failed",
+                    "error": str(e),
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                }),
                 ex=604800,
             )
 

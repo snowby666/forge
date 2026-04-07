@@ -69,6 +69,8 @@ import {
   fetchCheckpoints,
   fetchHackathons,
   rerollHackathon,
+  fetchCost,
+  fetchElapsed,
   restartAgent,
   runHackathon,
   triggerAgent,
@@ -196,6 +198,18 @@ export default function HackathonDetailPage({
     { refreshInterval: 60_000 },
   )
 
+  const { data: costData } = useSWR(
+    `/api/hackathon/${id}/cost`,
+    () => fetchCost(id),
+    { refreshInterval: 15_000 },
+  )
+
+  const { data: elapsedData } = useSWR(
+    `/api/hackathon/${id}/elapsed`,
+    () => fetchElapsed(id),
+    { refreshInterval: 10_000 },
+  )
+
   const { doneCount, totalAgents, pct } = useMemo(() => {
     const total = ALL_AGENT_IDS.length
     const done = agents.filter((a) => a.status === "done").length
@@ -299,8 +313,9 @@ export default function HackathonDetailPage({
   }
 
   const { brief } = hackathon
-  const startedAt = brief.started_at as string | undefined
-  const costUsd = analytics?.cost_by_hackathon?.find(
+  const totalElapsedS = elapsedData?.total_elapsed_s
+  const startedAt = elapsedData?.started_at ?? (brief.started_at as string | undefined)
+  const costUsd = costData?.total_usd ?? analytics?.cost_by_hackathon?.find(
     (c) => c.name === brief.name,
   )?.cost_usd ?? (analytics as Record<string, unknown> | undefined)?.cost_usd as number | undefined
 
@@ -476,9 +491,15 @@ export default function HackathonDetailPage({
             <div>
               <p className="text-xs text-muted-foreground">Time Elapsed</p>
               <p className="font-mono text-lg font-bold tracking-tight">
-                {startedAt
-                  ? formatDistanceToNow(new Date(startedAt), { addSuffix: false })
-                  : "—"}
+                {totalElapsedS != null
+                  ? totalElapsedS >= 3600
+                    ? `${Math.floor(totalElapsedS / 3600)}h ${Math.floor((totalElapsedS % 3600) / 60)}m`
+                    : totalElapsedS >= 60
+                      ? `${Math.floor(totalElapsedS / 60)}m ${Math.round(totalElapsedS % 60)}s`
+                      : `${Math.round(totalElapsedS)}s`
+                  : startedAt
+                    ? formatDistanceToNow(new Date(startedAt), { addSuffix: false })
+                    : "—"}
               </p>
             </div>
           </CardContent>
@@ -495,6 +516,11 @@ export default function HackathonDetailPage({
                   ? `$${costUsd.toFixed(2)}`
                   : "—"}
               </p>
+              {costData && costData.total_tokens > 0 && (
+                <p className="text-[10px] text-muted-foreground">
+                  {(costData.total_tokens / 1000).toFixed(1)}k tokens
+                </p>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -754,12 +780,12 @@ export default function HackathonDetailPage({
                 </Card>
               )}
 
-              {costUsd !== undefined && costUsd !== null && (
+              {costData && costData.total_usd > 0 && (
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-sm">Cost Breakdown</CardTitle>
+                    <CardTitle className="text-sm">Cost Breakdown by Agent</CardTitle>
                   </CardHeader>
-                  <CardContent>
+                  <CardContent className="space-y-4">
                     <div className="flex items-center gap-3">
                       <div className="flex size-10 items-center justify-center rounded-lg bg-amber-500/10">
                         <DollarSign className="size-5 text-amber-400" />
@@ -767,17 +793,84 @@ export default function HackathonDetailPage({
                       <div>
                         <p className="text-xs text-muted-foreground">Total Estimated Cost</p>
                         <p className="font-mono text-2xl font-bold tracking-tight">
-                          ${costUsd.toFixed(2)}
+                          ${costData.total_usd.toFixed(2)}
+                        </p>
+                        <p className="text-[10px] text-muted-foreground">
+                          {(costData.total_tokens / 1000).toFixed(1)}k tokens across{" "}
+                          {Object.keys(costData.by_agent).length} agents
                         </p>
                       </div>
                     </div>
+                    <div className="space-y-1.5">
+                      {Object.entries(costData.by_agent)
+                        .sort(([, a], [, b]) => b.cost_usd - a.cost_usd)
+                        .map(([aid, info]) => (
+                          <div key={aid} className="flex items-center gap-2 text-xs">
+                            <span className="w-36 truncate font-medium capitalize">
+                              {aid.replace(/_/g, " ")}
+                            </span>
+                            <div className="flex-1">
+                              <div
+                                className="h-1.5 rounded-full bg-amber-500/50"
+                                style={{ width: `${Math.max(4, (info.cost_usd / costData.total_usd) * 100)}%` }}
+                              />
+                            </div>
+                            <span className="w-16 text-right font-mono text-muted-foreground">
+                              ${info.cost_usd.toFixed(3)}
+                            </span>
+                            <span className="w-16 text-right font-mono text-[10px] text-muted-foreground">
+                              {(info.tokens / 1000).toFixed(1)}k
+                            </span>
+                            <span className="w-12 text-right font-mono text-[10px] text-muted-foreground">
+                              {info.calls} calls
+                            </span>
+                          </div>
+                        ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {elapsedData && elapsedData.agent_times.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm">Agent Execution Times</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-1.5">
+                    {elapsedData.agent_times.map((at) => (
+                      <div key={at.agent_id} className="flex items-center gap-2 text-xs">
+                        <span className="w-36 truncate font-medium capitalize">
+                          {at.agent_id.replace(/_/g, " ")}
+                        </span>
+                        <div className="flex-1">
+                          <div
+                            className="h-1.5 rounded-full bg-blue-500/50"
+                            style={{
+                              width: `${Math.max(4, (at.elapsed_s / Math.max(...elapsedData.agent_times.map((t) => t.elapsed_s))) * 100)}%`,
+                            }}
+                          />
+                        </div>
+                        <span className="w-16 text-right font-mono text-muted-foreground">
+                          {at.elapsed_s >= 60
+                            ? `${Math.floor(at.elapsed_s / 60)}m ${Math.round(at.elapsed_s % 60)}s`
+                            : `${at.elapsed_s.toFixed(1)}s`}
+                        </span>
+                        <Badge
+                          variant="outline"
+                          className={`scale-75 ${at.status === "done" ? "border-emerald-500/40 text-emerald-400" : at.status === "failed" ? "border-red-500/40 text-red-400" : "border-blue-500/40 text-blue-400"}`}
+                        >
+                          {at.status}
+                        </Badge>
+                      </div>
+                    ))}
                   </CardContent>
                 </Card>
               )}
 
               {!analytics.agent_timing?.length &&
                 !analytics.success_rates?.length &&
-                costUsd === undefined && (
+                (!costData || costData.total_usd === 0) &&
+                (!elapsedData || !elapsedData.agent_times.length) && (
                   <p className="py-12 text-center text-sm text-muted-foreground">
                     No performance data available yet.
                   </p>

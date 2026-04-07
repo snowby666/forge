@@ -150,6 +150,25 @@ export function batchOperation(op: BatchOperation) {
   });
 }
 
+// ── Cost & Time ─────────────────────────────────────────
+
+export function fetchCost(hackathonId: string) {
+  return apiFetch<{
+    total_usd: number;
+    total_tokens: number;
+    by_agent: Record<string, { cost_usd: number; input_tokens: number; output_tokens: number; tokens: number; calls: number }>;
+  }>(`/api/hackathon/${hackathonId}/cost`);
+}
+
+export function fetchElapsed(hackathonId: string) {
+  return apiFetch<{
+    total_elapsed_s: number | null;
+    started_at: string | null;
+    latest_finish: string | null;
+    agent_times: Array<{ agent_id: string; elapsed_s: number; status: string }>;
+  }>(`/api/hackathon/${hackathonId}/elapsed`);
+}
+
 // ── CLI Actions ─────────────────────────────────────────────
 
 export function runScout(dryRun = false) {

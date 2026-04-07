@@ -182,6 +182,13 @@ async def _get_checkpoints(redis) -> list[dict]:
                 data = json.loads(raw)
             except Exception:
                 pass
+
+        # Enrich checkpoint data from task outputs when data is empty
+        if is_pending or not data:
+            enriched = await _enrich_checkpoint(redis, hid, cp_name)
+            if enriched:
+                data = {**data, **enriched}
+
         checkpoints.append({
             "hackathon_id": hid,
             "checkpoint": cp_name,
@@ -189,6 +196,50 @@ async def _get_checkpoints(redis) -> list[dict]:
             "data": data,
         })
     return checkpoints
+
+
+async def _enrich_checkpoint(redis, hackathon_id: str, cp_name: str) -> dict:
+    """Pull relevant data from agent task outputs to enrich a checkpoint."""
+    try:
+        if cp_name == "concept_approval":
+            raw = await redis.get(f"task:{hackathon_id}:strategy_director")
+            if raw:
+                task = json.loads(raw)
+                task_data = task.get("data", {})
+                concepts = task_data.get("concepts", [])
+                if concepts:
+                    return {
+                        "concepts": concepts,
+                        "recommended_concept": task_data.get("recommended_concept", 1),
+                        "reasoning": task_data.get("reasoning", ""),
+                        "analysis": task_data.get("analysis", ""),
+                    }
+        elif cp_name == "design_approval":
+            raw = await redis.get(f"task:{hackathon_id}:ui_ux_designer")
+            if raw:
+                task = json.loads(raw)
+                task_data = task.get("data", {})
+                if task_data:
+                    return {
+                        "personality": task_data.get("personality", ""),
+                        "screen_count": task_data.get("screen_count", 0),
+                        "component_count": task_data.get("component_count", 0),
+                        "screens": task_data.get("screens", []),
+                    }
+        elif cp_name == "quality_review":
+            raw = await redis.get(f"task:{hackathon_id}:ux_auditor")
+            if raw:
+                task = json.loads(raw)
+                task_data = task.get("data", {})
+                if task_data:
+                    return {
+                        "overall_score": task_data.get("overall_score"),
+                        "approved": task_data.get("approved"),
+                        "blockers": task_data.get("blockers", []),
+                    }
+    except Exception:
+        pass
+    return {}
 
 
 def _redact(value: str) -> str:
@@ -517,11 +568,19 @@ async def api_agents(hackathon_id: str):
                             pass
                 except Exception:
                     status = raw
+            started_at = parsed.get("started_at") if data else None
+            finished_at = parsed.get("finished_at") if data else None
+            elapsed_s = parsed.get("elapsed_s") if data else None
+            if elapsed_s is None and elapsed is not None:
+                elapsed_s = elapsed
             agents.append({
                 "agent_id": agent_id,
                 "status": status,
                 "phase": phase,
                 "elapsed": elapsed,
+                "elapsed_s": elapsed_s,
+                "started_at": started_at,
+                "finished_at": finished_at,
                 "data": data,
             })
         return agents
@@ -583,6 +642,88 @@ async def api_logs(
                 continue
             logs.append(parsed)
         return logs
+    finally:
+        await redis.aclose()
+
+
+# ── Cost tracking ─────────────────────────────────────────────────────────────
+
+@app.get("/api/hackathon/{hackathon_id}/cost")
+async def api_cost(hackathon_id: str):
+    redis = get_redis()
+    try:
+        keys = await redis.keys(f"cost:{hackathon_id}:*")
+        total_usd = 0.0
+        total_tokens = 0
+        by_agent: dict[str, Any] = {}
+        for key in keys:
+            raw = await redis.get(key)
+            if raw:
+                data = json.loads(raw)
+                aid = data.get("agent_id", key.split(":")[-1])
+                cost = data.get("total_cost_usd", 0.0)
+                tokens = data.get("total_input_tokens", 0) + data.get("total_output_tokens", 0)
+                by_agent[aid] = {
+                    "cost_usd": round(cost, 4),
+                    "input_tokens": data.get("total_input_tokens", 0),
+                    "output_tokens": data.get("total_output_tokens", 0),
+                    "tokens": tokens,
+                    "calls": data.get("calls", 0),
+                }
+                total_usd += cost
+                total_tokens += tokens
+        return {
+            "total_usd": round(total_usd, 4),
+            "total_tokens": total_tokens,
+            "by_agent": by_agent,
+        }
+    finally:
+        await redis.aclose()
+
+
+@app.get("/api/hackathon/{hackathon_id}/elapsed")
+async def api_elapsed(hackathon_id: str):
+    redis = get_redis()
+    try:
+        keys = await redis.keys(f"task:{hackathon_id}:*")
+        earliest_start: str | None = None
+        latest_finish: str | None = None
+        agent_times: list[dict[str, Any]] = []
+        for key in keys:
+            raw = await redis.get(key)
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+            started = data.get("started_at")
+            finished = data.get("finished_at")
+            agent_id = key.split(":")[-1]
+            elapsed_s = data.get("elapsed_s")
+            if started:
+                if not earliest_start or started < earliest_start:
+                    earliest_start = started
+                if finished and (not latest_finish or finished > latest_finish):
+                    latest_finish = finished
+            if elapsed_s is not None:
+                agent_times.append({"agent_id": agent_id, "elapsed_s": elapsed_s, "status": data.get("status")})
+
+        total_elapsed = None
+        if earliest_start:
+            try:
+                t0 = datetime.fromisoformat(earliest_start)
+                t1 = datetime.fromisoformat(latest_finish) if latest_finish else datetime.now(timezone.utc)
+                total_elapsed = round((t1 - t0).total_seconds(), 1)
+            except Exception:
+                pass
+
+        return {
+            "total_elapsed_s": total_elapsed,
+            "started_at": earliest_start,
+            "latest_finish": latest_finish,
+            "agent_times": sorted(agent_times, key=lambda x: x.get("elapsed_s", 0), reverse=True),
+        }
     finally:
         await redis.aclose()
 

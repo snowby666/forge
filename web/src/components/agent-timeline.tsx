@@ -176,7 +176,7 @@ function GanttOverview({ phases }: { phases: Map<AgentPhaseName, AgentStatus[]> 
   if (rows.length === 0) return null
 
   const maxMs = Math.max(
-    ...rows.map((r) => elapsedMs(r.agent.updated_at)),
+    ...rows.map((r) => r.agent.elapsed_s != null ? r.agent.elapsed_s * 1000 : elapsedMs(r.agent.updated_at)),
     1,
   )
 
@@ -187,7 +187,7 @@ function GanttOverview({ phases }: { phases: Map<AgentPhaseName, AgentStatus[]> 
       </p>
       <div className="flex flex-col gap-[3px]">
         {rows.map(({ agent, phase }) => {
-          const ms = elapsedMs(agent.updated_at)
+          const ms = agent.elapsed_s != null ? agent.elapsed_s * 1000 : elapsedMs(agent.updated_at)
           const pct = Math.max(ms / maxMs * 100, agent.status === "pending" ? 0 : 4)
           return (
             <Tooltip key={agent.agent_id}>
@@ -246,8 +246,8 @@ function AgentRow({
   const [logs, setLogs] = useState<string[]>([])
   const [loadingLogs, setLoadingLogs] = useState(false)
 
-  const ms = elapsedMs(agent.updated_at)
-  const pct = maxMs > 0 ? Math.max((ms / maxMs) * 100, agent.status === "pending" ? 0 : 6) : 0
+  const agentElapsedMs = agent.elapsed_s != null ? agent.elapsed_s * 1000 : elapsedMs(agent.updated_at)
+  const pct = maxMs > 0 ? Math.max((agentElapsedMs / maxMs) * 100, agent.status === "pending" ? 0 : 6) : 0
   const meta = PHASE_META[phase]
 
   const handleViewLogs = useCallback(async () => {
@@ -292,7 +292,7 @@ function AgentRow({
             />
           </div>
           <span className="w-[60px] text-right text-xs tabular-nums text-muted-foreground">
-            {ms > 0 ? formatElapsed(ms) : "—"}
+            {agentElapsedMs > 0 ? formatElapsed(agentElapsedMs) : "—"}
           </span>
         </div>
 
@@ -432,7 +432,7 @@ function PhaseSection({
   const phasePct = agents.length > 0 ? (doneCount / agents.length) * 100 : 0
   const phaseStatus = derivePhaseStatus(agents)
 
-  const maxMs = Math.max(...agents.map((a) => elapsedMs(a.updated_at)), 1)
+  const maxMs = Math.max(...agents.map((a) => a.elapsed_s != null ? a.elapsed_s * 1000 : elapsedMs(a.updated_at)), 1)
   const pendingAgents = agents.filter((a) => a.status === "pending")
   const failedAgents = agents.filter((a) => a.status === "failed")
 

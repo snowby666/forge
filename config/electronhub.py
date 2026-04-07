@@ -37,6 +37,7 @@ Models as of 2026-03-31 (from https://api.electronhub.ai/v1/models):
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -50,6 +51,21 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+_last_usage: dict[str, Any] = {}
+
+# Context vars for automatic cost tracking per hackathon/agent
+_ctx_hackathon_id: contextvars.ContextVar[str] = contextvars.ContextVar("hackathon_id", default="")
+_ctx_agent_id: contextvars.ContextVar[str] = contextvars.ContextVar("agent_id", default="")
+
+def set_llm_context(hackathon_id: str, agent_id: str) -> None:
+    """Set the current hackathon/agent context for automatic cost tracking."""
+    _ctx_hackathon_id.set(hackathon_id)
+    _ctx_agent_id.set(agent_id)
+
+def get_last_usage() -> dict[str, Any]:
+    """Return usage data from the most recent complete() call.
+    Keys: model, prompt_tokens, completion_tokens, elapsed_s."""
+    return dict(_last_usage)
 
 
 # ── Singleton client ──────────────────────────────────────────────────────────
@@ -342,11 +358,13 @@ async def complete(
             # Stream to avoid Cloudflare 504 timeouts on long generations
             chunks: list[str] = []
             chunk_count = 0
+            usage_data: dict[str, int] = {}
             create_kwargs: dict[str, Any] = dict(
                 model=current_model,
                 messages=full_messages,  # type: ignore[arg-type]
                 temperature=temp,
                 stream=True,
+                stream_options={"include_usage": True},
             )
             if max_tok is not None:
                 create_kwargs["max_tokens"] = max_tok
@@ -358,8 +376,14 @@ async def complete(
             last_chunk_at = _t.monotonic()
 
             async def _read_stream():
-                nonlocal chunk_count, last_chunk_at
+                nonlocal chunk_count, last_chunk_at, usage_data
                 async for chunk in stream:
+                    if chunk.usage:
+                        usage_data = {
+                            "prompt_tokens": chunk.usage.prompt_tokens or 0,
+                            "completion_tokens": chunk.usage.completion_tokens or 0,
+                            "total_tokens": chunk.usage.total_tokens or 0,
+                        }
                     delta = chunk.choices[0].delta if chunk.choices else None
                     if delta and delta.content:
                         chunks.append(delta.content)
@@ -399,10 +423,19 @@ async def complete(
 
             result = "".join(chunks)
             elapsed = _t.monotonic() - t0
+            prompt_tok = usage_data.get("prompt_tokens", 0)
+            completion_tok = usage_data.get("completion_tokens", 0)
             logger.info(
                 f"[forge:llm] ✓ {current_model} | task={task} | {elapsed:.1f}s "
                 f"| {chunk_count} chunks | {len(result)} chars"
+                f" | tokens={prompt_tok}+{completion_tok}"
             )
+            _last_usage.update({
+                "model": current_model,
+                "prompt_tokens": prompt_tok,
+                "completion_tokens": completion_tok,
+                "elapsed_s": round(elapsed, 2),
+            })
 
             if not result.strip():
                 fb = FALLBACK.get(current_model)
@@ -420,6 +453,22 @@ async def complete(
                 )
                 await asyncio.sleep(2 ** attempt)
                 continue
+
+            # Auto-track cost if context is set
+            if prompt_tok or completion_tok:
+                hid = _ctx_hackathon_id.get("")
+                aid = _ctx_agent_id.get("")
+                if hid and aid:
+                    try:
+                        from config.forge_tools import track_agent_cost
+                        from config.redis_client import get_redis
+                        r = get_redis()
+                        try:
+                            await track_agent_cost(r, hid, aid, current_model, prompt_tok, completion_tok)
+                        finally:
+                            await r.aclose()
+                    except Exception:
+                        pass
 
             return result
 
