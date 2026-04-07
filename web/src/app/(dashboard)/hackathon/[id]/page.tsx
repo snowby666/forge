@@ -19,7 +19,6 @@ import {
   Pause,
   Play,
   RefreshCw,
-  ScrollText,
   Trash2,
   Users,
   Zap,
@@ -374,31 +373,31 @@ export default function HackathonDetailPage({
       </div>
 
       {/* Header */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
+      <div className="space-y-3">
+        <div className="flex items-start gap-3">
           <Link href="/hackathons">
-            <Button variant="ghost" size="icon-sm">
+            <Button variant="ghost" size="icon-sm" className="mt-1">
               <ArrowLeft className="size-4" />
             </Button>
           </Link>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold tracking-tight">{brief.name}</h1>
-              <Badge variant="outline" className={`font-mono text-xs font-bold ${scoreColor(brief.score)}`}>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-xl font-bold tracking-tight truncate">{brief.name}</h1>
+              <Badge variant="outline" className={`font-mono text-xs font-bold shrink-0 ${scoreColor(brief.score)}`}>
                 {brief.score}/100
               </Badge>
               <Badge
                 variant="outline"
-                className={`text-[10px] capitalize ${PHASE_BADGE[hackathon.phase] ?? ""}`}
+                className={`text-[10px] capitalize shrink-0 ${PHASE_BADGE[hackathon.phase] ?? ""}`}
               >
                 {hackathon.phase}
               </Badge>
               <span
-                className={`inline-block size-2 rounded-full ${connected ? "bg-emerald-500" : "bg-red-500"}`}
+                className={`inline-block size-2 rounded-full shrink-0 ${connected ? "bg-emerald-500" : "bg-red-500"}`}
                 title={connected ? "WebSocket connected" : "WebSocket disconnected"}
               />
             </div>
-            <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+            <p className="flex items-center gap-1.5 text-sm text-muted-foreground mt-0.5">
               <Clock className="size-3" />
               {deadlineLabel(brief.days_until_deadline)}
               {brief.url && (
@@ -419,7 +418,9 @@ export default function HackathonDetailPage({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        {/* Action toolbar — separate row for clarity */}
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/40 bg-card/30 px-3 py-2">
+          {/* Primary: Run pipeline */}
           <div className="relative">
             <Button size="sm" onClick={() => setRunMenuOpen((v) => !v)}>
               <Play className="mr-1.5 size-3.5" />
@@ -428,7 +429,7 @@ export default function HackathonDetailPage({
             {runMenuOpen && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setRunMenuOpen(false)} />
-                <div className="absolute right-0 top-full z-50 mt-1 w-48 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
+                <div className="absolute left-0 top-full z-50 mt-1 w-48 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
                   <p className="px-2 py-1 text-xs font-medium text-muted-foreground">Run Options</p>
                   <div className="my-1 h-px bg-border" />
                   <button className="flex w-full items-center rounded-md px-2 py-1.5 text-sm hover:bg-accent" onClick={() => { setRunMenuOpen(false); handleRunPipeline() }}>
@@ -462,6 +463,8 @@ export default function HackathonDetailPage({
               </>
             )}
           </div>
+
+          {/* Pipeline controls (only when running) */}
           {isRunning && (
             <>
               <Button
@@ -470,17 +473,7 @@ export default function HackathonDetailPage({
                 onClick={handlePause}
                 className={isPaused ? "border-yellow-500/50 text-yellow-400" : ""}
               >
-                {isPaused ? (
-                  <>
-                    <Play className="mr-1.5 size-3.5" />
-                    Unpause
-                  </>
-                ) : (
-                  <>
-                    <Pause className="mr-1.5 size-3.5" />
-                    Pause
-                  </>
-                )}
+                {isPaused ? <><Play className="mr-1.5 size-3.5" />Unpause</> : <><Pause className="mr-1.5 size-3.5" />Pause</>}
               </Button>
               <Button
                 variant="outline"
@@ -493,19 +486,21 @@ export default function HackathonDetailPage({
               </Button>
             </>
           )}
-          <Link href={`/hackathon/${id}/logs`}>
-            <Button variant="outline" size="sm">
-              <ScrollText className="mr-1.5 size-3.5" />
-              Logs
-            </Button>
-          </Link>
+
+          <Separator orientation="vertical" className="!h-5" />
+
+          {/* Navigation */}
           <Link href={`/hackathon/${id}/design`}>
             <Button variant="outline" size="sm">
               <Palette className="mr-1.5 size-3.5" />
               Design
             </Button>
           </Link>
-          <Separator orientation="vertical" className="!h-6" />
+
+          {/* Spacer */}
+          <div className="flex-1" />
+
+          {/* Destructive actions pushed right */}
           <Button variant="outline" size="sm" onClick={() => setRerollOpen(true)}>
             <RefreshCw className="mr-1.5 size-3.5" />
             Reroll

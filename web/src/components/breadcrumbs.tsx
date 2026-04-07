@@ -5,12 +5,12 @@ import { usePathname } from "next/navigation"
 import { Home } from "lucide-react"
 
 const LABELS: Record<string, string> = {
-  hackathon: "Live Logs",
+  hackathon: "Live Traces",
   hackathons: "Hackathons",
   analytics: "Analytics",
   settings: "Settings",
   design: "Design",
-  logs: "Logs",
+  logs: "Traces",
   approve: "Approve",
   login: "Login",
 }

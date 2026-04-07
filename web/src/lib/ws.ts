@@ -1,11 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback, useState } from "react";
-import type {
-  AgentStatusValue,
-  WsMessage,
-  WsLogMessage,
-} from "./types";
+import type { AgentStatusValue, WsMessage } from "./types";
 
 export type AgentStatusMap = Record<
   string, // hackathon_id
@@ -13,7 +9,6 @@ export type AgentStatusMap = Record<
 >;
 
 interface UseRealtimeStatusOptions {
-  onLog?: (msg: WsLogMessage) => void;
   enabled?: boolean;
 }
 
@@ -27,15 +22,13 @@ function wsUrl(): string {
 }
 
 export function useRealtimeStatus(opts: UseRealtimeStatusOptions = {}) {
-  const { onLog, enabled = true } = opts;
+  const { enabled = true } = opts;
   const [statuses, setStatuses] = useState<AgentStatusMap>({});
   const [connected, setConnected] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const retriesRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const onLogRef = useRef(onLog);
-  onLogRef.current = onLog;
 
   const connect = useCallback(() => {
     if (!enabled || typeof window === "undefined") return;
@@ -71,8 +64,6 @@ export function useRealtimeStatus(opts: UseRealtimeStatusOptions = {}) {
             },
           };
         });
-      } else if (msg.type === "log") {
-        onLogRef.current?.(msg);
       }
     };
 

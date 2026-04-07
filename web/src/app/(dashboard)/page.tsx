@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useState } from "react"
 import Link from "next/link"
 import useSWR from "swr"
 import { toast } from "sonner"
@@ -15,6 +15,7 @@ import {
   FlaskConical,
   Loader2,
   ScrollText,
+  Terminal,
   Trophy,
   Zap,
 } from "lucide-react"
@@ -38,6 +39,7 @@ import {
   runScout,
   runSystemTest,
 } from "@/lib/api"
+import { TerminalLog } from "@/components/terminal-log"
 import type { AgentPhaseName, Checkpoint, ServiceHealth } from "@/lib/types"
 
 const PHASES: AgentPhaseName[] = [
@@ -141,12 +143,6 @@ export default function DashboardPage() {
     { refreshInterval: scoutLogsOpen ? 2000 : 10000 },
   )
   const scoutRunning = scoutStatus?.running ?? false
-  const logEndRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (scoutLogsOpen && logEndRef.current) {
-      logEndRef.current.scrollIntoView({ behavior: "smooth" })
-    }
-  }, [scoutStatus?.log_lines?.length, scoutLogsOpen])
 
   const handleRunScout = useCallback(async () => {
     setScoutLoading(true)
@@ -187,7 +183,7 @@ export default function DashboardPage() {
         toast.success("System test passed!")
       } else {
         toast.error("System test failed", {
-          description: result.stderr || "Check logs for details",
+          description: result.stderr || "Check traces for details",
         })
       }
     } catch {
@@ -397,48 +393,51 @@ export default function DashboardPage() {
               render={<Link href={`/hackathon/${hackathons[0].id}`} />}
             >
               <ExternalLink className="mr-1.5 size-3.5" />
-              View Logs
+              View Traces
             </Button>
           )}
         </div>
       </section>
 
       {scoutLogsOpen && (
-        <section>
-          <Card>
-            <CardHeader className="pb-2">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-sm">
-                  Scout Logs
-                  {scoutRunning && (
-                    <Badge variant="outline" className="ml-2 border-yellow-500/30 text-yellow-500">
-                      <Loader2 className="mr-1 size-3 animate-spin" />
-                      Running (PID {scoutStatus?.pid})
-                    </Badge>
-                  )}
-                  {!scoutRunning && scoutStatus?.exit_code != null && (
-                    <Badge
-                      variant="outline"
-                      className={`ml-2 ${scoutStatus.exit_code === 0 ? "border-emerald-500/30 text-emerald-400" : "border-red-500/30 text-red-400"}`}
-                    >
-                      Exited ({scoutStatus.exit_code})
-                    </Badge>
-                  )}
-                </CardTitle>
-                <Button variant="ghost" size="sm" onClick={() => setScoutLogsOpen(false)}>
-                  Close
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <pre className="max-h-80 overflow-auto rounded-md bg-zinc-950 p-3 text-xs leading-relaxed text-zinc-300 ring-1 ring-border/30">
-                {scoutStatus?.log_lines?.length
-                  ? scoutStatus.log_lines.join("\n")
-                  : "No scout logs yet. Click 'Run Scout' to start."}
-                <div ref={logEndRef} />
-              </pre>
-            </CardContent>
-          </Card>
+        <section className="relative">
+          <div className="mb-2 flex items-center gap-2">
+            <Terminal className="size-4 text-zinc-500" />
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+              Scout Output
+            </h2>
+            {scoutRunning && (
+              <Badge variant="outline" className="border-yellow-500/30 text-yellow-500">
+                <Loader2 className="mr-1 size-3 animate-spin" />
+                Running{scoutStatus?.pid ? ` (PID ${scoutStatus.pid})` : ""}
+              </Badge>
+            )}
+            {!scoutRunning && scoutStatus?.exit_code != null && (
+              <Badge
+                variant="outline"
+                className={
+                  scoutStatus.exit_code === 0
+                    ? "border-emerald-500/30 text-emerald-400"
+                    : "border-red-500/30 text-red-400"
+                }
+              >
+                Exited ({scoutStatus.exit_code})
+              </Badge>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto text-xs text-zinc-500"
+              onClick={() => setScoutLogsOpen(false)}
+            >
+              Close
+            </Button>
+          </div>
+          <TerminalLog
+            lines={scoutStatus?.log_lines ?? []}
+            title="forge scout"
+            maxHeight="28rem"
+          />
         </section>
       )}
 

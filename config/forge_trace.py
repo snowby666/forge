@@ -166,21 +166,22 @@ async def emit_log(
     message: str,
     data: dict[str, Any] | None = None,
 ) -> None:
-    """Persist a narrative log entry to the unified events list in Redis."""
-    if not hackathon_id:
-        return
-    entry: dict[str, Any] = {
-        "kind": "log",
-        "id": uuid.uuid4().hex[:12],
-        "hackathon_id": hackathon_id,
-        "agent_id": agent_id or "unknown",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "level": level,
-        "message": message,
-    }
-    if data:
-        entry["data"] = data
-    await _push_event(hackathon_id, entry)
+    """Emit a log-style trace span.  Logs are just spans with op='log'."""
+    hid = hackathon_id or _get_ctx_hackathon()
+    aid = agent_id or _get_ctx_agent()
+    now = datetime.now(timezone.utc).isoformat()
+    await emit_span(
+        hackathon_id=hid,
+        agent_id=aid,
+        op="log",
+        name=message[:200],
+        status="error" if level in ("error", "critical") else "ok",
+        started_at=now,
+        finished_at=now,
+        elapsed_s=0,
+        span_output=data,
+        tags={"level": level},
+    )
 
 
 def _safe_truncate(d: dict[str, Any], max_str_len: int = 500) -> dict[str, Any]:

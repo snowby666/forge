@@ -2,15 +2,13 @@
 
 import { useMemo } from "react"
 import Link from "next/link"
-import useSWR from "swr"
 import { ArrowRight, Terminal } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { LogViewer } from "@/components/log-viewer"
+import TraceViewer from "@/components/trace-viewer"
 import { useHackathons } from "@/hooks/use-hackathons"
-import { fetchLogs } from "@/lib/api"
-import type { AgentPhaseName, LogEntry } from "@/lib/types"
+import type { AgentPhaseName } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 const PHASE_BADGE: Record<AgentPhaseName, string> = {
@@ -32,17 +30,11 @@ export default function LiveLogsHubPage() {
     [hackathons],
   )
 
-  const { data: recentLogs, isLoading: logsLoading } = useSWR<LogEntry[]>(
-    activeHackathon ? `/api/hackathon/${activeHackathon.id}/logs` : null,
-    () => (activeHackathon ? fetchLogs(activeHackathon.id) : Promise.resolve([])),
-    { refreshInterval: 5_000 },
-  )
-
   return (
     <div className="flex h-[calc(100vh-7rem)] flex-col space-y-6">
       <div className="flex items-center gap-3">
         <Terminal className="size-5 text-muted-foreground" />
-        <h1 className="text-2xl font-bold tracking-tight">Live Logs</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Live Traces</h1>
         {!isLoading && (
           <Badge variant="outline" className="tabular-nums">
             {hackathons.length} hackathon{hackathons.length !== 1 ? "s" : ""}
@@ -87,9 +79,9 @@ export default function LiveLogsHubPage() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <Link href={`/hackathon/${h.id}/logs`}>
+                  <Link href={`/hackathon/${h.id}`}>
                     <Button variant="outline" size="sm" className="w-full">
-                      View Logs
+                      View Traces
                       <ArrowRight className="ml-1.5 size-3" />
                     </Button>
                   </Link>
@@ -102,9 +94,9 @@ export default function LiveLogsHubPage() {
             <div className="flex min-h-0 flex-1 flex-col space-y-2">
               <div className="flex items-center justify-between">
                 <h2 className="text-sm font-medium text-muted-foreground">
-                  Recent logs &mdash; {activeHackathon.brief.name}
+                  Recent traces &mdash; {activeHackathon.brief.name}
                 </h2>
-                <Link href={`/hackathon/${activeHackathon.id}/logs`}>
+                <Link href={`/hackathon/${activeHackathon.id}`}>
                   <Button variant="ghost" size="sm">
                     Full view
                     <ArrowRight className="ml-1 size-3" />
@@ -112,10 +104,7 @@ export default function LiveLogsHubPage() {
                 </Link>
               </div>
               <div className="min-h-0 flex-1 overflow-hidden rounded-lg border">
-                <LogViewer
-                  logs={recentLogs ?? []}
-                  loading={logsLoading}
-                />
+                <TraceViewer hackathonId={activeHackathon.id} />
               </div>
             </div>
           )}

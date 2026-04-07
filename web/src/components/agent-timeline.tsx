@@ -26,7 +26,7 @@ import type {
   AgentStatus,
   AgentStatusValue,
 } from "@/lib/types"
-import { fetchLogs, triggerAgent, restartAgent } from "@/lib/api"
+import { fetchEvents, triggerAgent, restartAgent } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 const PHASE_ORDER: AgentPhaseName[] = [
@@ -250,36 +250,41 @@ function AgentRow({
   onCancel?: (agentId: string) => void
 }) {
   const [showError, setShowError] = useState(false)
-  const [showLogs, setShowLogs] = useState(false)
-  const [logs, setLogs] = useState<string[]>([])
-  const [loadingLogs, setLoadingLogs] = useState(false)
+  const [showTraces, setShowTraces] = useState(false)
+  const [traceLines, setTraceLines] = useState<string[]>([])
+  const [loadingTraces, setLoadingTraces] = useState(false)
 
   const agentElapsedMs = agent.elapsed_s != null ? agent.elapsed_s * 1000 : elapsedMs(agent.updated_at)
   const pct = maxMs > 0 ? Math.max((agentElapsedMs / maxMs) * 100, agent.status === "pending" ? 0 : 6) : 0
   const meta = PHASE_META[phase]
 
-  const handleViewLogs = useCallback(async () => {
-    if (showLogs) {
-      setShowLogs(false)
+  const handleViewTraces = useCallback(async () => {
+    if (showTraces) {
+      setShowTraces(false)
       return
     }
-    setLoadingLogs(true)
+    setLoadingTraces(true)
     try {
-      const entries = await fetchLogs(hackathonId)
-      const filtered = entries
-        .filter((l) => l.agent_id === agent.agent_id)
-        .map(
-          (l) =>
-            `[${new Date(l.timestamp).toLocaleTimeString()}] ${l.level.toUpperCase()} ${l.message}`,
-        )
-      setLogs(filtered.length ? filtered : ["No logs found for this agent."])
+      const data = await fetchEvents(hackathonId, {
+        agent: agent.agent_id,
+        limit: 500,
+      })
+      const lines = (data.events || []).map((ev: any) => {
+        const ts = new Date(ev.started_at || ev.timestamp).toLocaleTimeString()
+        const op = (ev.op || "trace").toUpperCase()
+        const name = ev.name || ""
+        const elapsed = ev.elapsed_s > 0 ? ` (${Number(ev.elapsed_s).toFixed(1)}s)` : ""
+        const status = ev.status === "error" ? " ❌" : ""
+        return `[${ts}] ${op} ${name}${elapsed}${status}`
+      })
+      setTraceLines(lines.length ? lines : ["No traces found for this agent."])
     } catch {
-      setLogs(["Failed to load logs."])
+      setTraceLines(["Failed to load traces."])
     } finally {
-      setLoadingLogs(false)
-      setShowLogs(true)
+      setLoadingTraces(false)
+      setShowTraces(true)
     }
-  }, [showLogs, hackathonId, agent.agent_id])
+  }, [showTraces, hackathonId, agent.agent_id])
 
   return (
     <div className="group/row">
@@ -360,17 +365,17 @@ function AgentRow({
                 <Button
                   variant="ghost"
                   size="icon-xs"
-                  onClick={handleViewLogs}
+                  onClick={handleViewTraces}
                 />
               }
             >
-              {loadingLogs ? (
+              {loadingTraces ? (
                 <Loader2 className="size-3 animate-spin" />
               ) : (
                 <ScrollText className="size-3" />
               )}
             </TooltipTrigger>
-            <TooltipContent>View logs</TooltipContent>
+            <TooltipContent>View traces</TooltipContent>
           </Tooltip>
         </div>
       </div>
@@ -416,7 +421,7 @@ function AgentRow({
       </AnimatePresence>
 
       <AnimatePresence>
-        {showLogs && (
+        {showTraces && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
@@ -425,7 +430,7 @@ function AgentRow({
             className="overflow-hidden"
           >
             <pre className="ml-9 mt-1 max-h-48 overflow-auto rounded-md bg-muted/40 p-2.5 text-xs leading-relaxed text-muted-foreground ring-1 ring-border/40">
-              {logs.join("\n") || "Loading..."}
+              {traceLines.join("\n") || "Loading..."}
             </pre>
           </motion.div>
         )}

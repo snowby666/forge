@@ -203,7 +203,6 @@ async def delete_hackathon(redis, hackathon_id: str) -> dict:
         f"hackathon:{hackathon_id}:*",
         f"task:{hackathon_id}:*",
         f"checkpoint:{hackathon_id}:*",
-        f"logs:{hackathon_id}",
     ]:
         keys = await redis.keys(pattern)
         if keys:

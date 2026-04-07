@@ -1,14 +1,10 @@
 "use client"
 
-import { use, useCallback, useState } from "react"
+import { use } from "react"
 import Link from "next/link"
-import useSWR from "swr"
 import { ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { LogViewer } from "@/components/log-viewer"
-import { fetchLogs } from "@/lib/api"
-import { useRealtimeStatus } from "@/lib/ws"
-import type { LogEntry, WsLogMessage } from "@/lib/types"
+import TraceViewer from "@/components/trace-viewer"
 
 export default function LogsPage({
   params,
@@ -16,45 +12,6 @@ export default function LogsPage({
   params: Promise<{ id: string }>
 }) {
   const { id } = use(params)
-  const [wsLogs, setWsLogs] = useState<LogEntry[]>([])
-
-  const { data: polledLogs, isLoading } = useSWR<LogEntry[]>(
-    `/api/hackathon/${id}/logs`,
-    () => fetchLogs(id),
-    { refreshInterval: 5_000 },
-  )
-
-  const handleWsLog = useCallback(
-    (msg: WsLogMessage) => {
-      if (msg.hackathon_id !== id) return
-      setWsLogs((prev) => [
-        ...prev,
-        {
-          timestamp: msg.timestamp,
-          level: msg.level,
-          agent_id: msg.agent_id,
-          message: msg.message,
-        },
-      ])
-    },
-    [id],
-  )
-
-  useRealtimeStatus({ onLog: handleWsLog })
-
-  const allLogs: LogEntry[] = [
-    ...(polledLogs ?? []),
-    ...wsLogs.filter(
-      (wl) =>
-        !(polledLogs ?? []).some(
-          (pl) =>
-            pl.timestamp === wl.timestamp && pl.message === wl.message,
-        ),
-    ),
-  ].sort(
-    (a, b) =>
-      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-  )
 
   return (
     <div className="flex h-[calc(100vh-7rem)] flex-col space-y-4">
@@ -64,10 +21,10 @@ export default function LogsPage({
             <ArrowLeft className="size-4" />
           </Button>
         </Link>
-        <h1 className="text-xl font-bold">Live Logs</h1>
+        <h1 className="text-xl font-bold">Traces</h1>
       </div>
-      <div className="min-h-0 flex-1 overflow-hidden rounded-lg border">
-        <LogViewer logs={allLogs} loading={isLoading} />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <TraceViewer hackathonId={id} />
       </div>
     </div>
   )

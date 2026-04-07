@@ -6,7 +6,6 @@ import type {
   ConfigEntry,
   ServiceHealth,
   ServiceHealthResponse,
-  LogEntry,
   DesignData,
   Artifact,
   BatchOperation,
@@ -94,11 +93,7 @@ export function restartAgent(hackathonId: string, agentId: string) {
   );
 }
 
-// ── Logs & artifacts ────────────────────────────────────────
-
-export function fetchLogs(hackathonId: string) {
-  return apiFetch<LogEntry[]>(`/api/hackathon/${hackathonId}/logs`);
-}
+// ── Design & artifacts ──────────────────────────────────────
 
 export function fetchDesignArtifacts(hackathonId: string) {
   return apiFetch<DesignData>(`/api/hackathon/${hackathonId}/design`);
@@ -247,15 +242,15 @@ export function fetchArtifactRegistry(hackathonId: string) {
 
 export function fetchEvents(
   hackathonId: string,
-  opts?: { kind?: string; agent?: string; limit?: number; offset?: number },
+  opts?: { agent?: string; op?: string; limit?: number; offset?: number },
 ) {
   const params = new URLSearchParams();
-  if (opts?.kind) params.set("kind", opts.kind);
   if (opts?.agent) params.set("agent", opts.agent);
+  if (opts?.op) params.set("op", opts.op);
   if (opts?.limit) params.set("limit", String(opts.limit));
   if (opts?.offset) params.set("offset", String(opts.offset));
   const qs = params.toString();
-  return apiFetch<{ total: number; offset: number; limit: number; events: import("./types").UnifiedEvent[] }>(
+  return apiFetch<{ total: number; offset: number; limit: number; events: import("./types").TraceSpan[] }>(
     `/api/hackathon/${hackathonId}/events${qs ? `?${qs}` : ""}`,
   );
 }

@@ -32,7 +32,7 @@ interface CommandItemDef {
 const PAGES: CommandItemDef[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, href: "/", shortcut: "⌘D" },
   { id: "hackathons", label: "Hackathons", icon: Trophy, href: "/hackathons" },
-  { id: "live-logs", label: "Live Logs", icon: Terminal, href: "/hackathon" },
+  { id: "traces", label: "Live Traces", icon: Terminal, href: "/hackathon" },
   { id: "analytics", label: "Analytics", icon: BarChart3, href: "/analytics" },
   { id: "settings", label: "Settings", icon: Settings, href: "/settings", shortcut: "⌘," },
 ]
@@ -57,7 +57,7 @@ const ACTIONS: CommandItemDef[] = [
       }
     },
   },
-  { id: "view-logs", label: "View Logs", icon: ScrollText, href: "/hackathon" },
+  { id: "view-traces", label: "View Traces", icon: ScrollText, href: "/hackathon" },
   {
     id: "approve-all",
     label: "Approve All Pending",

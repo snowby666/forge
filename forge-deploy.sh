@@ -42,8 +42,8 @@ if [[ "$ON_NTFS" == "true" ]]; then
   rm -rf "$DEPLOY_DIR" 2>/dev/null || true
   cp -r "$SCRIPT_DIR" "$DEPLOY_DIR"
 
-  # Re-exec from native filesystem
-  exec bash "$DEPLOY_DIR/forge-deploy.sh"
+  # Re-exec from native filesystem, preserving all flags
+  exec bash "$DEPLOY_DIR/forge-deploy.sh" "$@"
 fi
 
 # From here we're guaranteed to be on a native filesystem

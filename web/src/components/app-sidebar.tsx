@@ -33,7 +33,7 @@ import { Terminal } from "lucide-react"
 const navItems = [
   { title: "Dashboard", path: "/", icon: LayoutDashboard },
   { title: "Hackathons", path: "/hackathons", icon: Trophy },
-  { title: "Live Logs", path: "/hackathon", icon: Terminal },
+  { title: "Live Traces", path: "/hackathon", icon: Terminal },
   { title: "Analytics", path: "/analytics", icon: BarChart3 },
   { title: "Settings", path: "/settings", icon: Settings },
 ]

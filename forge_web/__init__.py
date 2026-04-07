@@ -29,7 +29,6 @@ from forge_web.routes import (
     hackathons,
     checkpoints,
     agents,
-    logs,
     analytics,
     config,
     design,
@@ -67,7 +66,6 @@ def create_app() -> FastAPI:
     application.include_router(hackathons.router)
     application.include_router(checkpoints.router)
     application.include_router(agents.router)
-    application.include_router(logs.router)
     application.include_router(analytics.router)
     application.include_router(config.router)
     application.include_router(design.router)

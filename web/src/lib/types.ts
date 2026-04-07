@@ -121,17 +121,6 @@ export interface ServiceHealthResponse {
   services: ServiceHealth[];
 }
 
-export interface LogEntry {
-  kind?: "log";
-  id?: string;
-  hackathon_id?: string;
-  timestamp: string;
-  level: "debug" | "info" | "warning" | "error" | "critical";
-  agent_id?: string;
-  message: string;
-  data?: Record<string, unknown>;
-}
-
 export interface DesignComponentVariant {
   name: string;
   description: string;
@@ -212,16 +201,7 @@ export interface WsAgentStatusMessage {
   status: AgentStatusValue;
 }
 
-export interface WsLogMessage {
-  type: "log";
-  hackathon_id: string;
-  agent_id: string;
-  message: string;
-  level: LogEntry["level"];
-  timestamp: string;
-}
-
-export type WsMessage = WsAgentStatusMessage | WsLogMessage;
+export type WsMessage = WsAgentStatusMessage;
 
 export interface HealthResponse {
   status: string;
@@ -231,7 +211,7 @@ export interface HealthResponse {
 
 // ── Tracing ─────────────────────────────────────────────────────────────────
 
-export type TraceOp = "llm" | "mcp" | "http" | "file" | "redis" | "subprocess" | "artifact";
+export type TraceOp = "llm" | "mcp" | "http" | "file" | "redis" | "subprocess" | "artifact" | "log" | "daytona";
 
 export interface TraceSpan {
   kind?: "span";
@@ -250,11 +230,8 @@ export interface TraceSpan {
   tags?: Record<string, unknown>;
 }
 
-export type UnifiedEvent = (TraceSpan & { kind: "span" }) | (LogEntry & { kind: "log" });
-
 export interface TraceSummary {
   total_spans: number;
-  total_logs?: number;
   by_op: Record<string, number>;
   by_agent: Record<string, number>;
   total_llm_tokens: number;
