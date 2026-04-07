@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react"
 import {
+  Ban,
   CheckCircle2,
   ChevronDown,
   Circle,
@@ -106,6 +107,7 @@ const STATUS_COLORS: Record<AgentStatusValue, string> = {
   "in-progress": "bg-yellow-500",
   pending: "bg-zinc-600",
   failed: "bg-red-500",
+  cancelled: "bg-orange-400",
 }
 
 function prettify(id: string) {
@@ -139,6 +141,10 @@ function StatusIcon({ status }: { status: AgentStatusValue }) {
       return <Circle className="size-4 text-zinc-500" />
     case "failed":
       return <XCircle className="size-4 text-red-500" />
+    case "cancelled":
+      return <Ban className="size-4 text-orange-400" />
+    default:
+      return <Circle className="size-4 text-zinc-600" />
   }
 }
 
@@ -233,6 +239,7 @@ function AgentRow({
   hackathonId,
   onTrigger,
   onRestart,
+  onCancel,
 }: {
   agent: AgentStatus
   phase: AgentPhaseName
@@ -240,6 +247,7 @@ function AgentRow({
   hackathonId: string
   onTrigger?: (agentId: string) => void
   onRestart?: (agentId: string) => void
+  onCancel?: (agentId: string) => void
 }) {
   const [showError, setShowError] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
@@ -327,6 +335,23 @@ function AgentRow({
                 <RotateCcw className="size-3" />
               </TooltipTrigger>
               <TooltipContent>Restart agent</TooltipContent>
+            </Tooltip>
+          )}
+          {onCancel && (agent.status === "in-progress" || agent.status === "pending") && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="text-red-400 hover:text-red-300"
+                    onClick={() => onCancel(agent.agent_id)}
+                  />
+                }
+              >
+                <Ban className="size-3" />
+              </TooltipTrigger>
+              <TooltipContent>Cancel agent</TooltipContent>
             </Tooltip>
           )}
           <Tooltip>
@@ -418,6 +443,7 @@ function PhaseSection({
   hackathonId,
   onTrigger,
   onRestart,
+  onCancel,
 }: {
   phase: AgentPhaseName
   agents: AgentStatus[]
@@ -425,6 +451,7 @@ function PhaseSection({
   hackathonId: string
   onTrigger?: (agentId: string) => void
   onRestart?: (agentId: string) => void
+  onCancel?: (agentId: string) => void
 }) {
   const [expanded, setExpanded] = useState(true)
   const meta = PHASE_META[phase]
@@ -557,6 +584,7 @@ function PhaseSection({
                     hackathonId={hackathonId}
                     onTrigger={onTrigger}
                     onRestart={onRestart}
+                    onCancel={onCancel}
                   />
                 ))}
               </div>
@@ -575,6 +603,7 @@ interface AgentTimelineProps {
   hackathonId: string
   onTrigger?: (agentId: string) => void
   onRestart?: (agentId: string) => void
+  onCancel?: (agentId: string) => void
 }
 
 export function AgentTimeline({
@@ -582,6 +611,7 @@ export function AgentTimeline({
   hackathonId,
   onTrigger,
   onRestart,
+  onCancel,
 }: AgentTimelineProps) {
   const byPhase = useMemo(() => {
     const map = new Map<AgentPhaseName, AgentStatus[]>()
@@ -622,6 +652,7 @@ export function AgentTimeline({
               hackathonId={hackathonId}
               onTrigger={onTrigger}
               onRestart={onRestart}
+              onCancel={onCancel}
             />
           ))}
         </div>

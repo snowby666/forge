@@ -11,10 +11,12 @@ import TraceViewer from "@/components/trace-viewer"
 import ArtifactRegistryView from "@/components/artifact-registry"
 import {
   ArrowLeft,
+  Ban,
   Clock,
   DollarSign,
   ExternalLink,
   Palette,
+  Pause,
   Play,
   RefreshCw,
   ScrollText,
@@ -59,11 +61,15 @@ import { CheckpointCard } from "@/components/checkpoint-card"
 import type { ConceptOption } from "@/components/checkpoint-card"
 import { useAgentStatus } from "@/hooks/use-agent-status"
 import {
+  abortPipeline,
   approveCheckpoint,
+  cancelAgent,
   deleteHackathon,
   fetchAnalytics,
   fetchCheckpoints,
   fetchHackathons,
+  fetchRunStatus,
+  pausePipeline,
   rerollHackathon,
   fetchCost,
   fetchElapsed,
@@ -152,7 +158,16 @@ export default function HackathonDetailPage({
   const router = useRouter()
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [rerollOpen, setRerollOpen] = useState(false)
+  const [abortOpen, setAbortOpen] = useState(false)
   const [runMenuOpen, setRunMenuOpen] = useState(false)
+
+  const { data: runStatus, mutate: mutateRunStatus } = useSWR(
+    `/api/hackathon/${id}/run/status`,
+    () => fetchRunStatus(id),
+    { refreshInterval: 5000 },
+  )
+  const isRunning = runStatus?.running ?? false
+  const isPaused = runStatus?.paused ?? false
 
   const { data: hackathons } = useSWR<Hackathon[]>(
     "/api/hackathons",
@@ -258,16 +273,58 @@ export default function HackathonDetailPage({
     [id, mutateCheckpoints],
   )
 
+  const handleAbort = useCallback(async () => {
+    try {
+      const res = await abortPipeline(id)
+      setAbortOpen(false)
+      mutateRunStatus()
+      const count = res.cancelled_agents?.length ?? 0
+      toast.success(`Pipeline aborted${count ? ` — ${count} agent${count > 1 ? "s" : ""} cancelled` : ""}`)
+    } catch {
+      toast.error("Failed to abort pipeline")
+    }
+  }, [id, mutateRunStatus])
+
+  const handlePause = useCallback(async () => {
+    try {
+      const res = await pausePipeline(id)
+      mutateRunStatus()
+      toast.success(res.paused ? "Pipeline paused — no new agents will start" : "Pipeline resumed")
+    } catch {
+      toast.error("Failed to toggle pause")
+    }
+  }, [id, mutateRunStatus])
+
+  const handleCancelAgent = useCallback(
+    async (agentId: string) => {
+      try {
+        await cancelAgent(id, agentId)
+        toast.success(`${agentId.replace(/_/g, " ")} cancelled`)
+      } catch {
+        toast.error(`Failed to cancel ${agentId}`)
+      }
+    },
+    [id],
+  )
+
   const handleRunPipeline = useCallback(
     async (opts?: { from_phase?: string; restart?: boolean }) => {
       try {
-        await runHackathon(id, opts)
+        const res = await runHackathon(id, opts)
+        if (res.already_running) {
+          toast.info(res.error ?? "Pipeline is already running")
+          return
+        }
+        if (!res.ok) {
+          toast.error(res.error ?? "Failed to start pipeline")
+          return
+        }
         toast.success(
           opts?.restart
             ? "Pipeline restarting..."
             : opts?.from_phase
               ? `Pipeline resuming from ${opts.from_phase}...`
-              : "Pipeline resumed!",
+              : "Pipeline started!",
         )
       } catch {
         toast.error("Failed to run pipeline")
@@ -405,6 +462,37 @@ export default function HackathonDetailPage({
               </>
             )}
           </div>
+          {isRunning && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handlePause}
+                className={isPaused ? "border-yellow-500/50 text-yellow-400" : ""}
+              >
+                {isPaused ? (
+                  <>
+                    <Play className="mr-1.5 size-3.5" />
+                    Unpause
+                  </>
+                ) : (
+                  <>
+                    <Pause className="mr-1.5 size-3.5" />
+                    Pause
+                  </>
+                )}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setAbortOpen(true)}
+                className="border-red-500/30 text-red-400 hover:bg-red-500/10"
+              >
+                <Ban className="mr-1.5 size-3.5" />
+                Abort
+              </Button>
+            </>
+          )}
           <Link href={`/hackathon/${id}/logs`}>
             <Button variant="outline" size="sm">
               <ScrollText className="mr-1.5 size-3.5" />
@@ -530,6 +618,7 @@ export default function HackathonDetailPage({
               hackathonId={id}
               onTrigger={handleTrigger}
               onRestart={handleRestart}
+              onCancel={handleCancelAgent}
             />
           ) : (
             <p className="py-12 text-center text-sm text-muted-foreground">
@@ -775,6 +864,28 @@ export default function HackathonDetailPage({
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Abort confirm dialog */}
+      <Dialog open={abortOpen} onOpenChange={setAbortOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Abort pipeline?</DialogTitle>
+            <DialogDescription>
+              This will kill the running pipeline process and cancel all
+              in-progress and pending agents. You can resume later.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAbortOpen(false)}>
+              Keep running
+            </Button>
+            <Button variant="destructive" onClick={handleAbort}>
+              <Ban className="mr-1.5 size-3.5" />
+              Abort
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Reroll confirm dialog */}
       <Dialog open={rerollOpen} onOpenChange={setRerollOpen}>

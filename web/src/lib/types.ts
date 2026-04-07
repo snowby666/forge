@@ -1,4 +1,4 @@
-export type AgentStatusValue = "done" | "in-progress" | "pending" | "failed";
+export type AgentStatusValue = "done" | "in-progress" | "pending" | "failed" | "cancelled";
 
 export type CheckpointName =
   | "concept_approval"

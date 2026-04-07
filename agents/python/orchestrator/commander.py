@@ -365,6 +365,18 @@ async def _run_agent_inline(
 
 
 async def trigger_agent(redis: Redis, hackathon_id: str, agent_id: str, input_data: dict) -> None:
+    paused = await redis.get(f"hackathon:{hackathon_id}:paused")
+    if paused == "1":
+        logger.info(f"[forge:commander]   ⏸ Pipeline paused — waiting to trigger {agent_id}")
+        await _push_log(hackathon_id, agent_id, "info", f"Pipeline paused — {agent_id} waiting")
+        while True:
+            await asyncio.sleep(5)
+            p = await redis.get(f"hackathon:{hackathon_id}:paused")
+            if p != "1":
+                break
+        logger.info(f"[forge:commander]   ▶ Pipeline unpaused — triggering {agent_id}")
+        await _push_log(hackathon_id, agent_id, "info", f"Pipeline unpaused — triggering {agent_id}")
+
     logger.info(f"[forge:commander]   → Triggering {agent_id}")
     await _push_log(hackathon_id, agent_id, "info", f"Agent {agent_id} queued")
     await redis.set(f"task:{hackathon_id}:{agent_id}", json.dumps({"status": "pending"}), ex=604800)

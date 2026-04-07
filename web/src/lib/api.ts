@@ -179,10 +179,26 @@ export function runScout(dryRun = false) {
 }
 
 export function runHackathon(hackathonId: string, opts?: { from_phase?: string; restart?: boolean }) {
-  return apiFetch<{ ok: boolean; pid: number }>(`/api/hackathon/${hackathonId}/run`, {
+  return apiFetch<{ ok: boolean; pid?: number; mode?: string; error?: string; already_running?: boolean }>(`/api/hackathon/${hackathonId}/run`, {
     method: "POST",
     body: JSON.stringify(opts ?? {}),
   });
+}
+
+export function fetchRunStatus(hackathonId: string) {
+  return apiFetch<{ running: boolean; pid: number | null; paused: boolean; reason: string | null }>(`/api/hackathon/${hackathonId}/run/status`);
+}
+
+export function abortPipeline(hackathonId: string) {
+  return apiFetch<{ ok: boolean; killed_pid: number | null; cancelled_agents: string[] }>(`/api/hackathon/${hackathonId}/abort`, { method: "POST" });
+}
+
+export function cancelAgent(hackathonId: string, agentId: string) {
+  return apiFetch<{ ok: boolean; agent_id: string; previous_status: string }>(`/api/hackathon/${hackathonId}/agent/${agentId}/cancel`, { method: "POST" });
+}
+
+export function pausePipeline(hackathonId: string) {
+  return apiFetch<{ ok: boolean; paused: boolean }>(`/api/hackathon/${hackathonId}/pause`, { method: "POST" });
 }
 
 export function runSystemTest() {
