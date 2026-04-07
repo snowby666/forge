@@ -201,7 +201,14 @@ echo ""
 if [[ "$DAYTONA_READY" == "true" ]]; then
   DAYTONA_KEY="${DAYTONA_API_KEY:-}"
   if [[ -z "$DAYTONA_KEY" ]]; then
-    warn "DAYTONA_API_KEY not set. Generate one at http://localhost:3986 and add to .env"
+    log "No DAYTONA_API_KEY — attempting auto-generation..."
+    if bash scripts/daytona-keygen.sh 2>&1; then
+      set -a; source .env 2>/dev/null || true; set +a
+      log "Daytona API key generated and stored in .env"
+    else
+      warn "Auto-keygen failed. Run: bash scripts/daytona-keygen.sh"
+      warn "  Or generate manually at http://localhost:3986"
+    fi
   fi
 fi
 log "Run: python scripts/test_run.py --dry-run"

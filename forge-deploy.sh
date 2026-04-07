@@ -287,9 +287,15 @@ info "  3. forge scout --dry-run"
 info "  4. forge test"
 DAYTONA_KEY="${DAYTONA_API_KEY:-}"
 if [[ -z "$DAYTONA_KEY" ]] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'daytona-api'; then
-  echo ""
-  info "Daytona sandbox setup:"
-  info "  Open http://localhost:3986 (login: dev@daytona.io / password)"
-  info "  Generate API key → set DAYTONA_API_KEY in .env"
+  log "No DAYTONA_API_KEY found — auto-generating..."
+  if bash scripts/daytona-keygen.sh 2>&1; then
+    set -a; source .env 2>/dev/null || true; set +a
+    log "Daytona API key generated and stored in .env"
+  else
+    warn "Auto-keygen failed. Generate manually:"
+    info "  Open http://localhost:3986 (login: dev@daytona.io / password)"
+    info "  Generate API key → set DAYTONA_API_KEY in .env"
+    info "  Or run: bash scripts/daytona-keygen.sh"
+  fi
 fi
 echo ""
