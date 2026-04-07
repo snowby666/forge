@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import os
+import warnings
 from datetime import datetime, timezone
 
 from mem0 import Memory
@@ -32,12 +33,31 @@ COLLECTIONS = {
 }
 VECTOR_SIZE = 1536  # text-embedding-3-small
 
+# Qdrant REST default client timeout is very low (~5s); create_collection / first
+# startup often exceeds that and raises httpx.ReadTimeout.
+_DEFAULT_QDRANT_TIMEOUT_S = 120
+
 
 def get_qdrant() -> AsyncQdrantClient:
-    return AsyncQdrantClient(
-        url=os.environ.get("QDRANT_URL", "http://localhost:6333"),
-        api_key=os.environ.get("QDRANT_API_KEY"),
-    )
+    url = os.environ.get("QDRANT_URL", "http://localhost:6333")
+    timeout_raw = os.environ.get("QDRANT_CLIENT_TIMEOUT", str(_DEFAULT_QDRANT_TIMEOUT_S))
+    try:
+        timeout_s = max(10, int(timeout_raw))
+    except ValueError:
+        timeout_s = _DEFAULT_QDRANT_TIMEOUT_S
+    api_key = os.environ.get("QDRANT_API_KEY") or None
+    # API key over plain HTTP triggers a UserWarning; expected for self-hosted compose.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=".*[Aa]pi key is used with an insecure connection.*",
+            category=UserWarning,
+        )
+        return AsyncQdrantClient(
+            url=url,
+            api_key=api_key,
+            timeout=timeout_s,
+        )
 
 
 def get_mem0() -> Memory:
@@ -92,22 +112,38 @@ class MemoryKeeper:
     async def ensure_collections(self) -> None:
         if self._collections_ready:
             return
-        try:
-            existing = {c.name for c in (await self.qdrant.get_collections()).collections}
-            created = []
-            for name in COLLECTIONS.values():
-                if name not in existing:
-                    await self.qdrant.create_collection(
-                        collection_name=name,
-                        vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
-                    )
-                    created.append(name)
-            if created:
-                logger.info(f"[forge:memory] Created {len(created)} collections: {', '.join(created)}")
-            self._collections_ready = True
-        except Exception as e:
-            logger.error(f"[forge:memory] Failed to ensure collections (Qdrant may be down): {e}")
-            raise
+        last_err: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                existing = {c.name for c in (await self.qdrant.get_collections()).collections}
+                created = []
+                for name in COLLECTIONS.values():
+                    if name not in existing:
+                        await self.qdrant.create_collection(
+                            collection_name=name,
+                            vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+                        )
+                        created.append(name)
+                if created:
+                    logger.info(f"[forge:memory] Created {len(created)} collections: {', '.join(created)}")
+                self._collections_ready = True
+                return
+            except Exception as e:
+                last_err = e
+                logger.warning(
+                    "[forge:memory] ensure_collections attempt %s/3 failed: %s",
+                    attempt,
+                    e,
+                )
+                if attempt < 3:
+                    await asyncio.sleep(2.0 * attempt)
+        logger.error(
+            "[forge:memory] Failed to ensure collections after retries (Qdrant may be down): %s",
+            last_err,
+        )
+        if last_err:
+            raise last_err
+        raise RuntimeError("ensure_collections failed with no exception detail")
 
     # ── Hackathon briefs ───────────────────────────────────────────────────────
 

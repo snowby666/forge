@@ -275,7 +275,10 @@ log "Qdrant ready"
 
 # ── Step 13: Initialize Qdrant collections ────────────────────────────────────
 log "Initializing Qdrant collections..."
-python -c "
+_PY="${SCRIPT_DIR}/.venv/bin/python"
+[[ -x "$_PY" ]] || _PY="$PYTHON_CMD"
+[[ -x "$_PY" ]] || _PY="python3"
+"$_PY" -c "
 import asyncio, sys
 sys.path.insert(0, '.')
 async def main():
