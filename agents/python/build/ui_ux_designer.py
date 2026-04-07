@@ -701,7 +701,11 @@ async def run_ui_ux_agent(
     # Step 2: Generate design tokens
     async with trace_op("llm", "design:generate_tokens", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
         tokens = await generate_design_tokens(project_plan, personality, hackathon_brief)
-        _sp.output = {"has_typescript": bool(tokens.typescript_content), "has_tailwind": bool(tokens.tailwind_extend), "has_css": bool(tokens.css_variables)}
+        _sp.output = {
+            "has_typescript": bool(tokens.typescript_content),
+            "has_tailwind": bool(tokens.tailwind_config_extension),
+            "has_css": bool(tokens.css_variables),
+        }
 
     # Step 3: Generate screens via Google Stitch (or fallback)
     concept_summary = (
@@ -782,6 +786,7 @@ Do NOT repeat the same design decisions that caused these failures.""",
         )
 
     # Step 6: Sync to Figma
+    figma_id: str | None = None
     async with trace_op("redis", "design:sync_to_figma", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
         figma_id = await sync_to_figma(design_spec, tokens)
         _sp.output = {"figma_file_id": figma_id}
