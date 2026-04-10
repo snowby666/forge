@@ -19,7 +19,6 @@ from config.electronhub import complete, complete_batch
 from config.forge_trace import trace_op, emit_log, register_artifact, set_agent_context
 from config.redis_client import get_redis
 from config.agents_config import ALL_AGENTS
-from config.design_constitution import SYSTEM_PROMPT_FRONTEND_AGENT
 
 logger = logging.getLogger(__name__)
 GITHUB_ORG = os.environ.get("GITHUB_ORG", "hackathon-agent")
@@ -147,6 +146,8 @@ async def run_frontend_engineer(
     logger.info(f"[forge:frontend] Sandbox created: {getattr(sandbox, 'id', 'unknown')}")
     await emit_log(hackathon_id, "frontend_engineer", "info", f"Sandbox created: {getattr(sandbox, 'id', 'unknown')}")
 
+    fe_system_prompt = AGENT.system_prompt
+
     try:
         # 1. Scaffold with exact stack
         logger.info(f"[forge:frontend] Scaffolding {repo_name}...")
@@ -201,7 +202,7 @@ Output ONLY the complete TypeScript file, starting with: import type {{ Config }
         component_tasks = [
             {
                 "task": "generate-component",
-                "system_prompt": SYSTEM_PROMPT_FRONTEND_AGENT,
+                "system_prompt": fe_system_prompt,
                 "messages": [{
                     "role": "user",
                     "content": f"""Generate a complete React component.
@@ -246,7 +247,7 @@ Output the complete .tsx file only.""",
             async with trace_op("llm", "frontend:generate_page") as span:
                 page_code = await complete(
                     task="generate-page",
-                    system_prompt=SYSTEM_PROMPT_FRONTEND_AGENT,
+                    system_prompt=fe_system_prompt,
                     messages=[{
                         "role": "user",
                         "content": f"""Generate a Next.js 14 App Router page.
@@ -325,23 +326,184 @@ Start your response with --- FILE: app/{route}/page.tsx ---""",
         await daytona.close()
 
 
-async def _get_vercel_preview(repo_name: str) -> str:
+async def _get_vercel_preview(repo_name: str, *, max_wait: int = 180) -> str:
+    """Poll Vercel deployments API until a READY deployment is found, or return fallback."""
     import aiohttp
     token = os.environ.get("VERCEL_TOKEN")
+    org_id = os.environ.get("VERCEL_ORG_ID", "")
     if not token:
         return f"https://{repo_name}.vercel.app"
+
+    headers = {"Authorization": f"Bearer {token}"}
+    fallback = f"https://{repo_name}.vercel.app"
+    polls = max_wait // 10
+
     async with aiohttp.ClientSession() as session:
-        for _ in range(12):
-            async with session.get(
-                f"https://api.vercel.com/v6/deployments?app={repo_name}&limit=1",
-                headers={"Authorization": f"Bearer {token}"},
+        for attempt in range(polls):
+            try:
+                params: dict = {"app": repo_name, "limit": "1", "target": "production"}
+                if org_id:
+                    params["teamId"] = org_id
+                async with session.get(
+                    "https://api.vercel.com/v6/deployments",
+                    headers=headers,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    data = await resp.json()
+                    deps = data.get("deployments", [])
+                    if deps:
+                        dep = deps[0]
+                        state = dep.get("state") or dep.get("readyState", "")
+                        if state == "READY":
+                            url = dep.get("url", "")
+                            if url:
+                                final_url = f"https://{url}"
+                                logger.info(f"[forge:frontend] Vercel deployment ready: {final_url}")
+                                return final_url
+                        elif state in ("ERROR", "CANCELED"):
+                            logger.warning(f"[forge:frontend] Vercel deployment {state}")
+                            return fallback
+                        logger.debug(f"[forge:frontend] Vercel deploy state={state} (poll {attempt+1}/{polls})")
+            except Exception as e:
+                logger.debug(f"[forge:frontend] Vercel poll error: {e}")
+            await asyncio.sleep(10)
+    return fallback
+
+
+async def deploy_to_vercel(repo_name: str, github_org: str) -> str:
+    """Create a Vercel project linked to a GitHub repo, trigger deploy, return preview URL."""
+    import aiohttp
+    token = os.environ.get("VERCEL_TOKEN")
+    org_id = os.environ.get("VERCEL_ORG_ID", "")
+    if not token:
+        logger.warning("[forge:frontend] No VERCEL_TOKEN — skipping Vercel deployment")
+        return f"https://{repo_name}.vercel.app"
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    async with aiohttp.ClientSession() as session:
+        body: dict = {
+            "name": repo_name,
+            "framework": "nextjs",
+            "gitRepository": {
+                "type": "github",
+                "repo": f"{github_org}/{repo_name}",
+            },
+            "environmentVariables": [
+                {"key": "NEXT_PUBLIC_DEMO_MODE", "value": "true", "target": ["production", "preview"]},
+            ],
+        }
+        if org_id:
+            body["teamId"] = org_id
+
+        try:
+            async with session.post(
+                "https://api.vercel.com/v13/projects",
+                headers=headers,
+                json=body,
+                timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 data = await resp.json()
-                deps = data.get("deployments", [])
-                if deps and deps[0].get("state") == "READY":
-                    return f"https://{deps[0]['url']}"
-            await asyncio.sleep(10)
-    return f"https://{repo_name}.vercel.app"
+                if resp.status in (200, 201):
+                    logger.info(f"[forge:frontend] Vercel project created: {data.get('id')}")
+                elif "already exists" in json.dumps(data).lower() or resp.status == 409:
+                    logger.info("[forge:frontend] Vercel project already exists — OK")
+                else:
+                    logger.warning(f"[forge:frontend] Vercel project create {resp.status}: {data}")
+        except Exception as e:
+            logger.warning(f"[forge:frontend] Vercel project creation failed: {e}")
+
+    return await _get_vercel_preview(repo_name, max_wait=180)
+
+
+async def deploy_to_railway(repo_name: str, github_org: str) -> str:
+    """Create a Railway project and service linked to a GitHub repo, return service URL."""
+    import aiohttp
+    token = os.environ.get("RAILWAY_TOKEN", "")
+    if not token:
+        logger.warning("[forge:backend] No RAILWAY_TOKEN — skipping Railway deployment")
+        return ""
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    full_repo = f"{github_org}/{repo_name}"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            create_mutation = """
+            mutation($name: String!) {
+                projectCreate(input: {
+                    name: $name,
+                    defaultEnvironmentName: "production"
+                }) { id }
+            }
+            """
+            async with session.post(
+                "https://backboard.railway.com/graphql/v2",
+                headers=headers,
+                json={"query": create_mutation, "variables": {"name": repo_name}},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                data = await resp.json()
+                project_id = data.get("data", {}).get("projectCreate", {}).get("id")
+                if not project_id:
+                    logger.warning(f"[forge:backend] Railway project create failed: {data}")
+                    return ""
+
+            service_mutation = """
+            mutation($projectId: String!, $repo: String!) {
+                serviceCreate(input: {
+                    projectId: $projectId,
+                    name: "api",
+                    source: { repo: $repo }
+                }) { id }
+            }
+            """
+            async with session.post(
+                "https://backboard.railway.com/graphql/v2",
+                headers=headers,
+                json={
+                    "query": service_mutation,
+                    "variables": {"projectId": project_id, "repo": full_repo},
+                },
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                data = await resp.json()
+                service_id = data.get("data", {}).get("serviceCreate", {}).get("id")
+                if service_id:
+                    # Poll for service domain
+                    for _ in range(12):
+                        domain_query = """
+                        query($serviceId: String!) {
+                            service(id: $serviceId) {
+                                serviceInstances { edges { node { domains { serviceDomains { domain } } } } }
+                            }
+                        }
+                        """
+                        async with session.post(
+                            "https://backboard.railway.com/graphql/v2",
+                            headers=headers,
+                            json={"query": domain_query, "variables": {"serviceId": service_id}},
+                            timeout=aiohttp.ClientTimeout(total=15),
+                        ) as dresp:
+                            ddata = await dresp.json()
+                            edges = ddata.get("data", {}).get("service", {}).get("serviceInstances", {}).get("edges", [])
+                            if edges:
+                                domains = edges[0].get("node", {}).get("domains", {}).get("serviceDomains", [])
+                                if domains:
+                                    domain = domains[0].get("domain", "")
+                                    if domain:
+                                        logger.info(f"[forge:backend] Railway deployed: https://{domain}")
+                                        return f"https://{domain}"
+                        await asyncio.sleep(15)
+                    logger.info(f"[forge:backend] Railway service {service_id} created, domain pending")
+                    return f"https://{repo_name}.up.railway.app"
+                else:
+                    logger.warning(f"[forge:backend] Railway service create failed: {data}")
+                    return ""
+    except Exception as e:
+        logger.warning(f"[forge:backend] Railway deployment failed: {e}")
+        return ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────

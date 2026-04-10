@@ -110,8 +110,8 @@ export interface ConfigEntry {
   description?: string;
 }
 
-export type ServiceCategory = "core" | "build" | "automation" | "ui";
-export type ServiceType = "docker" | "host";
+export type ServiceCategory = "core" | "build" | "automation" | "ui" | "deploy";
+export type ServiceType = "docker" | "host" | "external";
 
 export interface ServiceHealth {
   name: string;

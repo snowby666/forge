@@ -9,9 +9,11 @@ import {
   Database,
   Globe,
   MonitorSmartphone,
+  Rocket,
   Search,
   Server,
   Timer,
+  Train,
   Workflow,
   XCircle,
 } from "lucide-react"
@@ -36,6 +38,8 @@ const SERVICE_ICONS: Record<string, typeof Database> = {
   browser: Globe,
   "forge-api": Server,
   "forge-web": Cloud,
+  vercel: Rocket,
+  railway: Train,
 }
 
 const CATEGORY_LABELS: Record<ServiceCategory, string> = {
@@ -43,9 +47,10 @@ const CATEGORY_LABELS: Record<ServiceCategory, string> = {
   build: "Build & Sandbox",
   automation: "Automation",
   ui: "Dashboard & UI",
+  deploy: "Deployment Targets",
 }
 
-const CATEGORY_ORDER: ServiceCategory[] = ["core", "build", "automation", "ui"]
+const CATEGORY_ORDER: ServiceCategory[] = ["core", "build", "automation", "ui", "deploy"]
 
 function latencyColor(ms: number) {
   if (ms < 20) return "text-emerald-400"
@@ -119,7 +124,7 @@ function ServiceCard({ service }: { service: ServiceHealth }) {
               variant="outline"
               className="h-4 px-1 text-[9px] font-normal text-muted-foreground"
             >
-              {service.type === "docker" ? "container" : "host"}
+              {service.type === "docker" ? "container" : service.type === "external" ? "external" : "host"}
             </Badge>
           )}
         </div>

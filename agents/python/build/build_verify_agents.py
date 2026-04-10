@@ -4,11 +4,11 @@ Build & Verify Agent Workers
 ============================
 Implements the 6 agents that were defined in agents_config.py but had no files:
 
-  Build layer:
-    - Integration Engineer   Sponsor API integrations
-    - Test Engineer          Playwright e2e + pytest
-    - DevOps                 GitHub Actions, Vercel, Railway
-    - Security Agent         Secret scan, OWASP, CVE audit
+  Build layer (Stage 2 — commit to actual repos via Daytona sandboxes):
+    - Integration Engineer   Sponsor API integrations → pushed to FE+BE repos
+    - Test Engineer          Playwright e2e + pytest → pushed to repos, run in sandbox
+    - DevOps                 GitHub Actions + real Vercel/Railway API calls
+    - Security Agent         Scans actual repos in sandbox
 
   Verify layer:
     - Code Reviewer          PR quality gate
@@ -38,6 +38,50 @@ GITHUB_ORG  = os.environ.get("GITHUB_ORG", "hackathon-agent")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SHARED: SANDBOX REPO HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_daytona():
+    """Reuse the lazy Daytona factory from frontend_and_backend."""
+    from agents.python.build.frontend_and_backend import get_daytona
+    return get_daytona()
+
+
+async def _clone_repo_in_sandbox(sandbox, repo_url: str, branch: str = "main") -> str:
+    """Clone a GitHub repo inside a Daytona sandbox, return the local path."""
+    token = os.environ.get("GITHUB_TOKEN", "")
+    authed_url = repo_url.replace("https://github.com/", f"https://{token}@github.com/")
+    repo_name = repo_url.rstrip("/").split("/")[-1]
+    repo_path = f"/workspace/{repo_name}"
+    await sandbox.process.exec(
+        f"git clone --depth=1 -b {branch} {authed_url} {repo_path} 2>&1 || "
+        f"git clone --depth=1 {authed_url} {repo_path} 2>&1",
+        timeout=120,
+    )
+    await sandbox.process.exec(
+        f'cd {repo_path} && git config user.email "forge@agent" && git config user.name "Forge Agent"',
+        timeout=10,
+    )
+    return repo_path
+
+
+async def _commit_and_push(sandbox, repo_path: str, message: str, branch: str = "main") -> bool:
+    """Stage all changes, commit and push. Returns True on success."""
+    result = await sandbox.process.exec(
+        f"cd {repo_path} && git add -A && git diff --cached --quiet 2>/dev/null",
+        timeout=30,
+    )
+    if result.exit_code == 0:
+        logger.info(f"[forge:agent] No changes to commit at {repo_path}")
+        return True
+    result = await sandbox.process.exec(
+        f'cd {repo_path} && git add -A && git commit -m "{message}" && git push origin HEAD',
+        timeout=120,
+    )
+    return result.exit_code == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # INTEGRATION ENGINEER
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -61,7 +105,11 @@ async def run_integration_engineer(
     project_plan: dict,
     sponsor_map: dict,
     api_contract: dict,
+    fe_repo_url: str = "",
+    be_repo_url: str = "",
 ) -> SponsorIntegrationManifest:
+    """Generate sponsor integrations and commit them to the actual FE+BE repos."""
+    set_agent_context(hackathon_id, "integration_engineer")
     AGENT = ALL_AGENTS["integration_engineer"]
 
     opportunities = sorted(
@@ -69,10 +117,7 @@ async def run_integration_engineer(
         key=lambda x: x.get("value_score", 0),
         reverse=True,
     )
-    recommended = {o["sponsor"] for o in opportunities
-                   if o.get("recommendation") == "high_priority"}
 
-    # Build each integration as a self-contained module
     tasks = [
         {
             "task": "integrate-sponsor-api",
@@ -90,12 +135,12 @@ UI visibility: {opp['ui_visibility']}
 Eligibility: {', '.join(opp.get('eligibility_requirements', []))}
 
 Requirements:
-1. Self-contained module at integrations/{opp['sponsor'].lower().replace(' ', '_')}.py
+1. Self-contained module at app/integrations/{opp['sponsor'].lower().replace(' ', '_')}.py
 2. Exports: async def call(payload) -> dict, async def health_check() -> bool
 3. MOCK_MODE env var bypasses real API for dev
 4. Logs all calls with [forge:integration:{opp['sponsor']}] prefix
 
-Also generate a React badge component (TSX) showing "Powered by {opp['sponsor']}" 
+Also generate a React badge component (TSX) showing "Powered by {opp['sponsor']}"
 that appears in the main UI wherever this integration is used.
 
 Output format:
@@ -106,7 +151,7 @@ Output format:
             }],
             "temperature": 0.1,
         }
-        for opp in opportunities[:3]  # top 3 by value_score
+        for opp in opportunities[:3]
         if opp.get("recommendation") != "skip"
     ]
 
@@ -118,6 +163,8 @@ Output format:
     modules = []
     all_prizes: list[str] = []
     badge_copy: dict[str, str] = {}
+    py_files: list[tuple[str, str]] = []
+    tsx_files: list[tuple[str, str]] = []
 
     for opp, raw in zip(opportunities[:len(tasks)], results):
         py_code = tsx_code = ""
@@ -129,7 +176,7 @@ Output format:
             py_code = raw
 
         sponsor_key = opp["sponsor"].lower().replace(" ", "_")
-        file_path = f"integrations/{sponsor_key}.py"
+        file_path = f"app/integrations/{sponsor_key}.py"
         prize_cats = opp.get("eligibility_requirements", [opp.get("prize_name", "")])
 
         modules.append(SponsorModule(
@@ -138,10 +185,13 @@ Output format:
             code=py_code,
             ui_component_code=tsx_code,
             prize_categories=prize_cats,
-            test_passed=True,   # health_check tested on actual run
+            test_passed=True,
         ))
         all_prizes.extend(prize_cats)
         badge_copy[opp["sponsor"]] = f"Powered by {opp['sponsor']}"
+        py_files.append((file_path, py_code))
+        if tsx_code:
+            tsx_files.append((f"src/components/integrations/{sponsor_key}-badge.tsx", tsx_code))
 
     manifest = SponsorIntegrationManifest(
         modules=modules,
@@ -149,16 +199,39 @@ Output format:
         badge_copy=badge_copy,
     )
 
-    # Write integration files to disk
-    output_dir = Path(f"/tmp/hackathon-{hackathon_id}/integrations")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    async with trace_op("file", "integration:write_modules") as span:
-        written = []
-        for mod in manifest.modules:
-            p = output_dir / Path(mod.file_path).name
-            p.write_text(mod.code)
-            written.append(str(p))
-        span.output = {"files": written}
+    # Push integration code to actual repos via Daytona sandbox
+    if be_repo_url or fe_repo_url:
+        from daytona_sdk import CreateSandboxFromImageParams, Image
+        daytona = _get_daytona()
+        try:
+            sandbox = await daytona.create(CreateSandboxFromImageParams(
+                language="python",
+                image=Image.base("python:3.11-slim"),
+                env_vars={"GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", "")},
+            ))
+            try:
+                if be_repo_url and py_files:
+                    be_path = await _clone_repo_in_sandbox(sandbox, be_repo_url)
+                    await sandbox.process.exec(f"mkdir -p {be_path}/app/integrations", timeout=10)
+                    for rel_path, code in py_files:
+                        await sandbox.fs.upload_file(code.encode(), f"{be_path}/{rel_path}")
+                    init_path = f"{be_path}/app/integrations/__init__.py"
+                    await sandbox.fs.upload_file(b"", init_path)
+                    pushed = await _commit_and_push(sandbox, be_path, "feat: add sponsor integrations")
+                    logger.info(f"[forge:integration] BE repo push {'OK' if pushed else 'FAILED'}")
+
+                if fe_repo_url and tsx_files:
+                    fe_path = await _clone_repo_in_sandbox(sandbox, fe_repo_url)
+                    await sandbox.process.exec(f"mkdir -p {fe_path}/src/components/integrations", timeout=10)
+                    for rel_path, code in tsx_files:
+                        await sandbox.fs.upload_file(code.encode(), f"{fe_path}/{rel_path}")
+                    pushed = await _commit_and_push(sandbox, fe_path, "feat: add sponsor badge components")
+                    logger.info(f"[forge:integration] FE repo push {'OK' if pushed else 'FAILED'}")
+            finally:
+                await daytona.delete(sandbox)
+            await daytona.close()
+        except Exception as e:
+            logger.warning(f"[forge:integration] Sandbox push failed (non-blocking): {e}")
 
     logger.info(
         f"[forge:integration] Built {len(modules)} integrations, "
@@ -184,10 +257,12 @@ async def run_test_engineer(
     project_plan: dict,
     api_contract: dict,
     design_md_content: str = "",
+    fe_repo_url: str = "",
+    be_repo_url: str = "",
 ) -> TestReport:
+    """Generate test suites, commit to repos, and run them in a sandbox."""
+    set_agent_context(hackathon_id, "test_engineer")
     AGENT = ALL_AGENTS["test_engineer"]
-    output_dir = Path(f"/tmp/hackathon-{hackathon_id}/tests")
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     demo_path = project_plan.get("demo_golden_path", [])
     endpoints  = api_contract.get("endpoints", [])
@@ -197,7 +272,6 @@ async def run_test_engineer(
     async with trace_op("llm", "test:generate_tests") as span:
         span.input = {"project": project_name, "demo_steps": len(demo_path), "endpoints": len(endpoints)}
 
-        # Generate Playwright e2e suite (demo golden path)
         e2e_code = await complete(
             task="write-tests",
             system_prompt=AGENT.system_prompt,
@@ -227,7 +301,6 @@ Requirements:
             temperature=0.0,
         )
 
-        # Generate pytest API test suite
         pytest_code = await complete(
             task="write-pytest",
             system_prompt=AGENT.system_prompt,
@@ -254,24 +327,87 @@ Requirements:
 
         span.output = {"e2e_len": len(e2e_code), "pytest_len": len(pytest_code)}
 
-    # Write files
-    async with trace_op("file", "test:write_tests") as span:
-        e2e_path  = output_dir / "demo-golden-path.spec.ts"
-        api_path  = output_dir / "test_api.py"
-        e2e_path.write_text(e2e_code)
-        api_path.write_text(pytest_code)
-        span.output = {"files": [str(e2e_path), str(api_path)]}
+    e2e_ran = False
+    pytest_ran = False
+
+    # Push tests to repos and run them in a Daytona sandbox
+    if fe_repo_url or be_repo_url:
+        from daytona_sdk import CreateSandboxFromImageParams, Image
+        daytona = _get_daytona()
+        try:
+            sandbox = await daytona.create(CreateSandboxFromImageParams(
+                language="python",
+                image=Image.base("node:20-bookworm"),
+                env_vars={
+                    "GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", ""),
+                    "DATABASE_URL": os.environ.get("DATABASE_URL", ""),
+                },
+            ))
+            try:
+                if fe_repo_url:
+                    fe_path = await _clone_repo_in_sandbox(sandbox, fe_repo_url)
+                    await sandbox.process.exec(f"mkdir -p {fe_path}/tests/e2e", timeout=10)
+                    await sandbox.fs.upload_file(
+                        e2e_code.encode(), f"{fe_path}/tests/e2e/demo-golden-path.spec.ts"
+                    )
+                    pushed = await _commit_and_push(sandbox, fe_path, "test: add Playwright e2e suite")
+                    logger.info(f"[forge:test] FE e2e push {'OK' if pushed else 'FAILED'}")
+
+                    # Attempt to install and run tests
+                    result = await sandbox.process.exec(
+                        f"cd {fe_path} && npm install && npx playwright install chromium --with-deps 2>&1 | tail -5",
+                        timeout=180,
+                    )
+                    result = await sandbox.process.exec(
+                        f"cd {fe_path} && npx playwright test --reporter=line 2>&1 | tail -20",
+                        timeout=120,
+                    )
+                    e2e_ran = result.exit_code == 0
+                    if not e2e_ran:
+                        logger.warning(f"[forge:test] Playwright tests failed (non-blocking): exit {result.exit_code}")
+
+                if be_repo_url:
+                    be_path = await _clone_repo_in_sandbox(sandbox, be_repo_url)
+                    await sandbox.process.exec(f"mkdir -p {be_path}/tests", timeout=10)
+                    await sandbox.fs.upload_file(
+                        pytest_code.encode(), f"{be_path}/tests/test_api.py"
+                    )
+                    pushed = await _commit_and_push(sandbox, be_path, "test: add pytest API suite")
+                    logger.info(f"[forge:test] BE pytest push {'OK' if pushed else 'FAILED'}")
+
+                    result = await sandbox.process.exec(
+                        f"cd {be_path} && pip install -r requirements.txt pytest pytest-asyncio httpx 2>&1 | tail -5",
+                        timeout=120,
+                    )
+                    result = await sandbox.process.exec(
+                        f"cd {be_path} && python -m pytest tests/ -x -q --timeout=30 2>&1 | tail -20",
+                        timeout=90,
+                    )
+                    pytest_ran = result.exit_code == 0
+                    if not pytest_ran:
+                        logger.warning(f"[forge:test] pytest failed (non-blocking): exit {result.exit_code}")
+            finally:
+                await daytona.delete(sandbox)
+            await daytona.close()
+        except Exception as e:
+            logger.warning(f"[forge:test] Sandbox test run failed (non-blocking): {e}")
+
+    test_paths = []
+    if fe_repo_url:
+        test_paths.append("tests/e2e/demo-golden-path.spec.ts")
+    if be_repo_url:
+        test_paths.append("tests/test_api.py")
 
     report = TestReport(
         e2e_tests_written=e2e_code.count("test("),
         api_tests_written=pytest_code.count("async def test_"),
         demo_path_covered=len(demo_path) > 0,
         seed_endpoint_tested="/demo/seed" in pytest_code,
-        test_file_paths=[str(e2e_path), str(api_path)],
+        test_file_paths=test_paths,
     )
     logger.info(
-        f"[forge:test] {report.e2e_tests_written} e2e tests, "
-        f"{report.api_tests_written} pytest tests written"
+        f"[forge:test] {report.e2e_tests_written} e2e tests (ran={e2e_ran}), "
+        f"{report.api_tests_written} pytest tests (ran={pytest_ran})"
     )
     return report
 
@@ -292,11 +428,13 @@ async def run_devops(
     hackathon_id: str,
     project_plan: dict,
     api_contract: dict,
+    fe_repo_url: str = "",
+    be_repo_url: str = "",
 ) -> CICDConfig:
+    """Generate CI/CD workflows, push to repos, and configure Vercel + Railway via API."""
+    set_agent_context(hackathon_id, "devops")
     AGENT = ALL_AGENTS["devops"]
     project_name = project_plan.get("project_name", "project").lower().replace(" ", "-")
-    output_dir = Path(f"/tmp/hackathon-{hackathon_id}/cicd")
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     async with trace_op("llm", "devops:generate_cicd") as span:
         span.input = {"project": project_name}
@@ -344,28 +482,184 @@ Output ONLY the YAML content for .github/workflows/backend.yml
         )
         span.output = {"frontend_len": len(fe_workflow), "backend_len": len(be_workflow)}
 
-    # Write workflows to disk
-    async with trace_op("file", "devops:write_configs") as span:
-        (output_dir / "frontend.yml").write_text(fe_workflow)
-        (output_dir / "backend.yml").write_text(be_workflow)
-        span.output = {"files": ["frontend.yml", "backend.yml"]}
+    # Push workflows to actual repos via Daytona sandbox
+    if fe_repo_url or be_repo_url:
+        from daytona_sdk import CreateSandboxFromImageParams, Image
+        daytona = _get_daytona()
+        try:
+            sandbox = await daytona.create(CreateSandboxFromImageParams(
+                language="python",
+                image=Image.base("python:3.11-slim"),
+                env_vars={"GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", "")},
+            ))
+            try:
+                if fe_repo_url:
+                    fe_path = await _clone_repo_in_sandbox(sandbox, fe_repo_url)
+                    await sandbox.process.exec(f"mkdir -p {fe_path}/.github/workflows", timeout=10)
+                    await sandbox.fs.upload_file(
+                        fe_workflow.encode(), f"{fe_path}/.github/workflows/ci.yml"
+                    )
+                    await _commit_and_push(sandbox, fe_path, "ci: add GitHub Actions workflow")
+
+                if be_repo_url:
+                    be_path = await _clone_repo_in_sandbox(sandbox, be_repo_url)
+                    await sandbox.process.exec(f"mkdir -p {be_path}/.github/workflows", timeout=10)
+                    await sandbox.fs.upload_file(
+                        be_workflow.encode(), f"{be_path}/.github/workflows/ci.yml"
+                    )
+                    await _commit_and_push(sandbox, be_path, "ci: add GitHub Actions workflow")
+            finally:
+                await daytona.delete(sandbox)
+            await daytona.close()
+        except Exception as e:
+            logger.warning(f"[forge:devops] Sandbox push failed (non-blocking): {e}")
+
+    # Configure Vercel via API
+    vercel_ok = False
+    vercel_token = os.environ.get("VERCEL_TOKEN", "")
+    vercel_org = os.environ.get("VERCEL_ORG_ID", "")
+    if vercel_token and fe_repo_url:
+        vercel_ok = await _configure_vercel_project(
+            fe_repo_url, project_name, vercel_token, vercel_org,
+        )
+
+    # Configure Railway via API
+    railway_ok = False
+    railway_token = os.environ.get("RAILWAY_TOKEN", "")
+    if railway_token and be_repo_url:
+        railway_ok = await _configure_railway_project(
+            be_repo_url, project_name, railway_token,
+        )
 
     env_vars = [
         "NEXT_PUBLIC_API_URL", "NEXT_PUBLIC_DEMO_MODE",
         "ELECTRONHUB_API_KEY", "DATABASE_URL", "REDIS_URL",
     ]
-    for sponsor_name in ["OPENAI", "ANTHROPIC", "ZAPIER", "STRIPE"]:
-        env_vars.append(f"{sponsor_name}_API_KEY")
 
     config = CICDConfig(
         frontend_workflow=fe_workflow,
         backend_workflow=be_workflow,
         env_vars_set=env_vars,
-        vercel_configured=True,
-        railway_configured=True,
+        vercel_configured=vercel_ok,
+        railway_configured=railway_ok,
     )
-    logger.info(f"[forge:devops] CI/CD workflows written: {list(output_dir.iterdir())}")
+    logger.info(f"[forge:devops] CI/CD done — vercel={vercel_ok} railway={railway_ok}")
     return config
+
+
+async def _configure_vercel_project(
+    repo_url: str, project_name: str, token: str, org_id: str,
+) -> bool:
+    """Create or link a Vercel project to a GitHub repo via v13 API."""
+    repo_parts = repo_url.rstrip("/").split("/")
+    repo_owner = repo_parts[-2]
+    repo_name = repo_parts[-1]
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            body: dict = {
+                "name": f"{project_name}-frontend",
+                "framework": "nextjs",
+                "gitRepository": {
+                    "type": "github",
+                    "repo": f"{repo_owner}/{repo_name}",
+                },
+                "environmentVariables": [
+                    {"key": "NEXT_PUBLIC_DEMO_MODE", "value": "true", "target": ["production", "preview"]},
+                    {"key": "NEXT_PUBLIC_API_URL", "value": os.environ.get("FORGE_WEB_URL", "https://api.example.com"), "target": ["production", "preview"]},
+                ],
+            }
+            if org_id:
+                body["teamId"] = org_id
+
+            async with session.post(
+                "https://api.vercel.com/v13/projects",
+                headers=headers,
+                json=body,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                data = await resp.json()
+                if resp.status in (200, 201):
+                    logger.info(f"[forge:devops] Vercel project created: {data.get('id')}")
+                    return True
+                elif "already exists" in json.dumps(data).lower():
+                    logger.info(f"[forge:devops] Vercel project already exists — OK")
+                    return True
+                else:
+                    logger.warning(f"[forge:devops] Vercel API {resp.status}: {data}")
+                    return False
+    except Exception as e:
+        logger.warning(f"[forge:devops] Vercel config failed: {e}")
+        return False
+
+
+async def _configure_railway_project(
+    repo_url: str, project_name: str, token: str,
+) -> bool:
+    """Create a Railway project + service linked to a GitHub repo via GraphQL API."""
+    repo_parts = repo_url.rstrip("/").split("/")
+    full_repo = f"{repo_parts[-2]}/{repo_parts[-1]}"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Create project
+            mutation = """
+            mutation($name: String!, $repo: String!) {
+                projectCreate(input: {
+                    name: $name,
+                    defaultEnvironmentName: "production"
+                }) { id }
+            }
+            """
+            async with session.post(
+                "https://backboard.railway.com/graphql/v2",
+                headers=headers,
+                json={
+                    "query": mutation,
+                    "variables": {"name": f"{project_name}-backend", "repo": full_repo},
+                },
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                data = await resp.json()
+                project_id = data.get("data", {}).get("projectCreate", {}).get("id")
+                if not project_id:
+                    if "already exists" in json.dumps(data).lower():
+                        logger.info("[forge:devops] Railway project already exists — OK")
+                        return True
+                    logger.warning(f"[forge:devops] Railway create failed: {data}")
+                    return False
+
+            # Link GitHub repo to the project
+            link_mutation = """
+            mutation($projectId: String!, $repo: String!) {
+                serviceCreate(input: {
+                    projectId: $projectId,
+                    name: "api",
+                    source: { repo: $repo }
+                }) { id }
+            }
+            """
+            async with session.post(
+                "https://backboard.railway.com/graphql/v2",
+                headers=headers,
+                json={
+                    "query": link_mutation,
+                    "variables": {"projectId": project_id, "repo": full_repo},
+                },
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                data = await resp.json()
+                service_id = data.get("data", {}).get("serviceCreate", {}).get("id")
+                if service_id:
+                    logger.info(f"[forge:devops] Railway service created: {service_id}")
+                    return True
+                logger.warning(f"[forge:devops] Railway service create: {data}")
+                return False
+    except Exception as e:
+        logger.warning(f"[forge:devops] Railway config failed: {e}")
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -391,12 +685,15 @@ class SecurityReport(BaseModel):
 async def run_security_agent(
     hackathon_id: str,
     repo_path: str = "",
+    fe_repo_url: str = "",
+    be_repo_url: str = "",
 ) -> SecurityReport:
+    """Scan actual repos in a Daytona sandbox for secrets, vulnerabilities, and security issues."""
+    set_agent_context(hackathon_id, "security")
     from config.forge_tools import feature
     AGENT = ALL_AGENTS["security"]
     blockers: list[SecurityIssue] = []
 
-    # Feature 8: allow skipping security scan during development
     if feature("SKIP_SECURITY_SCAN"):
         logger.info("[forge:security] Skipped — SKIP_SECURITY_SCAN flag enabled")
         return SecurityReport(blockers=[], high=[], medium=[], passed=True,
@@ -406,8 +703,7 @@ async def run_security_agent(
     medium: list[SecurityIssue] = []
     scan_commands: list[str] = []
 
-    # 1. Secret scan — look for common patterns in /tmp output dir
-    output_dir = Path(f"/tmp/hackathon-{hackathon_id}")
+    import re
     secret_patterns = [
         ("ELECTRONHUB_API_KEY", r"ek-[a-zA-Z0-9]{32,}"),
         ("OpenAI key",         r"sk-[a-zA-Z0-9]{48,}"),
@@ -416,86 +712,107 @@ async def run_security_agent(
         ("Bearer token",       r"Bearer [a-zA-Z0-9\-_.]{40,}"),
     ]
 
-    import re
-    if output_dir.exists():
-        for py_file in output_dir.rglob("*.py"):
-            content = py_file.read_text(errors="ignore")
-            for name, pattern in secret_patterns:
-                if re.search(pattern, content):
-                    blockers.append(SecurityIssue(
-                        severity="BLOCKER",
-                        file=str(py_file.relative_to(output_dir)),
-                        line=None,
-                        description=f"Possible {name} hardcoded",
-                        fix="Move to environment variable, add to .gitignore",
-                    ))
-
-        for ts_file in output_dir.rglob("*.ts"):
-            content = ts_file.read_text(errors="ignore")
-            for name, pattern in secret_patterns:
-                if re.search(pattern, content):
-                    blockers.append(SecurityIssue(
-                        severity="BLOCKER",
-                        file=str(ts_file.relative_to(output_dir)),
-                        line=None,
-                        description=f"Possible {name} in TypeScript file",
-                        fix="Use process.env.VARIABLE_NAME instead",
-                    ))
-    scan_commands.append("regex secret scan on output directory")
-
-    # 2. npm audit (if package.json present)
-    pkg_json = output_dir / "package.json"
-    if pkg_json.exists():
-        async with trace_op("subprocess", "security:npm_audit") as span:
+    # Scan repos in a Daytona sandbox for real results
+    if fe_repo_url or be_repo_url:
+        from daytona_sdk import CreateSandboxFromImageParams, Image
+        daytona = _get_daytona()
+        try:
+            sandbox = await daytona.create(CreateSandboxFromImageParams(
+                language="python",
+                image=Image.base("node:20-bookworm"),
+                env_vars={"GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", "")},
+            ))
             try:
-                result = subprocess.run(
-                    ["npm", "audit", "--json", "--audit-level=high"],
-                    cwd=str(output_dir),
-                    capture_output=True, text=True, timeout=60,
-                )
-                scan_commands.append("npm audit --audit-level=high")
-                span.output = {"returncode": result.returncode}
-                if result.returncode != 0:
-                    audit_data = json.loads(result.stdout) if result.stdout else {}
-                    vuln_count = audit_data.get("metadata", {}).get("vulnerabilities", {})
-                    if vuln_count.get("high", 0) + vuln_count.get("critical", 0) > 0:
-                        high.append(SecurityIssue(
-                            severity="HIGH",
-                            file="package.json",
-                            line=None,
-                            description=f"npm audit: {vuln_count.get('high', 0)} high, {vuln_count.get('critical', 0)} critical vulnerabilities",
-                            fix="Run: npm audit fix",
-                        ))
-            except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
-                span.error = "npm not available or timed out"
-                scan_commands.append("npm audit: skipped (npm not available)")
+                repos_to_scan: list[tuple[str, str]] = []
+                if fe_repo_url:
+                    fe_path = await _clone_repo_in_sandbox(sandbox, fe_repo_url)
+                    repos_to_scan.append(("frontend", fe_path))
+                if be_repo_url:
+                    be_path = await _clone_repo_in_sandbox(sandbox, be_repo_url)
+                    repos_to_scan.append(("backend", be_path))
 
-    # 3. pip-audit (if requirements.txt or pyproject.toml present)
-    if (output_dir / "pyproject.toml").exists() or (output_dir / "requirements.txt").exists():
-        async with trace_op("subprocess", "security:pip_audit") as span:
-            try:
-                result = subprocess.run(
-                    ["pip-audit", "--format=json"],
-                    cwd=str(output_dir),
-                    capture_output=True, text=True, timeout=60,
-                )
-                scan_commands.append("pip-audit --format=json")
-                span.output = {"returncode": result.returncode}
-                if result.returncode != 0 and result.stdout:
-                    vulns = json.loads(result.stdout)
-                    for v in vulns[:5]:
-                        medium.append(SecurityIssue(
-                            severity="MEDIUM",
-                            file="pyproject.toml",
-                            line=None,
-                            description=f"CVE in {v.get('name')}: {v.get('vulns', [{}])[0].get('id', 'unknown')}",
-                            fix=f"Upgrade {v.get('name')} to {v.get('fix_versions', ['latest'])[0]}",
-                        ))
-            except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
-                span.error = "pip-audit not available or timed out"
-                scan_commands.append("pip-audit: skipped (not installed)")
+                for label, rpath in repos_to_scan:
+                    # Secret scan via grep inside sandbox
+                    for name, pattern in secret_patterns:
+                        result = await sandbox.process.exec(
+                            f"grep -rn '{pattern}' {rpath} --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.env' 2>/dev/null | head -5",
+                            timeout=30,
+                        )
+                        if result.exit_code == 0 and result.result and result.result.strip():
+                            for line in result.result.strip().splitlines()[:3]:
+                                rel = line.replace(rpath + "/", "")
+                                blockers.append(SecurityIssue(
+                                    severity="BLOCKER",
+                                    file=rel.split(":")[0] if ":" in rel else rel,
+                                    line=int(rel.split(":")[1]) if rel.count(":") >= 2 else None,
+                                    description=f"Possible {name} hardcoded in {label}",
+                                    fix="Move to environment variable, add to .gitignore",
+                                ))
+                    scan_commands.append(f"grep secret scan on {label} repo")
 
-    # 4. LLM review of CORS and auth configuration
+                    # npm audit for FE
+                    if label == "frontend":
+                        result = await sandbox.process.exec(
+                            f"cd {rpath} && npm audit --json --audit-level=high 2>&1 | tail -50",
+                            timeout=60,
+                        )
+                        scan_commands.append("npm audit --audit-level=high (in sandbox)")
+                        if result.exit_code != 0 and result.result:
+                            try:
+                                audit_data = json.loads(result.result)
+                                vuln_count = audit_data.get("metadata", {}).get("vulnerabilities", {})
+                                if vuln_count.get("high", 0) + vuln_count.get("critical", 0) > 0:
+                                    high.append(SecurityIssue(
+                                        severity="HIGH", file="package.json", line=None,
+                                        description=f"npm audit: {vuln_count.get('high', 0)} high, {vuln_count.get('critical', 0)} critical",
+                                        fix="Run: npm audit fix",
+                                    ))
+                            except json.JSONDecodeError:
+                                pass
+
+                    # pip-audit for BE
+                    if label == "backend":
+                        await sandbox.process.exec("pip install pip-audit 2>&1 | tail -3", timeout=60)
+                        result = await sandbox.process.exec(
+                            f"cd {rpath} && pip-audit --format=json 2>&1 | tail -50",
+                            timeout=60,
+                        )
+                        scan_commands.append("pip-audit (in sandbox)")
+                        if result.exit_code != 0 and result.result:
+                            try:
+                                vulns = json.loads(result.result)
+                                for v in (vulns if isinstance(vulns, list) else [])[:5]:
+                                    medium.append(SecurityIssue(
+                                        severity="MEDIUM", file="requirements.txt", line=None,
+                                        description=f"CVE in {v.get('name', '?')}: {v.get('vulns', [{}])[0].get('id', 'unknown')}",
+                                        fix=f"Upgrade {v.get('name', '?')} to {v.get('fix_versions', ['latest'])[0]}",
+                                    ))
+                            except (json.JSONDecodeError, IndexError):
+                                pass
+            finally:
+                await daytona.delete(sandbox)
+            await daytona.close()
+        except Exception as e:
+            logger.warning(f"[forge:security] Sandbox scan failed (non-blocking): {e}")
+            scan_commands.append(f"sandbox scan failed: {e}")
+    else:
+        # Fallback: scan /tmp output dir (legacy path)
+        output_dir = Path(f"/tmp/hackathon-{hackathon_id}")
+        if output_dir.exists():
+            for src_file in list(output_dir.rglob("*.py")) + list(output_dir.rglob("*.ts")):
+                content = src_file.read_text(errors="ignore")
+                for name, pattern in secret_patterns:
+                    if re.search(pattern, content):
+                        blockers.append(SecurityIssue(
+                            severity="BLOCKER",
+                            file=str(src_file.relative_to(output_dir)),
+                            line=None,
+                            description=f"Possible {name} hardcoded",
+                            fix="Move to environment variable",
+                        ))
+        scan_commands.append("regex secret scan on /tmp output (legacy fallback)")
+
+    # LLM review of CORS and auth configuration
     api_contract_raw = ""
     try:
         redis = get_redis()
@@ -813,21 +1130,29 @@ AGENT_HANDLERS = {
         inp.get("project_plan", {}),
         inp.get("sponsor_map", {}),
         inp.get("api_contract", {}),
+        fe_repo_url=inp.get("fe_repo_url", ""),
+        be_repo_url=inp.get("be_repo_url", ""),
     ),
     "test_engineer": lambda hid, inp: run_test_engineer(
         hid,
         inp.get("project_plan", {}),
         inp.get("api_contract", {}),
         inp.get("design_md_content", ""),
+        fe_repo_url=inp.get("fe_repo_url", ""),
+        be_repo_url=inp.get("be_repo_url", ""),
     ),
     "devops": lambda hid, inp: run_devops(
         hid,
         inp.get("project_plan", {}),
         inp.get("api_contract", {}),
+        fe_repo_url=inp.get("fe_repo_url", ""),
+        be_repo_url=inp.get("be_repo_url", ""),
     ),
     "security": lambda hid, inp: run_security_agent(
         hid,
         inp.get("repo_path", ""),
+        fe_repo_url=inp.get("fe_repo_url", ""),
+        be_repo_url=inp.get("be_repo_url", ""),
     ),
     "code_reviewer": lambda hid, inp: run_code_reviewer(
         hid,

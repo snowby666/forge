@@ -251,16 +251,91 @@ CREATE TABLE ux_audit_reports (
 
 ---
 
+## Build phase architecture
+
+The build phase runs as a three-stage pipeline inside the Commander's `run_build()` function. Each stage must complete before the next begins.
+
+```mermaid
+flowchart TB
+    subgraph stage1 ["Stage 1: Scaffold + Contract"]
+        direction LR
+        BE1["BE Engineer\n• Design API contract → Redis\n• Scaffold FastAPI + models\n• Quality gates (pytest, startup)\n• Git push to GitHub"]
+        FE1["FE Engineer\n• create-next-app + shadcn\n• Generate components via LLM\n• Generate pages via LLM\n• Quality gates (tsc, eslint, build)\n• Git push to GitHub"]
+    end
+    subgraph stage2 ["Stage 2: Integrate + Harden"]
+        direction LR
+        INT2["Integration Engineer\n• Clone FE+BE repos in sandbox\n• Generate sponsor modules\n• Commit to actual repos"]
+        TEST2["Test Engineer\n• Clone repos in sandbox\n• Generate Playwright + pytest\n• Run tests in sandbox\n• Commit test suites"]
+        DEV2["DevOps\n• Clone repos, add CI workflows\n• Create Vercel project via API\n• Create Railway project via API"]
+        SEC2["Security\n• Clone repos in sandbox\n• grep secret scan\n• npm audit / pip-audit\n• LLM contract review"]
+    end
+    subgraph stage3 ["Stage 3: Deploy + Verify"]
+        direction LR
+        DEPLOY["Deploy\n• Vercel: create project + poll\n• Railway: create project + service"]
+        VERIFY["Verify\n• Screenshots (3 viewports)\n• Lighthouse scoring\n• Smoke test (HTTP 200)\n• Backend health check"]
+    end
+    stage1 --> stage2 --> stage3
+```
+
+### Stage details
+
+| Stage | Agents | Duration | Key outputs |
+|---|---|---|---|
+| **1. Scaffold** | `frontend_engineer`, `backend_engineer` | ~5-10 min | FE repo URL, BE repo URL, API contract in Redis |
+| **2. Integrate + Harden** | `integration_engineer`, `test_engineer`, `devops`, `security` | ~3-5 min | Sponsor modules, test suites, CI workflows, security report — all committed to actual repos |
+| **3. Deploy + Verify** | Commander (inline) | ~2-5 min | Vercel preview URL, Railway backend URL, screenshots, Lighthouse scores |
+
+### Dependency graph
+
+Agents in each stage are scheduled by `get_runnable_now()` from `config/forge_tools.py`. The `completed` set is pre-seeded with strategy-layer agents (`tech_architect`, `strategy_director`, `pm`, `ui_ux_designer`) so the dependency graph resolves correctly.
+
+```
+Stage 1 dependencies:
+  frontend_engineer  → [tech_architect]  (pre-seeded)
+  backend_engineer   → []                (no deps)
+
+Stage 2 dependencies:
+  integration_engineer → [tech_architect, backend_engineer]
+  test_engineer        → [frontend_engineer, backend_engineer]
+  devops               → [frontend_engineer, backend_engineer]
+  security             → [frontend_engineer, backend_engineer]
+```
+
+### Supporting agents now commit to repos
+
+All Stage 2 agents receive `fe_repo_url` and `be_repo_url` from Stage 1 results. Each agent:
+1. Creates a Daytona sandbox
+2. Clones the target repo(s) inside the sandbox
+3. Generates and writes code to the correct paths
+4. Commits and pushes to the repo's main branch
+5. Cleans up the sandbox
+
+This replaces the previous behavior where supporting agents wrote to `/tmp/` on the host and never committed their output.
+
+### Post-deploy verification
+
+After Vercel and Railway deployments, the Commander runs inline verification:
+- **Screenshots**: 375px (mobile), 768px (tablet), 1440px (desktop) via browser layer `/screenshot`
+- **Lighthouse**: Performance + accessibility scores via browser layer `/lighthouse`
+- **Smoke test**: HTTP GET on preview URL, expects 200
+- **Backend health**: HTTP GET on `{railway_url}/health`, expects 200
+
+If Lighthouse performance < 50 or accessibility < 70, the verification result is flagged with `needs_fix: true` for the polish pass to address.
+
+---
+
 ## Daytona sandboxes
 
 ```mermaid
 sequenceDiagram
+    participant CMD as Commander
     participant FE as Frontend Engineer
     participant DYT as Daytona Server
     participant SBX as Isolated sandbox
     participant GH as GitHub
     participant VCL as Vercel
 
+    CMD->>FE: Stage 1: scaffold
     FE->>DYT: Create sandbox (node:20-alpine)
     DYT-->>FE: sandbox_id + API
     FE->>SBX: exec("npx create-next-app@latest ...")
@@ -268,12 +343,20 @@ sequenceDiagram
     FE->>SBX: exec("npm run build") [quality gate]
     FE->>SBX: exec("git push origin main")
     SBX->>GH: Push commits
-    GH->>VCL: Webhook -> auto-deploy
-    VCL-->>FE: Preview URL
     FE->>DYT: Delete sandbox (cleanup)
+    FE-->>CMD: repo_url
+
+    CMD->>DYT: Stage 2: integration/test/devops/security sandboxes
+    DYT-->>CMD: sandbox_ids
+    CMD->>SBX: git clone repos, generate code, push
+    SBX->>GH: Push integration/test/CI commits
+
+    CMD->>VCL: Stage 3: deploy_to_vercel()
+    GH->>VCL: Webhook -> auto-deploy
+    VCL-->>CMD: Preview URL
 ```
 
-Each build creates an isolated Daytona sandbox. Frontend and Backend each get their own sandbox with no shared state. After deployment, sandboxes are deleted to free resources. This means the server's disk doesn't fill up across many hackathon runs.
+Each build creates an isolated Daytona sandbox. Frontend and Backend each get their own sandbox with no shared state. Supporting agents in Stage 2 also create temporary sandboxes to clone repos and run tools. After deployment, all sandboxes are deleted to free resources.
 
 ### Self-hosted Daytona setup
 

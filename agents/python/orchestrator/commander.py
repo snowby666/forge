@@ -745,114 +745,358 @@ async def wait_design_approval(state: HackathonState) -> dict:
 @_trace_node("redis", "commander:phase:build")
 async def run_build(state: HackathonState) -> dict:
     """
-    Trigger all build agents in dependency-correct order.
-    Uses forge_tools.get_runnable_now() — adapted from Claude Code's
-    isConcurrencySafe() concurrency scheduling pattern.
+    Three-stage build pipeline:
+      Stage 1 — Scaffold: FE + BE in parallel (dependency-ordered)
+      Stage 2 — Integrate + Harden: supporting agents commit to real repos
+      Stage 3 — Deploy + Verify: real Vercel/Railway deploys, screenshots, Lighthouse
     """
-    await _push_log(state["hackathon_id"], "commander", "info", "Starting build phase")
+    hid = state["hackathon_id"]
+    await _push_log(hid, "commander", "info", "Starting build phase (3-stage pipeline)")
     logger.info(
-        f"[forge:commander] ━━━ Phase 3: BUILD ━━━\n"
-        f"[forge:commander]   Running: Frontend, Backend, Integration, Test, DevOps, Security\n"
-        f"[forge:commander]   Dependency-ordered scheduling via get_runnable_now()"
+        f"[forge:commander] ━━━ Phase 3: BUILD (3-stage pipeline) ━━━\n"
+        f"[forge:commander]   Stage 1: Scaffold (FE + BE)\n"
+        f"[forge:commander]   Stage 2: Integrate + Harden\n"
+        f"[forge:commander]   Stage 3: Deploy + Verify"
     )
     redis = get_redis()
-
     design = state.get("design_spec", {})
+    from config.forge_tools import get_runnable_now
 
-    # Full input data per agent
-    agent_inputs: dict[str, dict] = {
+    # ─── Stage 1: Scaffold — FE + BE in parallel ────────────────────────────
+    await _push_log(hid, "commander", "info", "Stage 1: Scaffold — launching FE + BE")
+    logger.info("[forge:commander] ── Stage 1: Scaffold ──")
+
+    stage1_inputs: dict[str, dict] = {
         "frontend_engineer": {
             "project_plan": state["project_plan"],
             "design_spec": design,
             "design_tokens_content": design.get("tokens", {}).get("typescript_content", ""),
             "component_specs": design.get("design_spec", {}).get("components", []),
-            "design_md_content": "",
+            "design_md_content": design.get("design_md", design.get("design_md_content", "")),
             "api_contract": state.get("api_contract"),
         },
         "backend_engineer": {
             "project_plan": state["project_plan"],
             "db_schema": state.get("db_schema", {}),
         },
-        "integration_engineer": {
-            "project_plan": state["project_plan"],
-            "sponsor_map": state["intel"].get("sponsor_map", {}),
-            "api_contract": state.get("api_contract"),
-        },
-        "test_engineer": {
-            "project_plan": state["project_plan"],
-            "api_contract": state.get("api_contract"),
-        },
-        "devops": {
-            "project_plan": state["project_plan"],
-            "api_contract": state.get("api_contract"),
-        },
-        "security": {},
     }
 
-    build_agents = list(agent_inputs.keys())
-    completed: set[str] = set()
+    stage1_agents = list(stage1_inputs.keys())
+    completed: set[str] = {"tech_architect", "strategy_director", "pm", "ui_ux_designer"}
     in_progress: set[str] = set()
+    agent_failures: dict[str, int] = {}
     frontend_data: dict | None = None
+    backend_data: dict | None = None
 
-    from config.forge_tools import get_runnable_now
-
-    # Dependency-aware scheduling loop
-    while len(completed) < len(build_agents):
-        runnable = get_runnable_now(completed, in_progress, build_agents)
+    stage1_done = set()
+    while len(stage1_done) < len(stage1_agents):
+        runnable = get_runnable_now(completed, in_progress, stage1_agents)
         if not runnable and not in_progress:
-            logger.error("[forge:commander] Build deadlock — agents stuck")
+            logger.error("[forge:commander] Stage 1 deadlock")
             break
 
-        # Trigger all newly runnable agents
         for agent_id in runnable:
             in_progress.add(agent_id)
-            await trigger_agent(redis, state["hackathon_id"], agent_id, agent_inputs[agent_id])
-            logger.info(f"[forge:commander] Triggered (dependency-ordered): {agent_id}")
+            await trigger_agent(redis, hid, agent_id, stage1_inputs[agent_id])
+            logger.info(f"[forge:commander]   Stage 1 → {agent_id}")
 
-        # Wait for any in-progress agent to complete (poll)
         await asyncio.sleep(5)
         newly_done: set[str] = set()
         for agent_id in list(in_progress):
-            raw = await redis.get(f"task:{state['hackathon_id']}:{agent_id}")
-            if raw:
-                task = json.loads(raw)
-                if task["status"] == "done":
-                    newly_done.add(agent_id)
-                    if agent_id == "frontend_engineer":
-                        frontend_data = task.get("data")
-                elif task["status"] == "failed":
-                    newly_done.add(agent_id)
-                    agent_failures = state.get("agent_failures", {})
-                    agent_failures[agent_id] = agent_failures.get(agent_id, 0) + 1
-                    if agent_failures[agent_id] < 2:
-                        logger.warning(f"[forge:commander] {agent_id} failed (attempt {agent_failures[agent_id]}), retrying with simplify")
-                        await trigger_agent(redis, state["hackathon_id"], agent_id, {
-                            **agent_inputs[agent_id], "simplify": True,
-                        })
-                        in_progress.add(agent_id)
-                    else:
-                        logger.error(f"[forge:commander] {agent_id} failed {agent_failures[agent_id]} times, skipping")
+            raw = await redis.get(f"task:{hid}:{agent_id}")
+            if not raw:
+                continue
+            task = json.loads(raw)
+            if task["status"] == "done":
+                newly_done.add(agent_id)
+                if agent_id == "frontend_engineer":
+                    frontend_data = task.get("data")
+                elif agent_id == "backend_engineer":
+                    backend_data = task.get("data")
+            elif task["status"] == "failed":
+                newly_done.add(agent_id)
+                agent_failures[agent_id] = agent_failures.get(agent_id, 0) + 1
+                if agent_failures[agent_id] < 2:
+                    logger.warning(f"[forge:commander] {agent_id} failed (attempt {agent_failures[agent_id]}), retrying")
+                    await trigger_agent(redis, hid, agent_id, {
+                        **stage1_inputs[agent_id], "simplify": True,
+                    })
+                    in_progress.add(agent_id)
+                    newly_done.discard(agent_id)
+                else:
+                    logger.error(f"[forge:commander] {agent_id} failed {agent_failures[agent_id]} times, skipping")
 
         in_progress -= newly_done
         completed   |= newly_done
+        stage1_done |= newly_done
 
+    # Fallback: retry frontend with simplify if it never succeeded
     if not frontend_data:
-        # Retry frontend with simplify=True
-        await trigger_agent(redis, state["hackathon_id"], "frontend_engineer", {
-            **agent_inputs["frontend_engineer"], "simplify": True,
+        await trigger_agent(redis, hid, "frontend_engineer", {
+            **stage1_inputs["frontend_engineer"], "simplify": True,
         })
-        frontend_data = await wait_for_agent(
-            redis, state["hackathon_id"], "frontend_engineer", timeout_sec=1800
-        )
+        frontend_data = await wait_for_agent(redis, hid, "frontend_engineer", timeout_sec=1800)
         if not frontend_data:
             await redis.aclose()
             return {"errors": [*state["errors"], "Frontend build failed after simplify attempt"]}
 
+    fe_repo_url = frontend_data.get("repo_url", "")
+    be_repo_url = (backend_data or {}).get("repo_url", "")
     preview_url = frontend_data.get("preview_url", "")
-    repo_url    = frontend_data.get("repo_url", "")
+
+    logger.info(
+        f"[forge:commander] Stage 1 complete — "
+        f"FE: {fe_repo_url or 'FAILED'}, BE: {be_repo_url or 'FAILED'}"
+    )
+    await _push_log(hid, "commander", "info",
+                    f"Stage 1 done — FE={fe_repo_url or 'N/A'} BE={be_repo_url or 'N/A'}")
+
+    # ─── Stage 2: Integrate + Harden ────────────────────────────────────────
+    await _push_log(hid, "commander", "info", "Stage 2: Integrate + Harden — supporting agents")
+    logger.info("[forge:commander] ── Stage 2: Integrate + Harden ──")
+
+    api_contract = state.get("api_contract") or {}
+    # Try to load api_contract from Redis if not in state
+    if not api_contract:
+        raw_contract = await redis.get(f"hackathon:{hid}:api_contract")
+        if raw_contract:
+            try:
+                api_contract = json.loads(raw_contract)
+            except json.JSONDecodeError:
+                pass
+
+    stage2_inputs: dict[str, dict] = {
+        "integration_engineer": {
+            "project_plan": state["project_plan"],
+            "sponsor_map": state["intel"].get("sponsor_map", {}),
+            "api_contract": api_contract,
+            "fe_repo_url": fe_repo_url,
+            "be_repo_url": be_repo_url,
+        },
+        "test_engineer": {
+            "project_plan": state["project_plan"],
+            "api_contract": api_contract,
+            "fe_repo_url": fe_repo_url,
+            "be_repo_url": be_repo_url,
+        },
+        "devops": {
+            "project_plan": state["project_plan"],
+            "api_contract": api_contract,
+            "fe_repo_url": fe_repo_url,
+            "be_repo_url": be_repo_url,
+        },
+        "security": {
+            "fe_repo_url": fe_repo_url,
+            "be_repo_url": be_repo_url,
+        },
+    }
+
+    stage2_agents = list(stage2_inputs.keys())
+    stage2_done: set[str] = set()
+    s2_in_progress: set[str] = set()
+
+    while len(stage2_done) < len(stage2_agents):
+        runnable = get_runnable_now(completed, s2_in_progress, stage2_agents)
+        if not runnable and not s2_in_progress:
+            logger.error("[forge:commander] Stage 2 deadlock")
+            break
+
+        for agent_id in runnable:
+            s2_in_progress.add(agent_id)
+            await trigger_agent(redis, hid, agent_id, stage2_inputs[agent_id])
+            logger.info(f"[forge:commander]   Stage 2 → {agent_id}")
+
+        await asyncio.sleep(5)
+        newly_done = set()
+        for agent_id in list(s2_in_progress):
+            raw = await redis.get(f"task:{hid}:{agent_id}")
+            if not raw:
+                continue
+            task = json.loads(raw)
+            if task["status"] == "done":
+                newly_done.add(agent_id)
+            elif task["status"] == "failed":
+                newly_done.add(agent_id)
+                logger.warning(f"[forge:commander] Stage 2 agent {agent_id} failed (non-blocking)")
+
+        s2_in_progress -= newly_done
+        completed      |= newly_done
+        stage2_done    |= newly_done
+
+    logger.info(f"[forge:commander] Stage 2 complete — {len(stage2_done)}/{len(stage2_agents)} agents done")
+    await _push_log(hid, "commander", "info", f"Stage 2 done — {len(stage2_done)} agents completed")
+
+    # ─── Stage 3: Deploy + Verify ───────────────────────────────────────────
+    await _push_log(hid, "commander", "info", "Stage 3: Deploy + Verify")
+    logger.info("[forge:commander] ── Stage 3: Deploy + Verify ──")
+
+    from agents.python.build.frontend_and_backend import deploy_to_vercel, deploy_to_railway, GITHUB_ORG
+
+    # Deploy frontend to Vercel (creates project + polls for ready URL)
+    if fe_repo_url:
+        fe_repo_name = fe_repo_url.rstrip("/").split("/")[-1]
+        try:
+            vercel_url = await deploy_to_vercel(fe_repo_name, GITHUB_ORG)
+            if vercel_url:
+                preview_url = vercel_url
+                logger.info(f"[forge:commander] Vercel deploy: {preview_url}")
+        except Exception as e:
+            logger.warning(f"[forge:commander] Vercel deploy failed (non-blocking): {e}")
+
+    # Deploy backend to Railway
+    be_deploy_url = ""
+    if be_repo_url:
+        be_repo_name = be_repo_url.rstrip("/").split("/")[-1]
+        try:
+            be_deploy_url = await deploy_to_railway(be_repo_name, GITHUB_ORG)
+            if be_deploy_url:
+                logger.info(f"[forge:commander] Railway deploy: {be_deploy_url}")
+        except Exception as e:
+            logger.warning(f"[forge:commander] Railway deploy failed (non-blocking): {e}")
+
+    # Post-deploy verification
+    verification = await _run_post_deploy_verification(
+        hid, preview_url, be_deploy_url, state, redis,
+    )
 
     await redis.aclose()
-    return {"preview_url": preview_url, "repo_url": repo_url, "phase": "verifying"}
+    return {
+        "preview_url": preview_url,
+        "repo_url": fe_repo_url,
+        "be_repo_url": be_repo_url,
+        "be_deploy_url": be_deploy_url,
+        "verification": verification,
+        "phase": "verifying",
+    }
+
+
+async def _run_post_deploy_verification(
+    hackathon_id: str,
+    preview_url: str,
+    be_deploy_url: str,
+    state: dict,
+    redis,
+) -> dict:
+    """
+    Stage 3 verification: screenshots, Lighthouse scoring, smoke test.
+    Returns a dict with results. Non-blocking — failures are warnings, not errors.
+    """
+    import aiohttp
+    browser_url = os.environ.get("BROWSER_SERVER_URL", "http://localhost:3100")
+    verification: dict = {"screenshots": [], "lighthouse": {}, "smoke_test": False}
+
+    if not preview_url or preview_url.endswith(".vercel.app"):
+        logger.info("[forge:commander] No live preview URL — skipping verification")
+        return verification
+
+    await _push_log(hackathon_id, "commander", "info", "Running post-deploy verification")
+
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            # 1. Screenshot capture at 3 viewports
+            viewports = [
+                {"width": 375, "height": 812, "label": "mobile"},
+                {"width": 768, "height": 1024, "label": "tablet"},
+                {"width": 1440, "height": 900, "label": "desktop"},
+            ]
+            for vp in viewports:
+                try:
+                    async with session.post(
+                        f"{browser_url}/screenshot",
+                        json={
+                            "url": preview_url,
+                            "width": vp["width"],
+                            "height": vp["height"],
+                        },
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            verification["screenshots"].append({
+                                "viewport": vp["label"],
+                                "url": data.get("screenshot_url", ""),
+                                "status": "ok",
+                            })
+                            logger.info(f"[forge:commander] Screenshot {vp['label']}: OK")
+                        else:
+                            verification["screenshots"].append({
+                                "viewport": vp["label"],
+                                "status": "failed",
+                                "error": f"HTTP {resp.status}",
+                            })
+                except Exception as e:
+                    verification["screenshots"].append({
+                        "viewport": vp["label"],
+                        "status": "error",
+                        "error": str(e),
+                    })
+
+            # 2. Lighthouse scoring
+            try:
+                async with session.post(
+                    f"{browser_url}/lighthouse",
+                    json={"url": preview_url},
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    if resp.status == 200:
+                        lh_data = await resp.json()
+                        verification["lighthouse"] = {
+                            "performance": lh_data.get("performance", 0),
+                            "accessibility": lh_data.get("accessibility", 0),
+                            "best_practices": lh_data.get("best_practices", 0),
+                            "seo": lh_data.get("seo", 0),
+                        }
+                        logger.info(
+                            f"[forge:commander] Lighthouse: "
+                            f"perf={lh_data.get('performance')} "
+                            f"a11y={lh_data.get('accessibility')}"
+                        )
+            except Exception as e:
+                logger.warning(f"[forge:commander] Lighthouse failed: {e}")
+                verification["lighthouse"] = {"error": str(e)}
+
+            # 3. Smoke test — hit the preview URL and check for 200
+            try:
+                async with session.get(preview_url) as resp:
+                    verification["smoke_test"] = resp.status == 200
+                    logger.info(f"[forge:commander] Smoke test: HTTP {resp.status}")
+            except Exception as e:
+                logger.warning(f"[forge:commander] Smoke test failed: {e}")
+
+            # 4. Backend health check
+            if be_deploy_url:
+                try:
+                    async with session.get(f"{be_deploy_url}/health") as resp:
+                        verification["backend_health"] = resp.status == 200
+                        logger.info(f"[forge:commander] Backend health: HTTP {resp.status}")
+                except Exception as e:
+                    verification["backend_health"] = False
+                    logger.warning(f"[forge:commander] Backend health check failed: {e}")
+
+    except Exception as e:
+        logger.warning(f"[forge:commander] Post-deploy verification failed: {e}")
+
+    # Fix loop: if Lighthouse performance < 50 or accessibility < 70, retry FE
+    lh = verification.get("lighthouse", {})
+    perf = lh.get("performance", 100)
+    a11y = lh.get("accessibility", 100)
+
+    if isinstance(perf, (int, float)) and isinstance(a11y, (int, float)):
+        if perf < 50 or a11y < 70:
+            logger.warning(
+                f"[forge:commander] Verification below threshold: perf={perf} a11y={a11y} — "
+                f"flagging for fix in polish pass"
+            )
+            verification["needs_fix"] = True
+            verification["fix_reasons"] = []
+            if perf < 50:
+                verification["fix_reasons"].append(f"Performance {perf} < 50")
+            if a11y < 70:
+                verification["fix_reasons"].append(f"Accessibility {a11y} < 70")
+
+    await _push_log(hackathon_id, "commander", "info",
+                    f"Verification done — smoke={verification.get('smoke_test')} "
+                    f"lighthouse_perf={lh.get('performance', 'N/A')}")
+    return verification
 
 
 @_trace_node("redis", "commander:phase:verification")
