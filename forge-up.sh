@@ -203,17 +203,6 @@ fi
 
 PYTHON_CMD="${VIRTUAL_ENV}/bin/python"
 
-# ── Browser layer: npm install ───────────────────────────────────────────────
-step "Browser layer (Node.js)"
-if [ -d agents/browser ] && [ -f agents/browser/package.json ]; then
-  if [ ! -d agents/browser/node_modules ]; then
-    log "Installing browser layer npm deps..."
-    (cd agents/browser && npm install --silent 2>&1 | tail -3)
-  else
-    log "Browser layer node_modules OK"
-  fi
-fi
-
 # ── Docker: infrastructure config ───────────────────────────────────────────
 step "Docker infrastructure"
 
@@ -331,27 +320,11 @@ async def main():
 asyncio.run(main())
 " 2>&1 || warn "Qdrant collection init failed (may already exist)"
 
-# ── Browser layer: start ─────────────────────────────────────────────────────
 BROWSER_PORT="${BROWSER_SERVER_PORT:-3100}"
-if curl -sf "http://localhost:${BROWSER_PORT}/health" &>/dev/null 2>&1; then
-  log "Browser layer already running (port ${BROWSER_PORT})"
-else
-  if [ -d agents/browser ] && [ -f agents/browser/package.json ]; then
-    log "Starting browser layer (port ${BROWSER_PORT})..."
-    fuser -k "${BROWSER_PORT}/tcp" 2>/dev/null || true
-    (cd agents/browser && nohup npm start > /tmp/forge-browser.log 2>&1 &)
-    sleep 5
-    if curl -sf "http://localhost:${BROWSER_PORT}/health" &>/dev/null 2>&1; then
-      log "Browser layer ready (port ${BROWSER_PORT})"
-    else
-      warn "Browser layer failed — check /tmp/forge-browser.log"
-    fi
-  else
-    warn "agents/browser/ not found — skipping"
-  fi
-fi
 
 # ── Wait for remaining services ──────────────────────────────────────────────
+wait_for "Browser"    "curl -sf http://localhost:${BROWSER_PORT}/health" 60 2 || true
+
 FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
 wait_for "Forge Web"  "curl -sf http://localhost:${FORGE_WEB_PORT}/" 45 2 || true
 wait_for "Forge API"  "curl -sf http://localhost:3001/health" 60 2 || true
@@ -386,6 +359,14 @@ if ! docker exec forge-api python -c "import socket; socket.getaddrinfo('qdrant'
   NEED_API_RESTART=true
 else
   log "forge-api → qdrant OK"
+fi
+
+if ! docker exec forge-api python -c "import socket; socket.getaddrinfo('browser', 3100)" &>/dev/null 2>&1; then
+  warn "forge-api cannot resolve browser — fixing..."
+  docker network connect forge-network forge-browser 2>/dev/null || true
+  NEED_API_RESTART=true
+else
+  log "forge-api → browser OK"
 fi
 
 if [[ "$DAYTONA_READY" == "true" ]]; then
@@ -426,7 +407,7 @@ check_service "N8N                :5678  (Docker)"   "curl -sf http://localhost:
 check_service "SearXNG            :8081  (Docker)"   "curl -sf http://localhost:8081/healthz"
 check_service "Forge API          :3001  (Docker)"   "curl -sf http://localhost:3001/health"
 check_service "Forge Web          :${FORGE_WEB_PORT}  (Docker)"   "curl -sf http://localhost:${FORGE_WEB_PORT}/"
-check_service "Browser Layer      :${BROWSER_PORT}  (Host)"     "curl -sf http://localhost:${BROWSER_PORT}/health"
+check_service "Browser Layer      :${BROWSER_PORT}  (Docker)"   "curl -sf http://localhost:${BROWSER_PORT}/health"
 if [[ "$DAYTONA_READY" == "true" ]] || docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'daytona-api'; then
   check_service "Daytona API        :3986  (Docker)"   "curl -sf http://localhost:3986/health"
 fi

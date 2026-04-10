@@ -133,6 +133,24 @@ services:
     depends_on:
       - temporal
 
+  # ── Browser Layer (Stagehand + Playwright) ──────────────────────────────────
+  browser:
+    build:
+      context: .
+      dockerfile: Dockerfile.browser
+    container_name: forge-browser
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "3100:3100"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3100/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
   # ── Forge API backend (FastAPI) ──────────────────────────────────────────────
   api:
     build:
@@ -142,8 +160,6 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     environment:
       REDIS_URL: "redis://:${REDIS_PASSWORD:-change_me}@redis:6379/0"
       DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-backbone}:${POSTGRES_PASSWORD:-change_me}@postgres:5432/backbone"
@@ -154,9 +170,7 @@ services:
       SEARXNG_URL: "http://searxng:8080"
       DAYTONA_API_URL: "http://daytona-api:3000/api"
       DAYTONA_API_KEY: "${DAYTONA_API_KEY:-}"
-      # Browser layer is NOT in this compose file — run `agents/browser` on the host (port 3100) if you need /register.
-      # Scout treats a dead server as "skip registration" and continues. Override with BROWSER_DOCKER_URL if needed.
-      BROWSER_SERVER_URL: "${BROWSER_DOCKER_URL:-http://host.docker.internal:3100}"
+      BROWSER_SERVER_URL: "http://browser:3100"
     ports:
       - "3001:3001"
     healthcheck:
@@ -171,6 +185,8 @@ services:
       postgres:
         condition: service_healthy
       qdrant:
+        condition: service_healthy
+      browser:
         condition: service_healthy
 
   # ── Forge web dashboard — Next.js (sentinelhive.dev) ───────────────────────

@@ -479,4 +479,4 @@ app.get("/health", (_req, res) => {
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => console.log(`[forge:browser] Server on port ${PORT}`));
+app.listen(Number(PORT), "0.0.0.0", () => console.log(`[forge:browser] Server on 0.0.0.0:${PORT}`));
