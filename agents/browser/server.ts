@@ -22,7 +22,15 @@ import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
 import { execSync } from "child_process";
-import { stitch } from "@google/stitch-sdk";
+// @google/stitch-sdk is ESM-only; lazy-load via dynamic import() to avoid
+// CJS resolution failure under tsx.
+let _stitchMod: any = null;
+async function getStitch() {
+  if (!_stitchMod) {
+    _stitchMod = await import("@google/stitch-sdk");
+  }
+  return _stitchMod.stitch;
+}
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -500,7 +508,8 @@ app.post("/stitch/generate", async (req, res) => {
   let projectId = "";
 
   try {
-    const project = await stitch.createProject(project_title);
+    const stitchClient = await getStitch();
+    const project = await stitchClient.createProject(project_title);
     projectId = project.projectId;
     console.log(`[forge:stitch] Project created: ${projectId}`);
 
@@ -581,7 +590,8 @@ app.post("/stitch/edit", async (req, res) => {
   }
 
   try {
-    const project = stitch.project(project_id);
+    const stitchClient = await getStitch();
+    const project = stitchClient.project(project_id);
     const screen = await project.getScreen(screen_id);
     const edited = await screen.edit(edit_prompt);
 
