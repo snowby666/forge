@@ -60,6 +60,34 @@ if [[ "$IS_WSL" == "true" && "$SCRIPT_DIR" == /mnt/* ]]; then
       --exclude='__pycache__/' --exclude='*.pyc' --exclude='*.egg-info/' \
       --exclude='.env' \
       "$SCRIPT_DIR/" "$DEPLOY_DIR/"
+
+    # Merge new/updated env vars from source .env into deploy .env
+    # Preserves auto-generated passwords while syncing user additions like API keys
+    if [[ -f "$SCRIPT_DIR/.env" && -f "$DEPLOY_DIR/.env" ]]; then
+      _MERGED=0
+      while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        key="${line%%=*}"
+        val="${line#*=}"
+        # Skip auto-generated fields (forge-up.sh manages these)
+        case "$key" in POSTGRES_PASSWORD|REDIS_PASSWORD|QDRANT_API_KEY|DATABASE_URL|REDIS_URL|FORGE_WEB_TOKEN|DAYTONA_SSH_PRIVATE_KEY) continue ;; esac
+        if ! grep -q "^${key}=" "$DEPLOY_DIR/.env" 2>/dev/null; then
+          echo "$line" >> "$DEPLOY_DIR/.env"
+          _MERGED=$((_MERGED+1))
+        else
+          # Update if source value is meaningful and differs from deploy
+          _DEPLOY_VAL=$(grep "^${key}=" "$DEPLOY_DIR/.env" | head -1 | cut -d= -f2-)
+          if [[ -n "$val" && "$val" != "$_DEPLOY_VAL" && "$val" != "your_"* && "$val" != "change_"* ]]; then
+            sed -i "s|^${key}=.*|${key}=${val}|" "$DEPLOY_DIR/.env"
+            _MERGED=$((_MERGED+1))
+          fi
+        fi
+      done < "$SCRIPT_DIR/.env"
+      [[ $_MERGED -gt 0 ]] && log "Merged $_MERGED env var(s) from source .env"
+    elif [[ -f "$SCRIPT_DIR/.env" && ! -f "$DEPLOY_DIR/.env" ]]; then
+      cp "$SCRIPT_DIR/.env" "$DEPLOY_DIR/.env"
+      log "Copied .env to deploy dir"
+    fi
   fi
   # Re-exec from native filesystem
   exec bash "$DEPLOY_DIR/forge-up.sh" "$@"
@@ -326,7 +354,7 @@ BROWSER_PORT="${BROWSER_SERVER_PORT:-3100}"
 wait_for "Browser"    "curl -sf http://localhost:${BROWSER_PORT}/health" 60 2 || true
 
 FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
-wait_for "Forge Web"  "curl -sf http://localhost:${FORGE_WEB_PORT}/" 90 3 || true
+wait_for "Forge Web"  "curl -sf http://localhost:${FORGE_WEB_PORT}/api/health" 90 3 || true
 wait_for "Forge API"  "curl -sf http://localhost:3001/health" 60 2 || true
 wait_for "SearXNG"    "curl -sf http://localhost:8081/healthz" 30 2 || true
 
@@ -406,7 +434,7 @@ check_service "Temporal UI        :8080  (Docker)"   "curl -sf http://localhost:
 check_service "N8N                :5678  (Docker)"   "curl -sf http://localhost:5678/healthz"
 check_service "SearXNG            :8081  (Docker)"   "curl -sf http://localhost:8081/healthz"
 check_service "Forge API          :3001  (Docker)"   "curl -sf http://localhost:3001/health"
-check_service "Forge Web          :${FORGE_WEB_PORT}  (Docker)"   "curl -sf http://localhost:${FORGE_WEB_PORT}/"
+check_service "Forge Web          :${FORGE_WEB_PORT}  (Docker)"   "curl -sf http://localhost:${FORGE_WEB_PORT}/api/health"
 check_service "Browser Layer      :${BROWSER_PORT}  (Docker)"   "curl -sf http://localhost:${BROWSER_PORT}/health"
 if [[ "$DAYTONA_READY" == "true" ]] || docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'daytona-api'; then
   check_service "Daytona API        :3986  (Docker)"   "curl -sf http://localhost:3986/health"
