@@ -11,8 +11,11 @@
  *   POST /record-demo      — screen record + composite with audio
  *   POST /screenshot       — capture screenshots for UX audit
  *   POST /lighthouse       — run Lighthouse audit
- *   POST /stitch/generate  — generate screens via Google Stitch SDK
- *   GET  /health           — health check
+ *   POST /stitch/generate  — generate screens via Google Stitch SDK (token rotation)
+ *   POST /stitch/edit      — iteratively refine a Stitch screen
+ *   GET  /stitch/test      — smoke test: validate tokens + generate test screen
+ *   GET  /stitch/tokens    — show token pool status
+ *   GET  /health           — health check (includes stitch token status)
  */
 
 import express from "express";
@@ -22,14 +25,112 @@ import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
 import { execSync } from "child_process";
-// @google/stitch-sdk is ESM-only; lazy-load via dynamic import() to avoid
-// CJS resolution failure under tsx.
+// ─── Stitch SDK — token pool with validation and rotation ────────────────────
+// Reads GOOGLE_STITCH_TOKENS (comma-separated) from env. Falls back to STITCH_API_KEY.
+// Validates tokens on first use, rotates on 401, removes dead tokens.
+
 let _stitchMod: any = null;
-async function getStitch() {
+
+interface StitchToken {
+  key: string;
+  valid: boolean | null; // null = untested
+  lastError: string;
+}
+
+const _tokenPool: StitchToken[] = [];
+let _tokenIdx = 0;
+let _tokensValidated = false;
+
+function loadTokenPool(): void {
+  const raw = process.env.GOOGLE_STITCH_TOKENS || process.env.STITCH_API_KEY || "";
+  const keys = raw.split(",").map(k => k.trim()).filter(Boolean);
+  _tokenPool.length = 0;
+  for (const key of keys) {
+    _tokenPool.push({ key, valid: null, lastError: "" });
+  }
+  console.log(`[forge:stitch] Loaded ${_tokenPool.length} token(s)`);
+}
+
+function nextToken(): StitchToken | null {
+  const valid = _tokenPool.filter(t => t.valid !== false);
+  if (!valid.length) return null;
+  const token = valid[_tokenIdx % valid.length];
+  _tokenIdx = (_tokenIdx + 1) % valid.length;
+  return token;
+}
+
+function markTokenBad(key: string, error: string): void {
+  const entry = _tokenPool.find(tk => tk.key === key);
+  if (entry) {
+    entry.valid = false;
+    entry.lastError = error;
+    console.log(`[forge:stitch] Token ${key.slice(0, 12)}... marked invalid: ${error}`);
+  }
+}
+
+async function getStitchSdk(): Promise<any> {
   if (!_stitchMod) {
     _stitchMod = await import("@google/stitch-sdk");
   }
-  return _stitchMod.stitch;
+  return _stitchMod;
+}
+
+async function getStitchWithToken(apiKey: string): Promise<any> {
+  const mod = await getStitchSdk();
+  const client = new mod.StitchToolClient({ apiKey });
+  return new mod.Stitch(client);
+}
+
+async function validateTokens(): Promise<{ valid: number; invalid: number; total: number }> {
+  if (!_tokenPool.length) loadTokenPool();
+  let valid = 0, invalid = 0;
+
+  for (const token of _tokenPool) {
+    try {
+      const sdk = await getStitchWithToken(token.key);
+      await sdk.projects();
+      token.valid = true;
+      valid++;
+    } catch (e: any) {
+      const msg = String(e).slice(0, 100);
+      token.valid = false;
+      token.lastError = msg;
+      invalid++;
+      console.log(`[forge:stitch] Token ${token.key.slice(0, 12)}... INVALID: ${msg}`);
+    }
+  }
+  _tokensValidated = true;
+  console.log(`[forge:stitch] Validation complete: ${valid} valid, ${invalid} invalid out of ${_tokenPool.length}`);
+  return { valid, invalid, total: _tokenPool.length };
+}
+
+async function stitchCallWithRotation<T>(fn: (sdk: any) => Promise<T>): Promise<T> {
+  if (!_tokenPool.length) loadTokenPool();
+
+  const validTokens = _tokenPool.filter(t => t.valid !== false);
+  if (!validTokens.length) throw new Error("No valid Stitch tokens available");
+
+  const maxAttempts = Math.min(validTokens.length, 5);
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const token = nextToken();
+    if (!token) throw new Error("No valid Stitch tokens available");
+
+    try {
+      const sdk = await getStitchWithToken(token.key);
+      const result = await fn(sdk);
+      token.valid = true;
+      return result;
+    } catch (e: any) {
+      const msg = String(e);
+      const lower = msg.toLowerCase();
+      if (msg.includes("401") || msg.includes("403") || lower.includes("auth") || lower.includes("permission") || lower.includes("unauthorized") || lower.includes("forbidden")) {
+        markTokenBad(token.key, msg.slice(0, 100));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error(`All ${maxAttempts} Stitch token attempts failed`);
 }
 
 const app = express();
@@ -165,10 +266,8 @@ app.post("/lighthouse", async (req, res) => {
       await page.waitForLoadState("load");
       metrics.load = Date.now() - start;
       
-      // Check accessibility basics
       const imgMissingAlt = await page.$$eval("img:not([alt])", imgs => imgs.length);
-      const lowContrastText = 0; // Would need axe-core for real check
-      
+
       res.json({
         performance: metrics.load < 3000 ? 85 : metrics.load < 5000 ? 70 : 50,
         accessibility: imgMissingAlt === 0 ? 90 : 75,
@@ -333,7 +432,7 @@ app.post("/scrape", async (req, res) => {
 // ─── POST /register ───────────────────────────────────────────────────────────
 
 app.post("/register", async (req, res) => {
-  const { url, platform, dry_run = false } = req.body;
+  const { url, dry_run = false } = req.body;
 
   if (dry_run) {
     res.json({ success: true, dry_run: true });
@@ -494,8 +593,9 @@ app.post("/stitch/generate", async (req, res) => {
     variant_count = 2,
   } = req.body;
 
-  if (!process.env.STITCH_API_KEY) {
-    res.status(400).json({ error: "STITCH_API_KEY not set", screens: [] });
+  if (!_tokenPool.length) loadTokenPool();
+  if (!_tokenPool.length) {
+    res.status(400).json({ error: "No Stitch tokens set (GOOGLE_STITCH_TOKENS or STITCH_API_KEY)", screens: [] });
     return;
   }
 
@@ -508,10 +608,12 @@ app.post("/stitch/generate", async (req, res) => {
   let projectId = "";
 
   try {
-    const stitchClient = await getStitch();
-    const project = await stitchClient.createProject(project_title);
+    const project = await stitchCallWithRotation(async (sdk) => {
+      const p = await sdk.createProject(project_title);
+      console.log(`[forge:stitch] Project created: ${p.projectId}`);
+      return p;
+    });
     projectId = project.projectId;
-    console.log(`[forge:stitch] Project created: ${projectId}`);
 
     for (const sp of screenPrompts) {
       const deviceType = (sp.device_type || "DESKTOP") as "MOBILE" | "DESKTOP" | "TABLET" | "AGNOSTIC";
@@ -531,6 +633,7 @@ app.post("/stitch/generate", async (req, res) => {
         const screenResult: any = {
           route: sp.route,
           screen_id: screen.screenId,
+          project_id: projectId,
           html_url: htmlUrl,
           image_url: imageUrl,
           prompt: fullPrompt,
@@ -584,27 +687,24 @@ app.post("/stitch/generate", async (req, res) => {
 app.post("/stitch/edit", async (req, res) => {
   const { project_id, screen_id, edit_prompt } = req.body;
 
-  if (!process.env.STITCH_API_KEY || !project_id || !screen_id) {
-    res.status(400).json({ error: "Missing project_id, screen_id, or STITCH_API_KEY" });
+  if (!project_id || !screen_id) {
+    res.status(400).json({ error: "Missing project_id or screen_id" });
     return;
   }
 
   try {
-    const stitchClient = await getStitch();
-    const project = stitchClient.project(project_id);
-    const screen = await project.getScreen(screen_id);
-    const edited = await screen.edit(edit_prompt);
+    const result = await stitchCallWithRotation(async (sdk) => {
+      const project = sdk.project(project_id);
+      const screen = await project.getScreen(screen_id);
+      const edited = await screen.edit(edit_prompt);
 
-    const [htmlUrl, imageUrl] = await Promise.all([
-      edited.getHtml().catch(() => ""),
-      edited.getImage().catch(() => ""),
-    ]);
-
-    res.json({
-      screen_id: edited.screenId,
-      html_url: htmlUrl,
-      image_url: imageUrl,
+      const [htmlUrl, imageUrl] = await Promise.all([
+        edited.getHtml().catch(() => ""),
+        edited.getImage().catch(() => ""),
+      ]);
+      return { screen_id: edited.screenId, html_url: htmlUrl, image_url: imageUrl };
     });
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -614,19 +714,30 @@ app.post("/stitch/edit", async (req, res) => {
 // Quick smoke test: creates a project, generates one tiny screen, verifies HTML+image.
 
 app.get("/stitch/test", async (_req, res) => {
-  const apiKey = process.env.STITCH_API_KEY;
-  if (!apiKey) {
-    res.json({ ok: false, error: "STITCH_API_KEY not set in environment", key_hint: "Set it in .env" });
+  if (!_tokenPool.length) loadTokenPool();
+  if (!_tokenPool.length) {
+    res.json({ ok: false, error: "No tokens set. Set GOOGLE_STITCH_TOKENS in .env" });
     return;
   }
 
   const steps: string[] = [];
   try {
-    steps.push("loading SDK...");
-    const stitchClient = await getStitch();
+    steps.push(`loaded ${_tokenPool.length} token(s)`);
+    steps.push("validating tokens...");
+    const validation = await validateTokens();
+    steps.push(`validation: ${validation.valid} valid, ${validation.invalid} invalid`);
 
-    steps.push("creating project...");
-    const project = await stitchClient.createProject(`stitch-test-${Date.now()}`);
+    if (validation.valid === 0) {
+      res.json({ ok: false, error: "All tokens are invalid", steps, tokens: _tokenPool.map(t => ({
+        prefix: t.key.slice(0, 15) + "...",
+        valid: t.valid,
+        error: t.lastError,
+      }))});
+      return;
+    }
+
+    steps.push("creating test project...");
+    const project = await stitchCallWithRotation(async (sdk) => sdk.createProject(`stitch-test-${Date.now()}`));
     steps.push(`project created: ${project.projectId}`);
 
     steps.push("generating screen...");
@@ -635,7 +746,6 @@ app.get("/stitch/test", async (_req, res) => {
 
     steps.push("fetching HTML URL...");
     const htmlUrl = await screen.getHtml().catch((e: any) => `error: ${e}`);
-
     steps.push("fetching image URL...");
     const imageUrl = await screen.getImage().catch((e: any) => `error: ${e}`);
 
@@ -645,6 +755,8 @@ app.get("/stitch/test", async (_req, res) => {
       screen_id: screen.screenId,
       html_url: htmlUrl,
       image_url: imageUrl,
+      valid_tokens: _tokenPool.filter(t => t.valid === true).length,
+      total_tokens: _tokenPool.length,
       steps,
     });
   } catch (err) {
@@ -652,11 +764,35 @@ app.get("/stitch/test", async (_req, res) => {
   }
 });
 
+// GET /stitch/tokens — check token pool status without making API calls
+app.get("/stitch/tokens", async (_req, res) => {
+  if (!_tokenPool.length) loadTokenPool();
+  res.json({
+    total: _tokenPool.length,
+    valid: _tokenPool.filter(t => t.valid === true).length,
+    invalid: _tokenPool.filter(t => t.valid === false).length,
+    untested: _tokenPool.filter(t => t.valid === null).length,
+    validated: _tokensValidated,
+    tokens: _tokenPool.map(t => ({
+      prefix: t.key.slice(0, 15) + "...",
+      valid: t.valid,
+      error: t.lastError || null,
+    })),
+  });
+});
+
 // ─── Health ───────────────────────────────────────────────────────────────────
 
 app.get("/health", (_req, res) => {
-  const hasStitchKey = !!process.env.STITCH_API_KEY;
-  res.json({ status: "ok", port: PORT, stagehand: "ready", stitch_available: hasStitchKey });
+  if (!_tokenPool.length) loadTokenPool();
+  const validCount = _tokenPool.filter(t => t.valid !== false).length;
+  res.json({
+    status: "ok",
+    port: PORT,
+    stagehand: "ready",
+    stitch_available: validCount > 0,
+    stitch_tokens: { total: _tokenPool.length, usable: validCount },
+  });
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────

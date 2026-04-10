@@ -138,7 +138,7 @@ Services run in **two contexts**: the host (CLI, browser layer) and Docker conta
 | Qdrant | `localhost:6333` | `qdrant:6333` | `QDRANT_URL` |
 | SearXNG | `localhost:8081` | `searxng:8080` | `SEARXNG_URL` |
 | Daytona API | `localhost:3986/api` | `daytona-api:3000/api` | `DAYTONA_API_URL` / `DAYTONA_SERVER_URL` |
-| Browser layer | `localhost:3100` | `host.docker.internal:3100` | `BROWSER_SERVER_URL` |
+| Browser layer | `localhost:3100` | `browser:3100` | `BROWSER_SERVER_URL` |
 | Forge API | `localhost:3001` | `api:3001` | `NEXT_PUBLIC_API_URL` |
 
 **How it works**: The `.env` file contains host-side URLs (e.g. `QDRANT_URL=http://localhost:6333`). The `docker-compose.yml` `environment:` section overrides them with Docker-internal URLs for the `api` container (e.g. `QDRANT_URL: "http://qdrant:6333"`). The `forge_web/constants.py` `SERVICE_REGISTRY` is the single source of truth for the full list.

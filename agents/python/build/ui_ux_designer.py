@@ -128,7 +128,8 @@ class DesignTokensOutput(BaseModel):
 
 # ── Google Stitch integration (via browser layer @google/stitch-sdk) ──────────
 # The browser layer (Node.js) uses @google/stitch-sdk to call the Stitch API.
-# STITCH_API_KEY must be set in .env and passed to the browser container.
+# GOOGLE_STITCH_TOKENS (comma-separated) must be set in .env. The browser
+# layer validates and rotates tokens automatically.
 # We call the browser layer's /stitch/generate endpoint which handles:
 #   - Project creation, per-route screen generation, HTML+screenshot retrieval
 #   - Variant exploration, iterative editing

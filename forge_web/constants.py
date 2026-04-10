@@ -37,7 +37,7 @@ CONFIG_KEYS: list[dict[str, Any]] = [
     {"key": "BRAVE_API_KEY", "secret": True, "description": "Brave search API key"},
     {"key": "EXA_API_KEY", "secret": True, "description": "Exa search API key"},
     {"key": "FIRECRAWL_API_KEY", "secret": True, "description": "Firecrawl scraping API key"},
-    {"key": "STITCH_API_KEY", "secret": True, "description": "Stitch API key"},
+    {"key": "GOOGLE_STITCH_TOKENS", "secret": True, "description": "Google Stitch tokens (comma-separated for rotation)"},
     {"key": "REDIS_URL", "secret": True, "description": "Redis connection URL"},
     {"key": "DATABASE_URL", "secret": True, "description": "PostgreSQL connection URL"},
 ]
