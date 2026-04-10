@@ -1154,7 +1154,7 @@ async def run_scout(
             try:
                 async with trace_op("http", "scout:deep_scrape") as span:
                     span.input = {"batch_size": len(batch), "batch_num": batch_num}
-                    deep_tasks = [asyncio.wait_for(deep_scrape_hackathon(b), timeout=60.0) for b in batch]
+                    deep_tasks = [asyncio.wait_for(deep_scrape_hackathon(b), timeout=120.0) for b in batch]
                     results = await asyncio.gather(*deep_tasks, return_exceptions=True)
                     successes = sum(1 for r in results if isinstance(r, HackathonBrief))
                     span.output = {"batch_size": len(batch), "succeeded": successes, "failed": len(batch) - successes}
@@ -1162,8 +1162,9 @@ async def run_scout(
                     if isinstance(r, HackathonBrief):
                         all_deep.append(r)
                     else:
-                        logger.warning(f"[forge:scout] Deep scrape failed for {batch[idx].name[:40]}: {r}")
-                        await emit_log("", "hackathon_scout", "warn", f"Deep scrape failed: {batch[idx].name[:40]}: {r}")
+                        reason = str(r) if str(r) else type(r).__name__
+                        logger.warning(f"[forge:scout] Deep scrape failed for {batch[idx].name[:40]}: {reason}")
+                        await emit_log("", "hackathon_scout", "warn", f"Deep scrape failed: {batch[idx].name[:40]}: {reason}")
                         all_deep.append(batch[idx])
             except Exception as e:
                 logger.warning(f"[forge:scout] Deep scrape batch failed: {e}")
