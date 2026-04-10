@@ -610,6 +610,48 @@ app.post("/stitch/edit", async (req, res) => {
   }
 });
 
+// ─── GET /stitch/test ─────────────────────────────────────────────────────────
+// Quick smoke test: creates a project, generates one tiny screen, verifies HTML+image.
+
+app.get("/stitch/test", async (_req, res) => {
+  const apiKey = process.env.STITCH_API_KEY;
+  if (!apiKey) {
+    res.json({ ok: false, error: "STITCH_API_KEY not set in environment", key_hint: "Set it in .env" });
+    return;
+  }
+
+  const steps: string[] = [];
+  try {
+    steps.push("loading SDK...");
+    const stitchClient = await getStitch();
+
+    steps.push("creating project...");
+    const project = await stitchClient.createProject(`stitch-test-${Date.now()}`);
+    steps.push(`project created: ${project.projectId}`);
+
+    steps.push("generating screen...");
+    const screen = await project.generate("A simple login page with email and password fields", "DESKTOP");
+    steps.push(`screen generated: ${screen.screenId}`);
+
+    steps.push("fetching HTML URL...");
+    const htmlUrl = await screen.getHtml().catch((e: any) => `error: ${e}`);
+
+    steps.push("fetching image URL...");
+    const imageUrl = await screen.getImage().catch((e: any) => `error: ${e}`);
+
+    res.json({
+      ok: true,
+      project_id: project.projectId,
+      screen_id: screen.screenId,
+      html_url: htmlUrl,
+      image_url: imageUrl,
+      steps,
+    });
+  } catch (err) {
+    res.json({ ok: false, error: String(err), steps });
+  }
+});
+
 // ─── Health ───────────────────────────────────────────────────────────────────
 
 app.get("/health", (_req, res) => {
