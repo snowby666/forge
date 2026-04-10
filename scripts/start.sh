@@ -209,6 +209,39 @@ if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'daytona-api'; then
   [[ $WAITED -lt 60 ]] && { log "Daytona API ready"; DAYTONA_READY=true; }
 fi
 
+# --- Verify forge-api Docker DNS connectivity --------------------------------
+NEED_API_RESTART=false
+
+if ! docker exec forge-api python -c "
+import socket
+socket.getaddrinfo('qdrant', 6333)
+" &>/dev/null 2>&1; then
+  warn "forge-api cannot resolve qdrant — fixing Docker network..."
+  docker network connect forge-network forge-qdrant 2>/dev/null || true
+  NEED_API_RESTART=true
+else
+  log "forge-api → qdrant network connectivity OK"
+fi
+
+if [[ "$DAYTONA_READY" == "true" ]]; then
+  if ! docker exec forge-api python -c "
+import socket
+socket.getaddrinfo('daytona-api', 3000)
+" &>/dev/null 2>&1; then
+    warn "forge-api cannot resolve daytona-api — fixing Docker network..."
+    docker network connect forge-network daytona-api 2>/dev/null || true
+    NEED_API_RESTART=true
+  else
+    log "forge-api → daytona-api network connectivity OK"
+  fi
+fi
+
+if [[ "$NEED_API_RESTART" == "true" ]]; then
+  docker restart forge-api 2>/dev/null || true
+  sleep 5
+  log "Restarted forge-api with network fix"
+fi
+
 echo ""
 log "All services running:"
 info "  Qdrant:    http://localhost:6333"

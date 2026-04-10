@@ -804,11 +804,12 @@ async def cmd_test(args):
     # Qdrant (requires api-key header when QDRANT_API_KEY is set)
     try:
         import aiohttp
+        _qu = os.environ.get("QDRANT_URL", "http://localhost:6333").rstrip("/")
         _qk = os.environ.get("QDRANT_API_KEY", "").strip()
         _qh = {"api-key": _qk} if _qk else {}
         async with aiohttp.ClientSession() as s:
             async with s.get(
-                "http://localhost:6333/readyz",
+                f"{_qu}/readyz",
                 headers=_qh,
                 timeout=aiohttp.ClientTimeout(total=5),
             ) as r:

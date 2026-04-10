@@ -106,14 +106,69 @@ if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; the
   else
     log "${DIM}Web dashboard may still be starting (check: docker logs forge-web)${NC}"
   fi
-  # Restart Daytona stack if it's running (picks up any config changes)
-  if [ -f "$DST/docker-compose.daytona.yml" ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'daytona-api'; then
-    log "Restarting Daytona sandbox stack..."
+  # Ensure Daytona stack is running (start if down, restart if already up)
+  if [ -f "$DST/docker-compose.daytona.yml" ]; then
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'daytona-api'; then
+      log "Restarting Daytona sandbox stack..."
+    else
+      log "Starting Daytona sandbox stack..."
+    fi
     docker compose -f "$DST/docker-compose.daytona.yml" up -d 2>&1 | tail -3
+  fi
+
+  # Verify forge-api Docker DNS health (qdrant + daytona-api)
+  NEED_API_RESTART=false
+
+  if ! docker exec forge-api python -c "
+import socket
+socket.getaddrinfo('qdrant', 6333)
+" &>/dev/null 2>&1; then
+    log "forge-api cannot resolve qdrant — fixing network..."
+    docker network connect forge-network forge-qdrant 2>/dev/null || true
+    NEED_API_RESTART=true
+  fi
+
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'daytona-api'; then
+    if ! docker exec forge-api python -c "
+import socket
+socket.getaddrinfo('daytona-api', 3000)
+" &>/dev/null 2>&1; then
+      log "forge-api cannot resolve daytona-api — fixing network..."
+      docker network connect forge-network daytona-api 2>/dev/null || true
+      NEED_API_RESTART=true
+    fi
+  fi
+
+  if [[ "$NEED_API_RESTART" == "true" ]]; then
+    docker restart forge-api 2>/dev/null || true
+    sleep 5
+    log "Restarted forge-api with network fix"
   fi
 else
   log "${DIM}Docker not available — skipping container rebuild${NC}"
   log "${DIM}Run manually: docker compose up -d --build api web${NC}"
+fi
+
+# --- Ensure browser layer is running (host process, not Docker) ---------------
+BROWSER_PORT="${BROWSER_SERVER_PORT:-3100}"
+if curl -sf "http://localhost:${BROWSER_PORT}/health" &>/dev/null 2>&1; then
+  log "Browser layer already running (port ${BROWSER_PORT})"
+else
+  if [ -d "$DST/agents/browser" ] && [ -f "$DST/agents/browser/package.json" ]; then
+    log "Starting browser layer (port ${BROWSER_PORT})..."
+    fuser -k "${BROWSER_PORT}/tcp" 2>/dev/null || true
+    cd "$DST/agents/browser"
+    nohup npm start > /tmp/forge-browser.log 2>&1 &
+    BROWSER_PID=$!
+    cd "$DST"
+    sleep 4
+    if curl -sf "http://localhost:${BROWSER_PORT}/health" &>/dev/null 2>&1; then
+      log "Browser layer ready (PID ${BROWSER_PID}, port ${BROWSER_PORT})"
+    else
+      log "${DIM}Browser layer failed to start — check /tmp/forge-browser.log${NC}"
+      log "${DIM}Agents will skip browser-dependent tasks (scraping, screenshots)${NC}"
+    fi
+  fi
 fi
 
 # Auto-run forge if arguments were passed (e.g. bash sync.sh scout --shallow)

@@ -294,6 +294,66 @@ asyncio.run(main())
 " 2>&1 || warn "Qdrant collection init failed (may already exist)"
 fi
 
+# ── Step 14: Start browser layer (host process, not Docker) ──────────────────
+BROWSER_PORT="${BROWSER_SERVER_PORT:-3100}"
+if curl -sf "http://localhost:${BROWSER_PORT}/health" &>/dev/null 2>&1; then
+  log "Browser layer already running (port ${BROWSER_PORT})"
+else
+  if [ -d agents/browser ] && [ -f agents/browser/package.json ]; then
+    log "Starting browser layer (port ${BROWSER_PORT})..."
+    # Kill any stale process on the port
+    fuser -k "${BROWSER_PORT}/tcp" 2>/dev/null || true
+    cd agents/browser
+    nohup npm start > /tmp/forge-browser.log 2>&1 &
+    BROWSER_PID=$!
+    cd "$SCRIPT_DIR"
+    sleep 4
+    if curl -sf "http://localhost:${BROWSER_PORT}/health" &>/dev/null 2>&1; then
+      log "Browser layer ready (PID ${BROWSER_PID}, port ${BROWSER_PORT})"
+    else
+      warn "Browser layer failed to start — check /tmp/forge-browser.log"
+      warn "  Agents will skip browser-dependent tasks (scraping, screenshots)"
+    fi
+  else
+    warn "agents/browser/ not found — skipping browser layer"
+  fi
+fi
+
+# ── Step 15: Verify Docker network connectivity ─────────────────────────────
+NEED_API_RESTART=false
+
+# Check forge-api → qdrant
+if ! docker exec forge-api python -c "
+import socket
+socket.getaddrinfo('qdrant', 6333)
+" &>/dev/null 2>&1; then
+  warn "forge-api cannot resolve qdrant — reconnecting..."
+  docker network connect forge-network forge-qdrant 2>/dev/null || true
+  NEED_API_RESTART=true
+else
+  log "forge-api → qdrant network connectivity OK"
+fi
+
+# Check forge-api → daytona-api
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'daytona-api'; then
+  if docker exec forge-api python -c "
+import socket
+socket.getaddrinfo('daytona-api', 3000)
+" &>/dev/null 2>&1; then
+    log "forge-api → daytona-api network connectivity OK"
+  else
+    warn "forge-api cannot resolve daytona-api — reconnecting..."
+    docker network connect forge-network daytona-api 2>/dev/null || true
+    NEED_API_RESTART=true
+  fi
+fi
+
+if [[ "$NEED_API_RESTART" == "true" ]]; then
+  docker restart forge-api 2>/dev/null || true
+  sleep 5
+  log "Restarted forge-api with network fix"
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════════════╗${NC}"
@@ -303,7 +363,7 @@ echo ""
 info "Project:  $(pwd)"
 info "Activate: source $(pwd)/.venv/bin/activate"
 echo ""
-# ── Step 14: Verify Forge web dashboard (runs inside Docker) ─────────────────
+# ── Step 16: Verify Forge web dashboard (runs inside Docker) ─────────────────
 # The web dashboard runs as the forge-web Docker container (started in Step 12).
 FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
 WAITED=0

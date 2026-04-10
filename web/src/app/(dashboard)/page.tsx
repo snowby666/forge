@@ -40,6 +40,7 @@ import {
   runSystemTest,
 } from "@/lib/api"
 import { TerminalLog } from "@/components/terminal-log"
+import { SystemHealth } from "@/components/system-health"
 import type { AgentPhaseName, Checkpoint, ServiceHealth } from "@/lib/types"
 
 const PHASES: AgentPhaseName[] = [
@@ -533,32 +534,7 @@ export default function DashboardPage() {
         )}
       </section>
 
-      {health && (
-        <section>
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            System Health
-          </h2>
-          <Card>
-            <CardContent className="flex flex-wrap gap-6 pt-6">
-              {health.map((s) => (
-                <div key={s.name} className="flex items-center gap-2">
-                  <span
-                    className={`inline-block size-2.5 rounded-full ${
-                      s.status === "ok" ? "bg-emerald-500" : "bg-red-500"
-                    }`}
-                  />
-                  <span className="text-sm capitalize">{s.name}</span>
-                  {s.latency_ms != null && (
-                    <span className="font-mono text-xs text-muted-foreground">
-                      {s.latency_ms}ms
-                    </span>
-                  )}
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        </section>
-      )}
+      {health && <SystemHealth services={health} />}
     </div>
   )
 }

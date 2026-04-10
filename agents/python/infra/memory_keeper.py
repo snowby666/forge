@@ -192,26 +192,34 @@ class MemoryKeeper:
     async def store_outcome(self, hackathon_id: str, hackathon_name: str, outcome: dict) -> None:
         async with trace_op("http", "memory:store_outcome") as span:
             span.input = {"hackathon_id": hackathon_id}
-            self.mem0.add(
-                messages=[
-                    {"role": "user", "content": f"Hackathon: {hackathon_name}"},
-                    {"role": "assistant", "content": (
-                        f"Result: {outcome.get('result')}. "
-                        f"Concept: {outcome.get('concept')}. "
-                        f"What worked: {'; '.join(outcome.get('what_worked', []))}. "
-                        f"What failed: {'; '.join(outcome.get('what_failed', []))}. "
-                        f"Prize: {outcome.get('prize_won', 'none')}. "
-                        f"UX audit score: {outcome.get('ux_audit_score', 'unknown')}."
-                    )},
-                ],
-                user_id=self.USER_ID,
-                metadata={"hackathon_id": hackathon_id, "result": outcome.get("result")},
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self.mem0.add(
+                    messages=[
+                        {"role": "user", "content": f"Hackathon: {hackathon_name}"},
+                        {"role": "assistant", "content": (
+                            f"Result: {outcome.get('result')}. "
+                            f"Concept: {outcome.get('concept')}. "
+                            f"What worked: {'; '.join(outcome.get('what_worked', []))}. "
+                            f"What failed: {'; '.join(outcome.get('what_failed', []))}. "
+                            f"Prize: {outcome.get('prize_won', 'none')}. "
+                            f"UX audit score: {outcome.get('ux_audit_score', 'unknown')}."
+                        )},
+                    ],
+                    user_id=self.USER_ID,
+                    metadata={"hackathon_id": hackathon_id, "result": outcome.get("result")},
+                ),
             )
         logger.info(f"[forge:memory] Stored outcome for {hackathon_name}: {outcome.get('result')}")
 
     async def get_relevant_past(self, query: str, limit: int = 5) -> list[dict]:
         async with trace_op("http", "memory:search_past") as span:
-            results = self.mem0.search(query=query, user_id=self.USER_ID, limit=limit)
+            loop = asyncio.get_event_loop()
+            results = await loop.run_in_executor(
+                None,
+                lambda: self.mem0.search(query=query, user_id=self.USER_ID, limit=limit),
+            )
             span.output = {"results": len(results.get("results", []))}
         return results.get("results", [])
 

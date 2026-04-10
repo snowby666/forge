@@ -1051,12 +1051,12 @@ async def run_scout(
     Phase 4: RESEARCH — find papers, repos, tutorials for the theme
     Phase 5: SCORE — rule-based + LLM scoring with deep context
     """
-    from agents.python.infra.memory_keeper import MemoryKeeper
+    from agents.python.infra.memory_keeper import get_memory_keeper
 
     platforms = platforms or ["devpost", "lablab", "devfolio"]
     set_agent_context("", "hackathon_scout")
     redis = get_redis()
-    memory = MemoryKeeper()
+    memory = get_memory_keeper()
 
     # Load proxies for all network operations
     try:

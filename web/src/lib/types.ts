@@ -110,11 +110,18 @@ export interface ConfigEntry {
   description?: string;
 }
 
+export type ServiceCategory = "core" | "build" | "automation" | "ui";
+export type ServiceType = "docker" | "host";
+
 export interface ServiceHealth {
   name: string;
   status: "ok" | "error";
   latency_ms?: number;
   error?: string;
+  description?: string;
+  port?: number;
+  type?: ServiceType;
+  category?: ServiceCategory;
 }
 
 export interface ServiceHealthResponse {

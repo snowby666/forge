@@ -2,28 +2,14 @@
 
 import { useCallback, useState } from "react"
 import useSWR from "swr"
-import { CheckCircle2, XCircle } from "lucide-react"
-import { Badge } from "@/components/ui/badge"
 import {
   Card,
   CardContent,
-  CardHeader,
-  CardTitle,
 } from "@/components/ui/card"
 import { ConfigEditor } from "@/components/config-editor"
+import { SystemHealth } from "@/components/system-health"
 import { fetchConfig, fetchServiceHealth, updateConfig } from "@/lib/api"
 import type { ConfigEntry, ServiceHealth } from "@/lib/types"
-
-function statusColor(status: ServiceHealth["status"]) {
-  if (status === "ok") return "border-emerald-500/30 bg-emerald-500/5"
-  return "border-red-500/30 bg-red-500/5"
-}
-
-function StatusIcon({ status }: { status: ServiceHealth["status"] }) {
-  if (status === "ok")
-    return <CheckCircle2 className="size-4 text-emerald-500" />
-  return <XCircle className="size-4 text-red-500" />
-}
 
 export default function SettingsPage() {
   const [toast, setToast] = useState<{
@@ -98,51 +84,22 @@ export default function SettingsPage() {
         )}
       </section>
 
-      <section className="space-y-4">
-        <h2 className="text-lg font-semibold">Service Health</h2>
-        {healthLoading ? (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div
-                key={i}
-                className="h-24 animate-pulse rounded-lg bg-muted/50"
-              />
-            ))}
-          </div>
-        ) : health && health.length > 0 ? (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {health.map((s) => (
-              <Card key={s.name} className={statusColor(s.status)}>
-                <CardHeader className="flex flex-row items-center justify-between pb-2">
-                  <CardTitle className="text-sm capitalize">
-                    {s.name}
-                  </CardTitle>
-                  <StatusIcon status={s.status} />
-                </CardHeader>
-                <CardContent>
-                  <Badge variant="outline" className="capitalize">
-                    {s.status}
-                  </Badge>
-                  {s.latency_ms != null && (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {s.latency_ms}ms latency
-                    </p>
-                  )}
-                  {s.error && (
-                    <p className="mt-1 truncate text-xs text-red-400">
-                      {s.error}
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            No service health data available.
-          </p>
-        )}
-      </section>
+      {healthLoading ? (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div
+              key={i}
+              className="h-24 animate-pulse rounded-lg bg-muted/50"
+            />
+          ))}
+        </div>
+      ) : health && health.length > 0 ? (
+        <SystemHealth services={health} />
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          No service health data available.
+        </p>
+      )}
     </div>
   )
 }

@@ -70,19 +70,86 @@ The Forge web dashboard replaces the terminal-only workflow with a browser UI.
 
 ## Ports reference
 
-| Port | Service | Access |
-|---|---|---|
-| 3000 | forge-web (Next.js) | External — dashboard UI |
-| 3001 | forge-api (FastAPI) | Internal — dashboard API |
-| 5432 | forge-postgres | Internal only |
-| 6379 | forge-redis | Internal only |
-| 6333 | forge-qdrant (HTTP) | Internal + health check |
-| 6334 | forge-qdrant (gRPC) | Internal only |
-| 5678 | forge-n8n | `http://localhost:5678` |
-| 7233 | forge-temporal | Internal only |
-| 8080 | forge-temporal-ui | `http://localhost:8080` |
-| 3100 | Browser layer | Internal only |
-| 3986 | Daytona | Internal only |
+| Host Port | Container | Docker Service Name | Internal Port | Type | Health Check | Description |
+|---|---|---|---|---|---|---|
+| 3000 | forge-web | `web` | 3000 | Docker | `GET /` | Next.js 15 dashboard UI |
+| 3001 | forge-api | `api` | 3001 | Docker | `GET /health` | FastAPI REST + WebSocket backend |
+| 5432 | forge-postgres | `postgres` | 5432 | Docker | `pg_isready` | PostgreSQL 16 — LangGraph state, app DB, n8n |
+| 6379 | forge-redis | `redis` | 6379 | Docker | `redis-cli ping` | Working memory, pub/sub, task statuses |
+| 6333 | forge-qdrant | `qdrant` | 6333 | Docker | `GET /readyz` (needs `api-key` header) | Vector store — 5 collections, 1536-dim |
+| 6334 | forge-qdrant | `qdrant` | 6334 | Docker | — | Qdrant gRPC (unused) |
+| 5678 | forge-n8n | `n8n` | 5678 | Docker | `GET /healthz` | Workflow automation, checkpoint webhooks |
+| 7233 | forge-temporal | `temporal` | 7233 | Docker | TCP connect | Durable workflow execution |
+| 8080 | forge-temporal-ui | `temporal-ui` | 8080 | Docker | `GET /` | Temporal inspection dashboard |
+| 8081 | forge-searxng | `searxng` | 8080 | Docker | `GET /healthz` | Self-hosted metasearch (ForgeSearch) |
+| 3100 | — | — | 3100 | Host process | `GET /health` | Browser layer (Stagehand + Playwright) |
+| 3986 | daytona-api | `daytona-api` | 3000 | Docker | `GET /health` | Isolated code sandbox server |
+| 4000 | daytona-proxy | `daytona-proxy` | 4000 | Docker | — | Daytona sandbox preview proxy |
+| 3003 | daytona-runner | `daytona-runner` | 3003 | Docker | — | Daytona sandbox runner |
+| 2222 | daytona-ssh-gateway | `daytona-ssh-gateway` | 2222 | Docker | — | Daytona SSH access |
+| 5556 | daytona-dex | `daytona-dex` | 5556 | Docker | `GET /dex/.well-known/openid-configuration` | OIDC identity provider |
+| 6000 | daytona-registry | `daytona-registry` | 6000 | Docker | — | OCI container registry |
+| 9001 | daytona-minio | `daytona-minio` | 9001 | Docker | — | Object storage console |
+
+---
+
+## Service communication map
+
+How each service reaches other services. Use this as the definitive reference when configuring URLs.
+
+```mermaid
+graph LR
+    subgraph HOST["Host / WSL2"]
+        CLI["forge CLI\n(Python)"]
+        BSV["Browser :3100\n(TypeScript)"]
+    end
+
+    subgraph DOCKER["Docker: forge-network"]
+        API["forge-api :3001"]
+        WEB["forge-web :3000"]
+        PG["postgres :5432"]
+        RD["redis :6379"]
+        QD["qdrant :6333"]
+        SX["searxng :8080"]
+        TMP["temporal :7233"]
+        N8N["n8n :5678"]
+        DYT["daytona-api :3000"]
+    end
+
+    WEB -->|"http://api:3001/api/*"| API
+    API --> PG & RD & QD & SX
+    API -->|"http://daytona-api:3000/api"| DYT
+    API -->|"http://host.docker.internal:3100"| BSV
+    CLI -->|"http://localhost:*"| PG & RD & QD
+    CLI -->|"http://localhost:3100"| BSV
+    CLI -->|"http://localhost:3986/api"| DYT
+    N8N --> PG
+    TMP --> PG
+```
+
+### URL resolution rules
+
+Services run in **two contexts**: the host (CLI, browser layer) and Docker containers. The same logical service is reached by different URLs depending on context:
+
+| Service | From Host / CLI | From Docker Container | Env Var |
+|---|---|---|---|
+| PostgreSQL | `localhost:5432` | `postgres:5432` | `DATABASE_URL` |
+| Redis | `localhost:6379` | `redis:6379` | `REDIS_URL` |
+| Qdrant | `localhost:6333` | `qdrant:6333` | `QDRANT_URL` |
+| SearXNG | `localhost:8081` | `searxng:8080` | `SEARXNG_URL` |
+| Daytona API | `localhost:3986/api` | `daytona-api:3000/api` | `DAYTONA_API_URL` / `DAYTONA_SERVER_URL` |
+| Browser layer | `localhost:3100` | `host.docker.internal:3100` | `BROWSER_SERVER_URL` |
+| Forge API | `localhost:3001` | `api:3001` | `NEXT_PUBLIC_API_URL` |
+
+**How it works**: The `.env` file contains host-side URLs (e.g. `QDRANT_URL=http://localhost:6333`). The `docker-compose.yml` `environment:` section overrides them with Docker-internal URLs for the `api` container (e.g. `QDRANT_URL: "http://qdrant:6333"`). The `forge_web/constants.py` `SERVICE_REGISTRY` is the single source of truth for the full list.
+
+### Key networking details
+
+- **`forge-network`**: All Forge containers share this Docker bridge network. Created by `docker compose up -d`.
+- **Daytona stack**: Joins `forge-network` as `external: true` via `docker-compose.daytona.yml`. Must start AFTER the main stack.
+- **Browser layer**: Runs as a host process (not in Docker). Docker containers reach it via `host.docker.internal` + `extra_hosts: host-gateway`.
+- **Port mapping `3986:3000`**: Daytona API listens on port 3000 internally but is published as 3986 to avoid conflict with forge-web (which uses 3000).
+- **Port mapping `8081:8080`**: SearXNG listens on 8080 internally but is published as 8081 to avoid conflict with temporal-ui (which uses 8080).
 
 ---
 
