@@ -240,7 +240,7 @@ show_status() {
     "curl -sf http://localhost:3001/health" "forge-api"
 
   check_service "Forge Web          :${web_port}  (Docker)" \
-    "curl -sf http://localhost:${web_port}/api/health" "forge-web"
+    "curl -sf http://localhost:${web_port}/healthz" "forge-web"
 
   check_service "Browser Layer      :${browser_port}  (Docker)" \
     "curl -sf http://localhost:${browser_port}/health" "forge-browser"
@@ -447,9 +447,18 @@ CURRENT_CHECKSUM=$(compute_build_checksum)
 PREVIOUS_CHECKSUM=""
 [[ -f "$CHECKSUM_FILE" ]] && PREVIOUS_CHECKSUM=$(cat "$CHECKSUM_FILE" 2>/dev/null || echo "")
 
-if [[ "$DO_REBUILD" == "false" && "$CURRENT_CHECKSUM" != "$PREVIOUS_CHECKSUM" && -n "$PREVIOUS_CHECKSUM" ]]; then
-  log "Build context changed since last run — auto-rebuilding images..."
-  DO_REBUILD=true
+if [[ "$DO_REBUILD" == "false" ]]; then
+  if [[ -z "$PREVIOUS_CHECKSUM" ]]; then
+    # No checksum file = first run of smart rebuild. If custom images already exist, they're
+    # likely stale (built before code changes). Force rebuild to establish baseline.
+    if docker image ls --format '{{.Repository}}' 2>/dev/null | grep -q 'forge'; then
+      log "No build checksum found but images exist — rebuilding to sync..."
+      DO_REBUILD=true
+    fi
+  elif [[ "$CURRENT_CHECKSUM" != "$PREVIOUS_CHECKSUM" ]]; then
+    log "Build context changed since last run — auto-rebuilding images..."
+    DO_REBUILD=true
+  fi
 fi
 
 # ── Docker: start/rebuild ────────────────────────────────────────────────────
@@ -550,7 +559,7 @@ for pid in "${_pids[@]}"; do
 done
 
 # Web depends on API, so wait for it after API is up
-wait_for "Forge Web" "curl -sf http://localhost:${FORGE_WEB_PORT}/api/health" 120 3 || true
+wait_for "Forge Web" "curl -sf http://localhost:${FORGE_WEB_PORT}/healthz" 120 3 || true
 
 # Daytona
 DAYTONA_READY=false
