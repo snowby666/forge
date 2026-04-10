@@ -87,8 +87,33 @@ def _resolve_url(svc: dict) -> str:
         docker_port = svc.get("docker_port", svc.get("host_port"))
         is_docker = os.environ.get("DOCKER_CONTAINER") or os.path.exists("/.dockerenv")
         if is_docker and docker_host:
+            # For host-gateway services (e.g. browser layer), resolve the actual
+            # gateway IP since host.docker.internal DNS can be flaky on WSL2.
+            if docker_host == "host.docker.internal":
+                gateway_ip = _get_host_gateway_ip()
+                if gateway_ip:
+                    return f"http://{gateway_ip}:{docker_port}"
             return f"http://{docker_host}:{docker_port}"
         return svc["url"]
+    return ""
+
+
+def _get_host_gateway_ip() -> str:
+    """Read the gateway IP from /etc/hosts (set by Docker's extra_hosts: host-gateway)."""
+    try:
+        with open("/etc/hosts") as f:
+            for line in f:
+                line = line.strip()
+                if "host.docker.internal" in line and not line.startswith("#"):
+                    return line.split()[0]
+    except FileNotFoundError:
+        pass
+    # Fallback: try resolving it via DNS
+    try:
+        import socket
+        return socket.gethostbyname("host.docker.internal")
+    except Exception:
+        pass
     return ""
 
 

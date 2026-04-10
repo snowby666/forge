@@ -354,7 +354,7 @@ fi
 # ── Wait for remaining services ──────────────────────────────────────────────
 FORGE_WEB_PORT="${FORGE_WEB_PORT:-3000}"
 wait_for "Forge Web"  "curl -sf http://localhost:${FORGE_WEB_PORT}/" 45 2 || true
-wait_for "Forge API"  "curl -sf http://localhost:3001/health" 30 2 || true
+wait_for "Forge API"  "curl -sf http://localhost:3001/health" 60 2 || true
 wait_for "SearXNG"    "curl -sf http://localhost:8081/healthz" 30 2 || true
 
 DAYTONA_READY=false

@@ -157,8 +157,8 @@ services:
       # Browser layer is NOT in this compose file — run `agents/browser` on the host (port 3100) if you need /register.
       # Scout treats a dead server as "skip registration" and continues. Override with BROWSER_DOCKER_URL if needed.
       BROWSER_SERVER_URL: "${BROWSER_DOCKER_URL:-http://host.docker.internal:3100}"
-    expose:
-      - "3001"
+    ports:
+      - "3001:3001"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:3001/health')\""]
       interval: 10s
