@@ -118,7 +118,7 @@ async def _dispatch_agent(agent_id: str, hackathon_id: str, inp: dict, redis: Re
         from agents.python.strategy.pm_and_architect import design_architecture
         db_schema, api_contract, dep_graph = await design_architecture(
             hackathon_id=hackathon_id,
-            project_plan=inp.get("project_plan", {}),
+            project_plan=inp.get("project_plan") or inp.get("selected_concept", {}),
             redis=redis,
         )
         return {"endpoints": len(api_contract.endpoints)}

@@ -126,186 +126,149 @@ class DesignTokensOutput(BaseModel):
     css_variables: str          # :root CSS variables
 
 
-# ── Google Stitch integration (MCP protocol) ──────────────────────────────────
-# Stitch uses MCP at stitch.googleapis.com/mcp, auth via x-goog-api-key header.
-# Keys from https://stitch.withgoogle.com/settings — set STITCH_API_KEY in .env.
-# Not all keys support tool calls; we probe at startup and keep only valid ones.
-
-STITCH_MCP_URL = "https://stitch.googleapis.com/mcp"
-
-_stitch_keys: list[str] = []
-_stitch_idx = 0
-_stitch_validated = False
-_stitch_lock = asyncio.Lock()
+# ── Google Stitch integration (via browser layer @google/stitch-sdk) ──────────
+# The browser layer (Node.js) uses @google/stitch-sdk to call the Stitch API.
+# STITCH_API_KEY must be set in .env and passed to the browser container.
+# We call the browser layer's /stitch/generate endpoint which handles:
+#   - Project creation, per-route screen generation, HTML+screenshot retrieval
+#   - Variant exploration, iterative editing
 
 
-def _load_stitch_keys() -> list[str]:
-    raw = (
-        os.environ.get("STITCH_API_KEY")
-        or os.environ.get("GOOGLE_STITCH_TOKENS")
-        or ""
-    )
-    return [k.strip() for k in raw.split(",") if k.strip()]
+async def call_stitch_for_screens(
+    project_plan: dict,
+    personality: str,
+    design_spec_screens: list[dict] | None = None,
+) -> list[dict]:
+    """Generate design screens via the browser layer's Stitch SDK endpoints.
 
-
-async def _get_stitch_key() -> str | None:
-    """Round-robin across validated Stitch API keys (lock-protected)."""
-    global _stitch_keys, _stitch_idx, _stitch_validated
-    async with _stitch_lock:
-        if not _stitch_validated:
-            _stitch_keys = _load_stitch_keys()
-            _stitch_validated = True
-        if not _stitch_keys:
-            return None
-        key = _stitch_keys[_stitch_idx % len(_stitch_keys)]
-        _stitch_idx = (_stitch_idx + 1) % len(_stitch_keys)
-        return key
-
-
-async def _remove_stitch_key(bad_key: str) -> None:
-    """Remove a key that returned 401 so we don't retry it."""
-    global _stitch_keys
-    async with _stitch_lock:
-        _stitch_keys = [k for k in _stitch_keys if k != bad_key]
-
-
-async def call_google_stitch(prompt: str, personality: str) -> list[dict]:
-    """Generate a design screen via Google Stitch MCP API with key rotation.
-
-    Performs the full flow in a single MCP session: create_project →
-    generate_screen_from_text. Rotates to the next key on 401 errors.
+    Produces one Stitch screen per demo route from the project plan, retrieves
+    HTML code + screenshot URLs, and optionally explores design variants.
     """
-    try:
-        from mcp import ClientSession
-        from mcp.client.streamable_http import streamable_http_client
-        import httpx
-    except ImportError:
-        logger.info("[forge:design] `mcp` package not installed — skipping Stitch")
-        return []
-
-    api_key = await _get_stitch_key()
-    if not api_key:
-        logger.info("[forge:design] No STITCH_API_KEY set — skipping Stitch, using LLM fallback")
-        return []
-
     personality_data = DESIGN_PERSONALITIES.get(personality, {})
-    full_prompt = (
-        f"{prompt}. "
-        f"Aesthetic: {personality_data.get('description', '')}. "
+    aesthetic_desc = (
+        f"{personality_data.get('description', 'clean and professional')}. "
         f"Background: {personality_data.get('background_base', '#ffffff')}. "
-        f"IMPORTANT: {personality_data.get('accent_style', 'clean and professional')}. "
-        f"AVOID: {', '.join(personality_data.get('anti_patterns', []))}."
+        f"Accent style: {personality_data.get('accent_style', '')}. "
+        f"Avoid: {', '.join(personality_data.get('anti_patterns', []))}"
     )
 
-    max_attempts = min(len(_stitch_keys), 5) or 1
+    demo_flow = project_plan.get("demo_flow", [])
+    core_features = project_plan.get("core_features", [])[:2]
+    project_name = project_plan.get("project_name", "App")
+    solution = project_plan.get("solution", "")
 
-    for attempt in range(max_attempts):
-        try:
-            async with httpx.AsyncClient(
-                headers={"x-goog-api-key": api_key},
-                timeout=httpx.Timeout(300.0, connect=15.0),
-            ) as http:
-                async with streamable_http_client(STITCH_MCP_URL, http_client=http) as (
-                    read_stream, write_stream, _get_sid,
-                ):
-                    async with ClientSession(read_stream, write_stream) as session:
-                        await session.initialize()
+    screen_prompts = []
+    routes_seen: set[str] = set()
 
-                        proj_result = await session.call_tool(
-                            "create_project", {"title": f"forge-{os.getpid()}"}
-                        )
-                        if proj_result.isError:
-                            logger.warning("[forge:design] Stitch create_project error: %s", proj_result.content)
-                            api_key = await _get_stitch_key() or api_key
-                            continue
-
-                        project_id = ""
-                        for block in proj_result.content:
-                            if hasattr(block, "text"):
-                                data = json.loads(block.text)
-                                project_id = str(
-                                    data.get("projectId")
-                                    or data.get("id")
-                                    or data.get("name", "").split("/")[-1]
-                                )
-
-                        if not project_id:
-                            logger.warning("[forge:design] Stitch: no project ID returned")
-                            api_key = await _get_stitch_key() or api_key
-                            continue
-
-                        logger.info("[forge:design] Stitch project created: %s", project_id)
-
-                        screen_result = await session.call_tool(
-                            "generate_screen_from_text",
-                            {
-                                "projectId": project_id,
-                                "prompt": full_prompt,
-                                "deviceType": "DESKTOP",
-                            },
-                        )
-
-                        if screen_result.isError:
-                            logger.warning("[forge:design] Stitch generate_screen error: %s", screen_result.content)
-                            return []
-
-                        screens = []
-                        for block in screen_result.content:
-                            if not hasattr(block, "text"):
-                                continue
-                            try:
-                                data = json.loads(block.text)
-                            except json.JSONDecodeError:
-                                continue
-                            components = data.get("outputComponents", [])
-                            for comp in components:
-                                screen_data = comp.get("screen", {})
-                                if not screen_data:
-                                    continue
-                                screens.append({
-                                    "id": screen_data.get("name", "").split("/")[-1],
-                                    "html_url": screen_data.get("htmlCode", {}).get("downloadUrl", ""),
-                                    "image_url": screen_data.get("screenshot", {}).get("downloadUrl", ""),
-                                    "prompt": full_prompt,
-                                })
-                            for comp in components:
-                                ds = comp.get("designSystem", {}).get("designSystem", {})
-                                if ds:
-                                    screens.append({"_design_system": ds})
-
-                        logger.info("[forge:design] Google Stitch generated %d screens", len(screens))
-                        try:
-                            from config.forge_trace import emit_span
-                            await emit_span(
-                                hackathon_id="", agent_id="ui_ux_designer",
-                                op="mcp", name="stitch:generate_screens",
-                                span_input={"prompt": full_prompt[:200], "project_id": project_id},
-                                span_output={"screen_count": len(screens), "image_urls": [s.get("image_url", "") for s in screens if s.get("image_url")]},
-                            )
-                        except Exception:
-                            pass
-                        return screens
-
-        except (ExceptionGroup, BaseExceptionGroup) as eg:
-            is_401 = any("401" in str(exc) for exc in (eg.exceptions if hasattr(eg, "exceptions") else [eg]))
-            if is_401:
-                logger.debug("[forge:design] Stitch key %s...%s returned 401, rotating", api_key[:8], api_key[-4:])
-                await _remove_stitch_key(api_key)
-                api_key = await _get_stitch_key()
-                if not api_key:
-                    logger.warning("[forge:design] All Stitch keys exhausted (401)")
-                    return []
+    if design_spec_screens:
+        for scr in design_spec_screens:
+            route = scr.get("route", "/")
+            if route in routes_seen:
                 continue
-            logger.warning("[forge:design] Stitch ExceptionGroup: %s", eg)
-            return []
-        except asyncio.TimeoutError:
-            logger.warning("[forge:design] Stitch timed out (attempt %d/%d)", attempt + 1, max_attempts)
-            api_key = await _get_stitch_key() or api_key
-        except Exception as e:
-            logger.warning("[forge:design] Stitch error: %s", e)
-            api_key = await _get_stitch_key() or api_key
+            routes_seen.add(route)
+            screen_prompts.append({
+                "route": route,
+                "prompt": (
+                    f"Design the '{scr.get('name', route)}' screen for {project_name}. "
+                    f"Purpose: {scr.get('purpose', solution)}. "
+                    f"Primary action: {scr.get('primary_action', '')}. "
+                    f"Layout: {scr.get('layout_description', '')}. "
+                    f"Information hierarchy: {', '.join(scr.get('information_hierarchy', [])[:5])}."
+                ),
+                "device_type": "DESKTOP",
+            })
 
-    return []
+    if not screen_prompts:
+        for i, step in enumerate(demo_flow[:5]):
+            step_name = step.get("name", step) if isinstance(step, dict) else str(step)
+            screen_prompts.append({
+                "route": f"/demo-step-{i+1}",
+                "prompt": (
+                    f"Design the screen for step '{step_name}' of {project_name}. "
+                    f"{solution}. "
+                    f"Core features: {', '.join(f.get('name', str(f)) if isinstance(f, dict) else str(f) for f in core_features)}."
+                ),
+                "device_type": "DESKTOP",
+            })
+
+    if not screen_prompts:
+        screen_prompts = [{
+            "route": "/",
+            "prompt": f"Design the main dashboard for {project_name}: {solution}",
+            "device_type": "DESKTOP",
+        }]
+
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
+            payload = {
+                "screens": screen_prompts,
+                "project_title": f"forge-{project_name[:20]}",
+                "personality": aesthetic_desc,
+                "generate_variants": len(screen_prompts) <= 3,
+                "variant_count": 2,
+            }
+            async with session.post(f"{BROWSER_URL}/stitch/generate", json=payload) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    logger.warning("[forge:design] Stitch generate failed (%d): %s", resp.status, error_text[:300])
+                    return []
+                data = await resp.json()
+
+        screens = data.get("screens", [])
+        project_id = data.get("project_id", "")
+
+        valid_screens = [s for s in screens if s.get("screen_id")]
+        logger.info(
+            "[forge:design] Stitch SDK generated %d/%d screens (project=%s)",
+            len(valid_screens), len(screen_prompts), project_id,
+        )
+
+        try:
+            from config.forge_trace import emit_span
+            await emit_span(
+                hackathon_id="", agent_id="ui_ux_designer",
+                op="mcp", name="stitch:generate_screens",
+                span_input={"prompt_count": len(screen_prompts), "project_id": project_id},
+                span_output={
+                    "screen_count": len(valid_screens),
+                    "image_urls": [s.get("image_url", "") for s in valid_screens if s.get("image_url")],
+                    "variant_count": sum(len(s.get("variants", [])) for s in valid_screens),
+                },
+            )
+        except Exception:
+            pass
+
+        return valid_screens
+
+    except asyncio.TimeoutError:
+        logger.warning("[forge:design] Stitch request timed out (600s)")
+        return []
+    except Exception as e:
+        logger.warning("[forge:design] Stitch error: %s", e)
+        return []
+
+
+async def refine_stitch_screen(screen: dict, critique_feedback: str) -> dict | None:
+    """Iteratively edit a Stitch screen based on critique feedback."""
+    project_id = screen.get("project_id", "")
+    screen_id = screen.get("screen_id", "")
+    if not project_id or not screen_id:
+        return None
+
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as session:
+            payload = {
+                "project_id": project_id,
+                "screen_id": screen_id,
+                "edit_prompt": critique_feedback,
+            }
+            async with session.post(f"{BROWSER_URL}/stitch/edit", json=payload) as resp:
+                if resp.status != 200:
+                    return None
+                return await resp.json()
+    except Exception as e:
+        logger.warning("[forge:design] Stitch edit failed: %s", e)
+        return None
 
 
 # ── Figma MCP integration ─────────────────────────────────────────────────────
@@ -707,37 +670,74 @@ async def run_ui_ux_agent(
             "has_css": bool(tokens.css_variables),
         }
 
-    # Step 3: Generate screens via Google Stitch (or fallback)
-    concept_summary = (
-        f"{project_plan.get('project_name')}: {project_plan.get('solution')}. "
-        f"Core features: {', '.join(f['name'] for f in project_plan.get('core_features', [])[:2])}"
-    )
-    async with trace_op("mcp", "design:stitch_screens", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
-        _sp.input = {"concept": concept_summary[:200], "personality": personality}
-        stitch_screens = await call_google_stitch(concept_summary, personality)
-        _sp.output = {"screen_count": len(stitch_screens), "image_urls": [s.get("image_url", "") for s in stitch_screens if s.get("image_url")]}
-    logger.info(f"[forge:design] Google Stitch generated {len(stitch_screens)} screens")
-
-    # Step 4: Generate full design spec
+    # Step 3: Generate full design spec (LLM) — needed before Stitch for route info
     async with trace_op("llm", "design:screen_and_components", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
         screens, components = await generate_screen_and_components(
-            project_plan, personality, tokens, stitch_screens
+            project_plan, personality, tokens, []
         )
         _sp.output = {"screens": len(screens), "components": len(components)}
 
     design_spec = DesignSpec(
         personality=personality,
-        personality_rationale="",  # filled during generation
-        design_token_rationale="",  # filled during generation
+        personality_rationale="",
+        design_token_rationale="",
         screens=screens,
         components=components,
-        user_flow=[],  # filled during generation
+        user_flow=[],
         demo_entry_route=next((s.route for s in screens if s.is_demo_entry), "/"),
         demo_total_steps=sum(1 for s in screens if s.demo_path_position),
-        anti_slop_self_check=[],  # filled during generation
+        anti_slop_self_check=[],
     )
 
-    # Step 5: Self-critique — iterate if score < 7.0
+    # Step 4: Generate visual screens via Google Stitch SDK (per route)
+    async with trace_op("mcp", "design:stitch_screens", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
+        screen_dicts = [s.model_dump() for s in screens]
+        _sp.input = {"route_count": len(screen_dicts), "personality": personality}
+        stitch_screens = await call_stitch_for_screens(project_plan, personality, screen_dicts)
+        stitch_image_urls = [s.get("image_url", "") for s in stitch_screens if s.get("image_url")]
+        stitch_html_urls = [s.get("html_url", "") for s in stitch_screens if s.get("html_url")]
+        _sp.output = {
+            "screen_count": len(stitch_screens),
+            "image_urls": stitch_image_urls,
+            "html_urls": stitch_html_urls,
+            "variant_count": sum(len(s.get("variants", [])) for s in stitch_screens),
+        }
+    logger.info(
+        f"[forge:design] Stitch generated {len(stitch_screens)} screens "
+        f"({len(stitch_image_urls)} images, {len(stitch_html_urls)} HTML)"
+    )
+
+    # If Stitch produced screens, re-generate components with visual context
+    if stitch_screens:
+        async with trace_op("llm", "design:refine_with_stitch", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
+            stitch_context = json.dumps([
+                {"route": s.get("route"), "has_html": bool(s.get("html_url")), "has_image": bool(s.get("image_url")),
+                 "variants": len(s.get("variants", []))}
+                for s in stitch_screens
+            ], indent=2)
+            screens, components = await generate_screen_and_components(
+                project_plan, personality, tokens, stitch_screens,
+                extra_constraints=f"""Google Stitch generated {len(stitch_screens)} visual screens with real HTML/screenshots.
+Use these as reference for accurate layout and component placement:
+{stitch_context}
+
+Ensure your screen architecture matches the generated visuals — do NOT contradict the Stitch outputs.""",
+            )
+            _sp.output = {"screens": len(screens), "components": len(components)}
+
+        design_spec = DesignSpec(
+            personality=personality,
+            personality_rationale="",
+            design_token_rationale="",
+            screens=screens,
+            components=components,
+            user_flow=[],
+            demo_entry_route=next((s.route for s in screens if s.is_demo_entry), "/"),
+            demo_total_steps=sum(1 for s in screens if s.demo_path_position),
+            anti_slop_self_check=[],
+        )
+
+    # Step 5: Self-critique — iterate if score < 7.0, refine Stitch screens too
     max_critique_attempts = 2
     for attempt in range(max_critique_attempts):
         async with trace_op("llm", f"design:self_critique:attempt_{attempt+1}", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _sp:
@@ -749,7 +749,13 @@ async def run_ui_ux_agent(
         logger.info(f"[forge:design] Design failed self-critique (score={critique.get('overall_score', 0):.1f}), iterating (attempt {attempt + 1})")
         issues = "\n".join(f"- {issue}" for issue in critique.get("issues_found", []))
 
-        # Re-generate screens and components with specific fix constraints added
+        # Try to refine Stitch screens with critique feedback
+        for stitch_scr in stitch_screens:
+            if stitch_scr.get("screen_id"):
+                refined = await refine_stitch_screen(stitch_scr, f"Fix these design issues:\n{issues}")
+                if refined and refined.get("screen_id"):
+                    stitch_scr.update(refined)
+
         async with trace_op("llm", f"design:regenerate_after_critique:{attempt+1}", hackathon_id=hackathon_id, agent_id="ui_ux_designer") as _rsp:
             _rsp.input = {"issues": issues[:500]}
             screens, components = await generate_screen_and_components(
@@ -809,6 +815,15 @@ Do NOT repeat the same design decisions that caused these failures.""",
         _sp.output = {"path": specs_path, "component_count": len(components)}
     await register_artifact(hackathon_id, "ui_ux_designer", "component-specs.json", "json", f"Component specifications — {len(components)} components")
 
+    # Store Stitch screen data for downstream agents (frontend, UX auditor)
+    redis = get_redis()
+    if stitch_screens:
+        await redis.set(
+            f"hackathon:{hackathon_id}:stitch_screens",
+            json.dumps(stitch_screens),
+            ex=604800,
+        )
+
     result = {
         "design_spec": design_spec.model_dump(),
         "tokens": tokens.model_dump(),
@@ -822,6 +837,9 @@ Do NOT repeat the same design decisions that caused these failures.""",
         "screen_count": len(screens),
         "component_count": len(components),
         "demo_critical_components": sum(1 for c in components if c.is_demo_critical),
+        "stitch_screens": stitch_screens,
+        "stitch_image_urls": [s.get("image_url", "") for s in stitch_screens if s.get("image_url")],
+        "stitch_html_urls": [s.get("html_url", "") for s in stitch_screens if s.get("html_url")],
     }
 
     logger.info(

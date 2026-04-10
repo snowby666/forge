@@ -279,6 +279,13 @@ TASK_TIER: dict[str, Tier] = {
     # Browser
     "browser-act":              Tier.FAST,
     "browser-extract":          Tier.FAST,
+
+    # Reflection / critique tasks
+    "critique-concepts":        Tier.STANDARD,
+    "critique-sprint-plan":     Tier.STANDARD,
+    "critique-architecture":    Tier.STANDARD,
+    "critique-frontend":        Tier.STANDARD,
+    "critique-backend":         Tier.STANDARD,
 }
 
 
@@ -716,3 +723,144 @@ async def complete_batch(
         async with sem:
             return await complete(**item)
     return list(await asyncio.gather(*[_run(t) for t in tasks]))
+
+
+# ── Reflection / Iterative Refinement ────────────────────────────────────────
+# Inspired by LangGraph-Reflection (Actor/Evaluator/Self-Reflection) and
+# DOVA's hybrid collaborative reasoning with blackboard transparency.
+
+class CritiqueResult(BaseModel):
+    score: float              # 1-10 quality score
+    strengths: list[str]      # what's working well (2-4 items)
+    issues: list[str]         # specific problems found
+    specific_fixes: list[str] # actionable fix instructions for the next iteration
+    approved: bool            # True if output meets quality bar
+
+
+async def reflect_and_refine(
+    *,
+    task: str,
+    messages: list[dict[str, Any]],
+    response_model: Type[T],
+    system_prompt: str | None = None,
+    temperature: float | None = None,
+    critique_prompt: str,
+    quality_threshold: float = 7.0,
+    max_iterations: int = 3,
+    critique_task: str | None = None,
+) -> T:
+    """Generate output via complete_json, then iteratively critique and refine.
+
+    Each iteration: generate → critique → (if below threshold) refine.
+    Returns the best output seen across all iterations.
+    """
+    effective_critique_task = critique_task or f"critique-{task}"
+    best_output: T | None = None
+    best_score: float = -1.0
+    critique_history: list[dict] = []
+
+    for iteration in range(max_iterations):
+        iter_t0 = _t.monotonic()
+
+        # ── Generate (or refine) ─────────────────────────────────────────
+        if iteration == 0:
+            output = await complete_json(
+                task=task,
+                messages=messages,
+                response_model=response_model,
+                system_prompt=system_prompt,
+                temperature=temperature,
+            )
+        else:
+            prev_critique = critique_history[-1]
+            refinement_msg = {
+                "role": "user",
+                "content": (
+                    f"Your previous output was critiqued (score: {prev_critique['score']}/10).\n\n"
+                    f"=== PREVIOUS OUTPUT ===\n{json.dumps(best_output.model_dump(), indent=2, default=str)}\n\n"
+                    f"=== CRITIQUE FEEDBACK ===\n"
+                    f"Issues:\n" + "\n".join(f"- {i}" for i in prev_critique["issues"]) + "\n\n"
+                    f"Required fixes:\n" + "\n".join(f"- {f}" for f in prev_critique["fixes"]) + "\n\n"
+                    f"Fix ALL issues above. Keep what worked:\n"
+                    + "\n".join(f"+ {s}" for s in prev_critique["strengths"])
+                ),
+            }
+            output = await complete_json(
+                task=task,
+                messages=messages + [refinement_msg],
+                response_model=response_model,
+                system_prompt=system_prompt,
+                temperature=temperature,
+            )
+
+        # ── Critique ─────────────────────────────────────────────────────
+        output_json = json.dumps(output.model_dump(), indent=2, default=str)
+        critique = await complete_json(
+            task=effective_critique_task,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"{critique_prompt}\n\n"
+                    f"=== OUTPUT TO EVALUATE ===\n{output_json}\n\n"
+                    f"Score 1-10 (7+ = acceptable). Be specific about issues and fixes."
+                ),
+            }],
+            response_model=CritiqueResult,
+            system_prompt="You are a strict quality reviewer. Evaluate the output against the criteria provided. Be specific and actionable in your feedback.",
+            temperature=0.2,
+        )
+
+        # Track best output
+        if critique.score > best_score:
+            best_score = critique.score
+            best_output = output
+
+        critique_entry = {
+            "iteration": iteration + 1,
+            "score": critique.score,
+            "strengths": critique.strengths,
+            "issues": critique.issues,
+            "fixes": critique.specific_fixes,
+            "approved": critique.approved,
+        }
+        critique_history.append(critique_entry)
+
+        # Emit trace span for observability
+        try:
+            from config.forge_trace import emit_span
+            await emit_span(
+                hackathon_id=_ctx_hackathon_id.get(""),
+                agent_id=_ctx_agent_id.get(""),
+                op="llm",
+                name=f"reflect:{task}:iteration:{iteration + 1}",
+                elapsed_s=_t.monotonic() - iter_t0,
+                span_input={
+                    "iteration": iteration + 1,
+                    "max_iterations": max_iterations,
+                    "prev_score": critique_history[-2]["score"] if len(critique_history) > 1 else None,
+                },
+                span_output={
+                    "score": critique.score,
+                    "approved": critique.approved,
+                    "issues_count": len(critique.issues),
+                    "strengths_count": len(critique.strengths),
+                },
+            )
+        except Exception:
+            pass
+
+        logger.info(
+            f"[forge:reflect] {task} iteration {iteration + 1}/{max_iterations}: "
+            f"score={critique.score:.1f}/10, approved={critique.approved}, "
+            f"issues={len(critique.issues)}"
+        )
+
+        if critique.score >= quality_threshold or critique.approved:
+            logger.info(f"[forge:reflect] {task} approved after {iteration + 1} iteration(s)")
+            return output
+
+    logger.warning(
+        f"[forge:reflect] {task} returning best output (score={best_score:.1f}) "
+        f"after {max_iterations} iterations"
+    )
+    return best_output  # type: ignore[return-value]

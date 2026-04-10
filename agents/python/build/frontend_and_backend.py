@@ -15,7 +15,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from config.electronhub import complete, complete_batch
+from config.electronhub import complete, complete_batch, complete_json, CritiqueResult
 from config.forge_trace import trace_op, emit_log, register_artifact, set_agent_context
 from config.redis_client import get_redis
 from config.agents_config import ALL_AGENTS
@@ -273,7 +273,74 @@ Start your response with --- FILE: app/{route}/page.tsx ---""",
             await sandbox.process.exec(f"mkdir -p {page_dir}")
             await sandbox.fs.upload_file(page_code.encode(), f"{page_dir}/page.tsx")
 
-        # 7. Quality gates with auto-fix
+        # 7. Holistic critique loop — review generated code before quality gates
+        for critique_round in range(1, 3):
+            try:
+                file_list_result = await sandbox.process.exec(
+                    f"find {repo_path}/src -name '*.tsx' -o -name '*.ts' | head -40",
+                    timeout=10,
+                )
+                file_manifest = (file_list_result.result or "").strip()
+                demo_routes = [s.get("route", "/") for s in design_spec.get("screens", [])]
+                demo_endpoints = [
+                    e.get("path", "") for e in (api_contract or {}).get("endpoints", [])
+                    if e.get("is_demo_path")
+                ]
+
+                critique = await complete_json(
+                    task="critique-frontend",
+                    response_model=CritiqueResult,
+                    system_prompt="You are a senior frontend engineer reviewing generated Next.js code for a hackathon project.",
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            f"Review this frontend project structure for completeness and quality.\n\n"
+                            f"=== GENERATED FILES ===\n{file_manifest}\n\n"
+                            f"=== REQUIRED DEMO ROUTES ===\n{json.dumps(demo_routes, indent=2)}\n\n"
+                            f"=== DEMO API ENDPOINTS (must have fetch calls) ===\n{json.dumps(demo_endpoints, indent=2)}\n\n"
+                            f"=== COMPONENTS BUILT ===\n{json.dumps([c.get('name') for c in components_to_build], indent=2)}\n\n"
+                            f"Check:\n"
+                            f"1. Every demo route has a page.tsx\n"
+                            f"2. Components reference design tokens (not hardcoded colors)\n"
+                            f"3. All demo API endpoints have corresponding fetch calls\n"
+                            f"4. Responsive patterns exist (mobile-first)\n"
+                            f"Score 1-10 (7+ = acceptable)."
+                        ),
+                    }],
+                    temperature=0.2,
+                )
+
+                logger.info(
+                    f"[forge:frontend] Critique round {critique_round}: "
+                    f"score={critique.score:.1f}, issues={len(critique.issues)}"
+                )
+
+                if critique.score >= 7.0 or critique.approved:
+                    break
+
+                if critique.specific_fixes:
+                    await emit_log(hackathon_id, "frontend_engineer", "info",
+                                   f"Critique round {critique_round}: fixing {len(critique.specific_fixes)} issues")
+                    fix_tasks = [
+                        {
+                            "task": "fix-typescript-error",
+                            "system_prompt": fe_system_prompt,
+                            "messages": [{"role": "user", "content": f"Fix this issue in the frontend:\n{fix}\n\nRespond with FILE: path\\ncode"}],
+                        }
+                        for fix in critique.specific_fixes[:4]
+                    ]
+                    fixes = await complete_batch(fix_tasks, concurrency=4)
+                    for fix in fixes:
+                        lines = fix.strip().split("\n")
+                        if lines and lines[0].startswith("FILE:"):
+                            fp = lines[0].replace("FILE:", "").strip()
+                            code = "\n".join(lines[1:])
+                            await sandbox.fs.upload_file(code.encode(), f"{repo_path}/src/{fp}")
+            except Exception as e:
+                logger.warning(f"[forge:frontend] Critique round {critique_round} failed (non-blocking): {e}")
+                break
+
+        # 8. Quality gates with auto-fix
         await emit_log(hackathon_id, "frontend_engineer", "info", "Running quality gates (TypeScript, ESLint, Build)")
         async with trace_op("subprocess", "frontend:quality_gates") as span:
             for attempt in range(1, 4):
@@ -643,6 +710,69 @@ async def health() -> dict:
     return {{"status": "ok", "version": "1.0.0"}}
 '''
         await sandbox.fs.upload_file(main_py.encode(), f"{repo_path}/app/main.py")
+
+        # Holistic critique loop — review generated backend before quality gates
+        for critique_round in range(1, 3):
+            try:
+                file_list_result = await sandbox.process.exec(
+                    f"find {repo_path}/app -name '*.py' | head -20",
+                    timeout=10,
+                )
+                file_manifest = (file_list_result.result or "").strip()
+
+                demo_endpoints_list = [
+                    f"{e.get('method', 'GET')} {e.get('path', '')}"
+                    for e in endpoints if e.get("is_demo_path")
+                ]
+
+                critique = await complete_json(
+                    task="critique-backend",
+                    response_model=CritiqueResult,
+                    system_prompt="You are a senior backend engineer reviewing generated FastAPI code for a hackathon project.",
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            f"Review this backend project for completeness and quality.\n\n"
+                            f"=== GENERATED FILES ===\n{file_manifest}\n\n"
+                            f"=== REQUIRED DEMO ENDPOINTS ===\n{json.dumps(demo_endpoints_list, indent=2)}\n\n"
+                            f"=== DB TABLES ===\n{json.dumps([t.get('name') for t in db_schema.get('tables', [])], indent=2)}\n\n"
+                            f"Check:\n"
+                            f"1. /demo/seed endpoint exists and is idempotent\n"
+                            f"2. /health endpoint exists\n"
+                            f"3. All demo path endpoints are implemented in the router\n"
+                            f"4. SQLAlchemy models match the DB schema tables\n"
+                            f"5. CORS is configured\n"
+                            f"Score 1-10 (7+ = acceptable)."
+                        ),
+                    }],
+                    temperature=0.2,
+                )
+
+                logger.info(
+                    f"[forge:backend] Critique round {critique_round}: "
+                    f"score={critique.score:.1f}, issues={len(critique.issues)}"
+                )
+
+                if critique.score >= 7.0 or critique.approved:
+                    break
+
+                if critique.specific_fixes:
+                    await emit_log(hackathon_id, "backend_engineer", "info",
+                                   f"Critique round {critique_round}: fixing {len(critique.specific_fixes)} issues")
+                    for fix_instruction in critique.specific_fixes[:3]:
+                        fix_code = await complete(
+                            task="fix-python-error",
+                            system_prompt=AGENT.system_prompt,
+                            messages=[{"role": "user", "content": f"Fix this issue:\n{fix_instruction}\n\nRespond with FILE: path\\ncode"}],
+                        )
+                        lines = fix_code.strip().split("\n")
+                        if lines and lines[0].startswith("FILE:"):
+                            fp = lines[0].replace("FILE:", "").strip()
+                            code = "\n".join(lines[1:])
+                            await sandbox.fs.upload_file(code.encode(), f"{repo_path}/{fp}")
+            except Exception as e:
+                logger.warning(f"[forge:backend] Critique round {critique_round} failed (non-blocking): {e}")
+                break
 
         # Quality gates
         await emit_log(hackathon_id, "backend_engineer", "info", "Running quality gates (pytest, startup check)")

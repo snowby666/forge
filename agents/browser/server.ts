@@ -11,16 +11,18 @@
  *   POST /record-demo      — screen record + composite with audio
  *   POST /screenshot       — capture screenshots for UX audit
  *   POST /lighthouse       — run Lighthouse audit
+ *   POST /stitch/generate  — generate screens via Google Stitch SDK
  *   GET  /health           — health check
  */
 
 import express from "express";
 import { Stagehand } from "@browserbasehq/stagehand";
-import { chromium, type Page } from "playwright";
+import { chromium } from "playwright";
 import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
 import { execSync } from "child_process";
+import { stitch } from "@google/stitch-sdk";
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -471,10 +473,138 @@ app.post("/record-demo", async (req, res) => {
   }
 });
 
+// ─── POST /stitch/generate ────────────────────────────────────────────────────
+// Generate multiple screens via Google Stitch SDK, one per prompt.
+// Returns HTML code + screenshot URLs for each screen, plus design variants.
+
+app.post("/stitch/generate", async (req, res) => {
+  const {
+    screens: screenPrompts = [] as { route: string; prompt: string; device_type?: string }[],
+    project_title = `forge-${Date.now()}`,
+    personality = "",
+    generate_variants = false,
+    variant_count = 2,
+  } = req.body;
+
+  if (!process.env.STITCH_API_KEY) {
+    res.status(400).json({ error: "STITCH_API_KEY not set", screens: [] });
+    return;
+  }
+
+  if (!screenPrompts.length) {
+    res.json({ project_id: null, screens: [], design_context: null });
+    return;
+  }
+
+  const results: any[] = [];
+  let projectId = "";
+
+  try {
+    const project = await stitch.createProject(project_title);
+    projectId = project.projectId;
+    console.log(`[forge:stitch] Project created: ${projectId}`);
+
+    for (const sp of screenPrompts) {
+      const deviceType = (sp.device_type || "DESKTOP") as "MOBILE" | "DESKTOP" | "TABLET" | "AGNOSTIC";
+      const fullPrompt = personality
+        ? `${sp.prompt}. Design aesthetic: ${personality}.`
+        : sp.prompt;
+
+      try {
+        console.log(`[forge:stitch] Generating screen for route ${sp.route}...`);
+        const screen = await project.generate(fullPrompt, deviceType);
+
+        const [htmlUrl, imageUrl] = await Promise.all([
+          screen.getHtml().catch(() => ""),
+          screen.getImage().catch(() => ""),
+        ]);
+
+        const screenResult: any = {
+          route: sp.route,
+          screen_id: screen.screenId,
+          html_url: htmlUrl,
+          image_url: imageUrl,
+          prompt: fullPrompt,
+          variants: [],
+        };
+
+        if (generate_variants) {
+          try {
+            const variants = await screen.variants(
+              `Explore different design approaches for: ${sp.prompt}`,
+              {
+                variantCount: variant_count,
+                creativeRange: "EXPLORE" as any,
+                aspects: ["COLOR_SCHEME", "LAYOUT"] as any,
+              },
+            );
+            for (const v of variants) {
+              const [vHtml, vImg] = await Promise.all([
+                v.getHtml().catch(() => ""),
+                v.getImage().catch(() => ""),
+              ]);
+              screenResult.variants.push({
+                variant_id: v.screenId,
+                html_url: vHtml,
+                image_url: vImg,
+              });
+            }
+          } catch (varErr) {
+            console.warn(`[forge:stitch] Variants failed for ${sp.route}: ${varErr}`);
+          }
+        }
+
+        results.push(screenResult);
+        console.log(`[forge:stitch] Screen for ${sp.route}: html=${!!htmlUrl} img=${!!imageUrl} variants=${screenResult.variants.length}`);
+      } catch (screenErr) {
+        console.error(`[forge:stitch] Screen generation failed for ${sp.route}: ${screenErr}`);
+        results.push({ route: sp.route, error: String(screenErr), screen_id: null, html_url: "", image_url: "" });
+      }
+    }
+
+    res.json({ project_id: projectId, screens: results });
+  } catch (err) {
+    console.error(`[forge:stitch] Project-level error: ${err}`);
+    res.status(500).json({ error: String(err), project_id: projectId, screens: results });
+  }
+});
+
+// ─── POST /stitch/edit ───────────────────────────────────────────────────────
+// Iteratively refine a screen using the edit() API.
+
+app.post("/stitch/edit", async (req, res) => {
+  const { project_id, screen_id, edit_prompt } = req.body;
+
+  if (!process.env.STITCH_API_KEY || !project_id || !screen_id) {
+    res.status(400).json({ error: "Missing project_id, screen_id, or STITCH_API_KEY" });
+    return;
+  }
+
+  try {
+    const project = stitch.project(project_id);
+    const screen = await project.getScreen(screen_id);
+    const edited = await screen.edit(edit_prompt);
+
+    const [htmlUrl, imageUrl] = await Promise.all([
+      edited.getHtml().catch(() => ""),
+      edited.getImage().catch(() => ""),
+    ]);
+
+    res.json({
+      screen_id: edited.screenId,
+      html_url: htmlUrl,
+      image_url: imageUrl,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // ─── Health ───────────────────────────────────────────────────────────────────
 
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", port: PORT, stagehand: "ready" });
+  const hasStitchKey = !!process.env.STITCH_API_KEY;
+  res.json({ status: "ok", port: PORT, stagehand: "ready", stitch_available: hasStitchKey });
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────

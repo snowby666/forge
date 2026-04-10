@@ -7,15 +7,13 @@ PM produces ProjectPlan; Architect produces DbSchema + ApiContract.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import os
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from redis.asyncio import Redis
 
-from config.electronhub import complete_json
+from config.electronhub import reflect_and_refine
 from config.agents_config import ALL_AGENTS
 from config.redis_client import get_redis
 from config.forge_trace import trace_op, register_artifact, set_agent_context
@@ -72,15 +70,9 @@ async def create_project_plan(
     run_ctx = await build_run_context(hackathon_id, redis)
     memdir_ctx = await build_memdir_context_for_agent("pm")
 
-    async with trace_op("llm", "pm:create_project_plan", hackathon_id=hackathon_id, agent_id="pm") as span:
-        span.input = {"concept": selected_concept.get("name", ""), "hackathon": brief.get("name", "")}
-        plan = await complete_json(
-            task="create-sprint-plan",
-            response_model=ProjectPlan,
-            system_prompt=AGENT.system_prompt + run_ctx + memdir_ctx,
-            messages=[{
-                "role": "user",
-                "content": f"""Create the detailed project plan for the approved concept.
+    plan_messages = [{
+        "role": "user",
+        "content": f"""Create the detailed project plan for the approved concept.
 
 Hackathon: {brief.get('name')}
 Deadline: {brief.get('deadline')}
@@ -103,8 +95,30 @@ HARD CONSTRAINTS:
 
 CUTSCOPE: Be explicit about what you're NOT building and why.
 Better to know upfront than to run out of time mid-hackathon.""",
-            }],
+    }]
+
+    plan_critique_prompt = """Evaluate this project plan against these criteria:
+
+1. FEATURE COUNT: Exactly 2 core features — no more, no fewer. Flag any plan with != 2.
+2. TIMELINE REALISM: Does the timeline reserve 25% for polish? Are hour estimates honest?
+3. DEMO PATH: Is the demo golden path completable in ≤90 seconds? Are steps concrete (not vague)?
+4. DEMO MODE: Can the demo work without user registration? Is demo data seeding described?
+5. SCOPE DISCIPLINE: Are cutscope_decisions specific and well-reasoned (not generic)?
+6. TAGLINE: Does the tagline start with a verb and stay under 12 words?
+7. ACCEPTANCE CRITERIA: Does each feature have concrete, testable acceptance criteria?"""
+
+    async with trace_op("llm", "pm:create_project_plan", hackathon_id=hackathon_id, agent_id="pm") as span:
+        span.input = {"concept": selected_concept.get("name", ""), "hackathon": brief.get("name", "")}
+        plan = await reflect_and_refine(
+            task="create-sprint-plan",
+            response_model=ProjectPlan,
+            system_prompt=AGENT.system_prompt + run_ctx + memdir_ctx,
+            messages=plan_messages,
             temperature=0.2,
+            critique_prompt=plan_critique_prompt,
+            quality_threshold=7.0,
+            max_iterations=2,
+            critique_task="critique-sprint-plan",
         )
         span.output = {
             "project_name": plan.project_name,
@@ -184,15 +198,9 @@ async def design_architecture(
         api_contract: ApiContract
         dependency_graph: DependencyGraph
 
-    async with trace_op("llm", "architect:design_architecture", hackathon_id=hackathon_id, agent_id="tech_architect") as span:
-        span.input = {"project": project_plan.get("project_name", ""), "features": [f.get("name") for f in project_plan.get("core_features", [])]}
-        arch = await complete_json(
-            task="design-api-contract",
-            response_model=ArchitectureOutput,
-            system_prompt=AGENT.system_prompt + run_ctx + memdir_ctx,
-            messages=[{
-                "role": "user",
-                "content": f"""Design the complete technical architecture for this project.
+    arch_messages = [{
+        "role": "user",
+        "content": f"""Design the complete technical architecture for this project.
 
 Project: {project_plan.get('project_name')} — {project_plan.get('tagline')}
 Features: {json.dumps([f.get('name') for f in project_plan.get('core_features', [])], indent=2)}
@@ -210,8 +218,29 @@ REQUIREMENTS:
 
 PUBLISH IMMEDIATELY: The API contract should be published to Redis right away
 so the frontend engineer can start working in parallel with backend implementation.""",
-            }],
+    }]
+
+    arch_critique_prompt = """Evaluate this technical architecture against these criteria:
+
+1. DEMO PATH COVERAGE: Every step in the demo golden path must have a corresponding API endpoint marked with is_demo_path=true. Flag any missing endpoints.
+2. REQUIRED ENDPOINTS: /demo/seed and /health must exist. /demo/seed must be idempotent.
+3. NO OVER-ENGINEERING: Tables should only exist if they serve the 2 core features. Flag speculative future tables.
+4. SCHEMA QUALITY: Column types must be correct. UUID PKs, proper timestamps, and relationships defined.
+5. DEPENDENCY GRAPH: parallel_tracks must be valid — no circular dependencies, frontend_can_start_after makes sense.
+6. API DESIGN: RESTful conventions, proper request/response schemas, consistent naming."""
+
+    async with trace_op("llm", "architect:design_architecture", hackathon_id=hackathon_id, agent_id="tech_architect") as span:
+        span.input = {"project": project_plan.get("project_name", ""), "features": [f.get("name") for f in project_plan.get("core_features", [])]}
+        arch = await reflect_and_refine(
+            task="design-api-contract",
+            response_model=ArchitectureOutput,
+            system_prompt=AGENT.system_prompt + run_ctx + memdir_ctx,
+            messages=arch_messages,
             temperature=0.1,
+            critique_prompt=arch_critique_prompt,
+            quality_threshold=7.0,
+            max_iterations=2,
+            critique_task="critique-architecture",
         )
         span.output = {
             "table_count": len(arch.db_schema.tables),

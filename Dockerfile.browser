@@ -1,5 +1,5 @@
-# Browser Layer — Stagehand + Playwright HTTP server.
-# Provides /scrape, /register, /submit, /screenshot, /lighthouse, /health.
+# Browser Layer — Stagehand + Playwright + Google Stitch SDK HTTP server.
+# Provides /scrape, /register, /submit, /screenshot, /lighthouse, /stitch/*, /health.
 #
 #   docker build -f Dockerfile.browser -t forge-browser .
 #   docker run -p 3100:3100 --env-file .env forge-browser

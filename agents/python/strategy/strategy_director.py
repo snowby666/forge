@@ -14,11 +14,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from config.electronhub import complete_json
+from config.electronhub import reflect_and_refine
 from config.agents_config import ALL_AGENTS
 from config.forge_trace import trace_op, register_artifact, set_agent_context
 from config.redis_client import get_redis
@@ -71,18 +70,23 @@ class ConceptBrief(BaseModel):
 
 async def score_concept(concept: ProjectConcept, sponsor_map: dict) -> ProjectConcept:
     """Verify and calibrate scores using explicit rubric."""
-    # win_probability: alignment with judges + differentiation from past winners
-    # feasibility: honest build time estimate vs available time
-    # sponsor_prize: number of prizes × confidence × prize value
+    # Guard: if the LLM scored on the old 0-40/0-30 scale, rescale to 0-100
+    if concept.win_probability_score <= 40 and concept.feasibility_score <= 30:
+        concept.win_probability_score = min(100, int(concept.win_probability_score * 2.5))
+        concept.feasibility_score = min(100, int(concept.feasibility_score * 3.33))
+        concept.sponsor_prize_score = min(100, int(concept.sponsor_prize_score * 3.33))
 
-    total_prize_value = sum(
+    # Boost sponsor_prize_score when real prize money backs the integrations
+    weighted_prize_value = sum(
         si.prize_amount * (1.0 if si.eligibility_confidence == "high"
                            else 0.7 if si.eligibility_confidence == "medium"
                            else 0.4)
         for si in concept.sponsor_integrations
     )
+    if weighted_prize_value > 0 and concept.sponsor_prize_score < 80:
+        prize_bonus = min(15, int(weighted_prize_value / 1000))
+        concept.sponsor_prize_score = min(100, concept.sponsor_prize_score + prize_bonus)
 
-    # Weighted score
     concept.total_score = int(
         concept.win_probability_score * 0.4 +
         concept.feasibility_score * 0.3 +
@@ -139,19 +143,13 @@ async def generate_concepts(
         + len(past_learnings)
     )
     logger.info(
-        f"[forge:strategy] Calling complete_json(generate-concepts) "
+        f"[forge:strategy] Calling reflect_and_refine(generate-concepts) "
         f"| prompt_size≈{prompt_size} chars ({_t.monotonic()-t0:.1f}s)"
     )
 
-    async with trace_op("llm", "strategy:generate_concepts") as span:
-        span.input = {"hackathon": hackathon_brief.get("name"), "prompt_size": prompt_size}
-        brief = await complete_json(
-            task="generate-concepts",
-            response_model=ConceptBrief,
-            system_prompt=AGENT.system_prompt + memdir_notes,
-            messages=[{
-                "role": "user",
-                "content": f"""Generate exactly 3 project concepts for this hackathon.
+    concept_messages = [{
+        "role": "user",
+        "content": f"""Generate exactly 3 project concepts for this hackathon.
 Each concept must be genuinely distinct — not just variations of the same idea.
 
 === HACKATHON BRIEF ===
@@ -173,21 +171,46 @@ HARD REQUIREMENTS FOR EACH CONCEPT:
 4. Differentiated from the top past winners (see CompReport)
 5. Buildable with 25% time reserved for polish
 
-SCORING RUBRIC:
-- win_probability (0-40): alignment with judges + differentiation + emotional resonance
-- feasibility (0-30): honest build estimate, accounting for integration complexity
-- sponsor_prize (0-30): total expected prize value × confidence × number of prizes
+SCORING RUBRIC (each dimension 0-100, total = weighted average):
+- win_probability_score (0-100): alignment with judges + differentiation + emotional resonance
+- feasibility_score (0-100): honest build estimate, accounting for integration complexity
+- sponsor_prize_score (0-100): number of eligible prizes × confidence × prize value potential
+Total = 0.4 × win_probability_score + 0.3 × feasibility_score + 0.3 × sponsor_prize_score
+A strong concept should score 60-85 total. Over 85 means you are not being honest about risks.
 
 REQUIRED: Explain WHY each concept would win. Reference specific judges, 
 specific past winner gaps, specific sponsor prize criteria.
 
 rank=1 should be your best recommendation. Be honest about risks.""",
-            }],
+    }]
+
+    concept_critique_prompt = """Evaluate these 3 hackathon project concepts against these criteria:
+
+1. DISTINCTIVENESS: Are the 3 concepts genuinely different approaches, not variations of the same idea?
+2. SPONSOR ALIGNMENT: Are sponsor integrations natural to the product (not bolted on)?
+3. FEASIBILITY HONESTY: Are build estimates realistic given integration complexity? Is 25% polish time preserved?
+4. DEMO PATH CLARITY: Does each concept have a clear, compelling demo_wow_moment?
+5. WIN PROBABILITY: Does the reasoning reference specific judges and past winner gaps?
+6. SCORING: Are scores in the 0-100 range per dimension, with totals between 60-85 for strong concepts?
+
+Flag any concept that is vague, has unrealistic sponsor integrations, or lacks specific judge/winner references."""
+
+    async with trace_op("llm", "strategy:generate_concepts") as span:
+        span.input = {"hackathon": hackathon_brief.get("name"), "prompt_size": prompt_size}
+        brief = await reflect_and_refine(
+            task="generate-concepts",
+            response_model=ConceptBrief,
+            system_prompt=AGENT.system_prompt + memdir_notes,
+            messages=concept_messages,
             temperature=0.4,
+            critique_prompt=concept_critique_prompt,
+            quality_threshold=7.0,
+            max_iterations=3,
+            critique_task="critique-concepts",
         )
         span.output = {"concepts": len(brief.concepts), "top_score": brief.concepts[0].total_score if brief.concepts else 0}
     logger.info(
-        f"[forge:strategy] complete_json returned {len(brief.concepts)} concepts "
+        f"[forge:strategy] reflect_and_refine returned {len(brief.concepts)} concepts "
         f"({_t.monotonic()-t0:.1f}s)"
     )
 
