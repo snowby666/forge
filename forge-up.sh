@@ -145,7 +145,8 @@ fi
 
 set -a; source .env; set +a
 export PYTHONUTF8=1
-log ".env loaded (${#ELECTRONHUB_API_KEY:-0} char API key)"
+_EH_KEY="${ELECTRONHUB_API_KEY:-}"
+log ".env loaded (${#_EH_KEY} char API key)"
 
 # ── Python venv + dependencies ───────────────────────────────────────────────
 step "Python environment"
